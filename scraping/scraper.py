@@ -116,7 +116,7 @@ for col in defense_stats.columns:
         merged_stats[col] = defense_stats[col]
 
 # Save to Excel
-merged_stats.to_excel('NBAStats.xlsx', index=False)
+merged_stats.to_excel('data/NBAStats.xlsx', index=False)
 
 print(merged_stats)
 driver.quit()
