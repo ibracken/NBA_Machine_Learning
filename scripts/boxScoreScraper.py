@@ -18,7 +18,7 @@ select = Select(driver.find_element(By.XPATH, r"/html/body/div[1]/div[2]/div[2]/
 
 select.select_by_index(0)
 
-# Lots of data 
+# Lots of data so it helps to give selenium time to load the page
 time.sleep(10)
 
 src = driver.page_source 
@@ -38,7 +38,7 @@ df['FP'] = pd.to_numeric(df['FP'], errors='coerce')
 df['GAME DATE'] = pd.to_datetime(df['GAME DATE'], format='%m/%d/%Y')
 
 # Sort the DataFrame by PLAYER and GAME DATE
-df = df.sort_values(by=['PLAYER', 'GAME DATE'])
+df = df.sort_values(by=['PLAYER', 'GAME DATE'], ascending = [True, True])
 
 # Define the window sizes
 windows = [3, 5, 7]
