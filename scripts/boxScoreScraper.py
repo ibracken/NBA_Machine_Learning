@@ -46,6 +46,7 @@ windows = [3, 5, 7]
 for window in windows:
     # Calculate the rolling average for each player
     df[f'Last{window}_FP_Avg'] = df.groupby('PLAYER')['FP'].transform(lambda x: x.rolling(window, min_periods=1).mean())
+    df[f'Last{window}_Min'] = df.groupby('PLAYER')['MIN'].transform(lambda x: x.rolling(window, min_periods=1).mean())
 
 # Calculate Season Average FP for each player
 df['Season_FP_Avg'] = df.groupby('PLAYER')['FP'].transform('mean')

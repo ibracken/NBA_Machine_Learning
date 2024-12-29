@@ -35,15 +35,30 @@ Decision Tree and random forest for each cluster, which has been calculated befo
 
 # Thoughts on high clustering errors:
 * The issue is that I am getting an average of 6 for error when fantasy is only 20-30. This is a huge error. It is barely better than avg_dif from mean and is slightly worse than trianing based on the whole NBA.
-  * Adding FPPM(per minute) helped greatly but clustering is still worse than the full NBA model.
 
 * I am only using overall fantasy points, maybe I should use the individual stats as well.
-* Could be due to smaller sample size for each cluster.
-* Maybe due to lack of standardization of the data but unlikely.
-* Effect of Random State? Add weights to the clusters?
-* Injury account and per minute numbers may help but shouldn't affect the clusters
+* Injury account
 * Add prior year data for clustering to give more values
 
+
+
+
+JMO ADVICE:
+Model notes:
+* look into other regresssion models
+* Stepwise regression
+* lasso, ridge regression
+* throw different values in and see what ya get
+
+For box score data:
+* use time as x axis, and points on y axis, find trends for box score data; perhaps use this in addtion to FP
+* Find feature importance: importances = rf.feature_importances_
+* Matchup could help
+* lots of trial and error
+
+For clusters:
+* split the cluster data into test and training
+* training data, cross validate the clusters
 
 ## **Flow Chart Diagram**
 ```mermaid
