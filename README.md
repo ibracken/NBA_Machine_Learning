@@ -33,10 +33,8 @@ Decision Tree and random forest for the full nba dataset. This model is trained 
 Decision Tree and random forest for each cluster, which has been calculated before. Each cluster has about 500 games played. The model is trained and tested on the same data as the full NBA model. The mean error serves as a good way to test model accuracy. Right now, the clusters are performing worse than the full NBA model which should not be the case.
 
 
-# Thoughts on high clustering errors:
-* The issue is that I am getting an average of 6 for error when fantasy is only 20-30. This is a huge error. It is barely better than avg_dif from mean and is slightly worse than trianing based on the whole NBA.
-
-* I am only using overall fantasy points, maybe I should use the individual stats as well.
+# Thoughts on clustering errors:
+* Add matchup data
 * Injury account
 * Add prior year data for clustering to give more values
 
@@ -71,4 +69,7 @@ graph TD;
     boxScores.xlsx-->nbaSupervisedLearningFullNBA.ipynb;
     boxScores.xlsx-->nbaSupervisedLearningClusters.ipynb;
     clusteredPlayers.xlsx-->nbaSupervisedLearningClusters.ipynb;
+    nbaSupervisedLearningClusters.ipynb-->playerPredictions.xlsx;
+    nbaSupervisedLearningFullNBA.ipynb-->playerPredictions.xlsx;
+
 ```
