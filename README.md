@@ -34,8 +34,9 @@ Decision Tree and random forest for each cluster, which has been calculated befo
 
 
 # Thoughts on clustering errors:
-* Add matchup data
+* TODO Matchup data: Home/Away, Opponent, Rest, etc.
 * Injury account
+* Take Salary into account
 * Add prior year data for clustering to give more values
 
 
@@ -70,6 +71,9 @@ graph TD;
     boxScores.xlsx-->nbaSupervisedLearningClusters.ipynb;
     clusteredPlayers.xlsx-->nbaSupervisedLearningClusters.ipynb;
     nbaSupervisedLearningClusters.ipynb-->playerPredictions.xlsx;
-    nbaSupervisedLearningFullNBA.ipynb-->playerPredictions.xlsx;
+    nbaSupervisedLearningClusters.ipynb-->RFCluster.sav;
+    nbaSupervisedLearningFullNBA.ipynb-->RFFullNBA.sav;
+    RFCluster.sav-->dailyPredictionsScraper.py;
+    playerPredictions.xlsx-->dailyPredictionsScraper.py;
 
 ```
