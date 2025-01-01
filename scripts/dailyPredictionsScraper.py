@@ -124,11 +124,66 @@ def runModel(df):
 
     # Write the combined data back to the file
     combined_data.to_excel(output_file, index=False)
-    print(combined_data)
 
 
-# def checkScoresForFP():
-    # TODO Add a check to boxScores.xlsx to see if the game has been played and the actual FP can be updated
-# test
+def checkScoresForFP():
+    # TODO Add a check to boxScores.xlsx to see if the game has been played and the actual FP can be updated. This can be done by finding PLAYER AND GAME DATE there and comparing
+    box_scores_file = 'data/boxScores.xlsx'
+    fp_file = 'data/dailyPredictions.xlsx'
+    df_box = pd.read_excel(box_scores_file)
+    # Ensure 'GAME DATE' is in datetime format
+    df_box['GAME DATE'] = pd.to_datetime(df_box['GAME DATE'])
+    df_fp = pd.read_excel(fp_file)
+
+    # Add an 'ACTUAL FP' column to df_fp if it doesn't exist
+    if 'ACTUAL FP' not in df_fp.columns:
+        df_fp['ACTUAL FP'] = None
+
+    if 'My Model Closer Prediction' not in df_fp.columns:
+        df_fp['My Model Closer Prediction'] = pd.Series(dtype=bool)
+
+    # Iterate through rows in dailyPredictions.xlsx
+    for index, row in df_fp.iterrows():
+        player = row['PLAYER']
+        game_date = row['GAME DATE']
+        fp = row['ACTUAL FP']  # Assuming this is the column for FP
+        if not pd.isnull(fp) and fp != None:
+            continue
+        # Check if this player's game exists in boxScores.xlsx
+        matching_game = df_box[
+            (df_box['PLAYER'] == player) & (df_box['GAME DATE'] == game_date)
+        ]
+        # If a matching game is found, update FP in df_fp
+        if not matching_game.empty:
+            actual_fp = matching_game.iloc[0]['FP']  # Assuming 'FP' column contains the actual FP
+            if not pd.isnull(actual_fp):
+                df_fp.at[index, 'ACTUAL FP'] = actual_fp
+                print(f"Updated FP for {player} on {game_date.date()}: {actual_fp}")
+
+    false_count = 0
+    true_count = 0
+    for index, row in df_fp.iterrows():
+        actual_fp = row['ACTUAL FP']
+        ppg_projection = row['PPG Projection']
+        model_predicted_fp = row['My Model Predicted FP']
+        if not pd.isnull(actual_fp):
+            ppg_diff = abs(ppg_projection - actual_fp) if not pd.isnull(ppg_projection) else float('inf')
+            model_diff = abs(model_predicted_fp - actual_fp) if not pd.isnull(model_predicted_fp) else float('inf')
+
+            if ppg_diff < model_diff:
+                df_fp.at[index, 'My Model Closer Prediction'] = False
+                false_count += 1
+            else:
+                df_fp.at[index, 'My Model Closer Prediction'] = True
+                true_count += 1
+
+
+
+    ratio = true_count / (true_count + false_count)
+    print(f"Ratio of True to False: {ratio}")
+    # Save the updated dailyPredictions.xlsx
+    df_fp.to_excel(fp_file, index=False)
+
 df = scrapeData()
 runModel(df)
+checkScoresForFP()
