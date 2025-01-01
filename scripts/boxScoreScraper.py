@@ -40,6 +40,19 @@ df['GAME DATE'] = pd.to_datetime(df['GAME DATE'], format='%m/%d/%Y')
 # Sort the DataFrame by PLAYER and GAME DATE
 df = df.sort_values(by=['PLAYER', 'GAME DATE'], ascending = [True, True])
 
+dataset_clusters = pd.read_excel('data/clusteredPlayers.xlsx')
+
+dataset_clusters = dataset_clusters.drop('Unnamed: 0', axis=1)
+
+clusterDict = {}
+
+# Map the 'Cluster' column from clusterdf to the dataset based on 'Player'
+clusterDict = dataset_clusters.set_index('Player')['Cluster'].to_dict()
+
+# Map the 'CLUSTER' column in the dataset
+df['CLUSTER'] = df['PLAYER'].map(clusterDict)
+
+
 # Define the window sizes
 windows = [3, 5, 7]
 

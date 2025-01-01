@@ -34,6 +34,8 @@ Decision Tree and random forest for each cluster, which has been calculated befo
 
 
 # Thoughts on clustering errors:
+* Migrate from excel to database ughhh
+* Instead of injury, simply use projected minutes along with a season average of min/game, historical points per minute played
 * TODO Matchup data: Home/Away, Opponent, Rest, etc.
 * Injury account
 * Take Salary into account
@@ -41,8 +43,7 @@ Decision Tree and random forest for each cluster, which has been calculated befo
 
 
 
-
-JMO ADVICE:
+JMO ADVICE(for the future):
 Model notes:
 * look into other regresssion models
 * Stepwise regression
@@ -75,5 +76,7 @@ graph TD;
     nbaSupervisedLearningFullNBA.ipynb-->RFFullNBA.sav;
     RFCluster.sav-->dailyPredictionsScraper.py;
     playerPredictions.xlsx-->dailyPredictionsScraper.py;
+    clusteredPlayers.xlsx-->boxScoreScraper.py;
+    dailyPredictionsScraper.py-->dailyPredictions.xlsx;
 
 ```
