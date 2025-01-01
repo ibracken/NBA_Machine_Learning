@@ -129,6 +129,6 @@ def runModel(df):
 
 # def checkScoresForFP():
     # TODO Add a check to boxScores.xlsx to see if the game has been played and the actual FP can be updated
-
+# test
 df = scrapeData()
 runModel(df)
