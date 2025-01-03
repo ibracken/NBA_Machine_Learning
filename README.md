@@ -68,7 +68,6 @@ graph TD;
     boxScoreScraper.py-->boxScores.xlsx;
     NBAStats.xlsx-->nbaClustering.ipynb;
     nbaClustering.ipynb-->clusteredPlayers.xlsx;
-    boxScores.xlsx-->nbaSupervisedLearningCodyMartin.ipynb;
     boxScores.xlsx-->nbaSupervisedLearningFullNBA.ipynb;
     boxScores.xlsx-->nbaSupervisedLearningClusters.ipynb;
     clusteredPlayers.xlsx-->nbaSupervisedLearningClusters.ipynb;

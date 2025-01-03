@@ -95,6 +95,10 @@ table = parser.find("div", attrs = {"class": "Crom_container__C45Ti crom-contain
 headers = table.findAll('th')
 headerlist = [h.text.strip() for h in headers[1:]]
 headerlist3 = [a for a in headerlist if not 'RANK' in a]
+for i, header in enumerate(headerlist3):
+    if header == "DREB%":
+        headerlist3[i] = "DREB%TEAM"
+        break
 rows = table.findAll('tr')[1:]
 player_stats_defense = [[td.getText().strip() for td in rows[i].findAll('td')[1:]] for i in range(len(rows))]
 print(f"Number of headers: {len(headerlist3)}")

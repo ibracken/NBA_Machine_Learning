@@ -180,7 +180,7 @@ def checkScoresForFP():
 
 
     ratio = true_count / (true_count + false_count)
-    print(f"Ratio of True to False: {ratio}")
+    print(f"% of more accurate predictions: {ratio}")
     # Save the updated dailyPredictions.xlsx
     df_fp.to_excel(fp_file, index=False)
 
