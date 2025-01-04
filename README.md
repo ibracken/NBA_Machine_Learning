@@ -35,6 +35,7 @@ Decision Tree and random forest for each cluster, which has been calculated befo
 
 # Thoughts on clustering errors:
 * Migrate from excel to database ughhh
+* Issue with accented names such as jokic being stored in dailyPredictions.xlsx
 * Instead of injury, simply use projected minutes(with some leve of variation) along with a season average of min/game, historical points per minute played
   * Using this: https://www.sportsline.com/nba/expert-projections/simulation/ 
 * TODO Matchup data: Home/Away, Opponent, Rest, etc.
@@ -71,11 +72,11 @@ graph TD;
     boxScores.xlsx-->nbaSupervisedLearningFullNBA.ipynb;
     boxScores.xlsx-->nbaSupervisedLearningClusters.ipynb;
     clusteredPlayers.xlsx-->nbaSupervisedLearningClusters.ipynb;
-    nbaSupervisedLearningClusters.ipynb-->playerPredictions.xlsx;
+    nbaSupervisedLearningClusters.ipynb-->testPlayerPredictions.xlsx;
     nbaSupervisedLearningClusters.ipynb-->RFCluster.sav;
     nbaSupervisedLearningFullNBA.ipynb-->RFFullNBA.sav;
     RFCluster.sav-->dailyPredictionsScraper.py;
-    playerPredictions.xlsx-->dailyPredictionsScraper.py;
+    testPlayerPredictions.xlsx-->dailyPredictionsScraper.py;
     clusteredPlayers.xlsx-->boxScoreScraper.py;
     dailyPredictionsScraper.py-->dailyPredictions.xlsx;
 
