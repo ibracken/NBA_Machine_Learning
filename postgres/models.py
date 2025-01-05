@@ -1,5 +1,5 @@
 from sqlalchemy import Column, Integer, String, Float, ForeignKey, Date, UniqueConstraint, Boolean
-from config import Base
+from postgres.config import Base
 from sqlalchemy.orm import relationship
 
 class AdvancedPlayerStats(Base):
