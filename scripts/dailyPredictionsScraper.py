@@ -6,6 +6,18 @@ import pandas as pd
 import pickle
 import time
 import datetime
+from postgres.config import SessionLocal
+from postgres.models import BoxScores, DailyPlayerPredictions
+from unidecode import unidecode
+
+def safe_float(value):
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return None
+
+def normalize_name(name):
+    return unidecode(name.strip().lower())
 
 def scrapeData():
     driver = webdriver.Chrome()
@@ -32,6 +44,7 @@ def scrapeData():
 
             for row in rows:
                 data_name = row.get('data-name')
+                data_name = normalize_name(data_name)
                 data_ppg_proj = row.get('data-ppg_proj')
 
                 if data_name and data_ppg_proj and data_ppg_proj != "0.0":
@@ -45,12 +58,23 @@ def runModel(df):
     with open("models/RFCluster.sav", 'rb') as f:
         rf = pickle.load(f)
 
-    # Import the boxScores scores
-    dataset = pd.read_excel('data/boxScores.xlsx')
-    dataset['GAME DATE'] = pd.to_datetime(dataset['GAME DATE'])
+
+    session = SessionLocal()
+
+    games = session.query(BoxScores).all()
+    data = []
+    for game in games:
+        game_dict = {column.name: getattr(game, column.name) for column in game.__table__.columns}
+        data.append(game_dict)
+    dataset = pd.DataFrame(data)
+    dataset = dataset[dataset['MIN'] != 0]
+    dataset = dataset.dropna(subset=['WL'])
+
+
+    dataset['GAME_DATE'] = pd.to_datetime(dataset['GAME_DATE'])
 
     # Sort by PLAYER and GAME DATE in ascending order
-    dataset_sorted = dataset.sort_values(by=['PLAYER', 'GAME DATE'], ascending=[True, True])
+    dataset_sorted = dataset.sort_values(by=['PLAYER', 'GAME_DATE'], ascending=[True, True])
     
     windows = [3, 5, 7]
     for window in windows:
@@ -75,8 +99,7 @@ def runModel(df):
 
     # This removes players without clusters
     refined_most_recent_games = most_recent_games[most_recent_games['PLAYER'].isin(df['Player'].unique())]
-
-        # Merge with PPG Projection from the scraped dataset; only the players in the scraped dataset will remain
+    # Merge with PPG Projection from the scraped dataset; only the players in the scraped dataset will remain
     refined_most_recent_games = refined_most_recent_games.merge(
         df.rename(columns={'Player': 'PLAYER'}), on='PLAYER', how='left'
     )
@@ -98,91 +121,134 @@ def runModel(df):
     # Add predictions to the DataFrame
     refined_most_recent_games['My Model Predicted FP'] = predictions
     # Retain the Player and PPG Projection columns
-    final_columns = ['PLAYER', 'PPG Projection', 'My Model Predicted FP', 'GAME DATE']
+    final_columns = ['PLAYER', 'PPG Projection', 'My Model Predicted FP', 'GAME_DATE']
     refined_most_recent_games = refined_most_recent_games[final_columns]
     current_date = datetime.date.today()
-    refined_most_recent_games['GAME DATE'] = current_date
+    refined_most_recent_games['GAME_DATE'] = current_date
 
-    # Export to Excel, ideally not overwriting the previous day's predictions
-    output_file = 'data/dailyPredictions.xlsx'
-
-    try:
-        # Try to read the existing file
-        existing_data = pd.read_excel(output_file)
-        # Ensure GAME DATE columns are datetime objects for comparison
-        existing_data['GAME DATE'] = pd.to_datetime(existing_data['GAME DATE'])
-        refined_most_recent_games['GAME DATE'] = pd.to_datetime(refined_most_recent_games['GAME DATE'])
-
-        # Append the new data to the existing data
-        combined_data = pd.concat([existing_data, refined_most_recent_games], ignore_index=True)
-        # Drop duplicates based on 'PLAYER' and 'GAME DATE'
-        combined_data = combined_data.drop_duplicates(subset=['PLAYER', 'GAME DATE'], keep='first')
-
-    except FileNotFoundError:
-        # If the file doesn't exist, use the new data directly
-        combined_data = refined_most_recent_games
-
-    # Write the combined data back to the file
-    combined_data.to_excel(output_file, index=False)
+    # Iterate over the DataFrame rows
+    for _, row in refined_most_recent_games.iterrows():
+        # Check if a record already exists for the given PLAYER and GAME_DATE
+        existing_record = (
+            session.query(DailyPlayerPredictions)
+            .filter_by(PLAYER=row['PLAYER'], GAME_DATE=row['GAME_DATE'])
+            .one_or_none()
+        )
+        if existing_record:
+            # Update the existing record with new data
+            existing_record.PPG_PROJECTION = safe_float(row['PPG Projection'])
+            existing_record.MY_MODEL_PREDICTED_FP = safe_float(row['My Model Predicted FP'])
+            if 'ACTUAL_FP' in row and pd.notna(row['ACTUAL_FP']):
+                existing_record.ACTUAL_FP = safe_float(row['ACTUAL_FP'])
+            if 'MY_MODEL_CLOSER_PREDICTION' in row and pd.notna(row['MY_MODEL_CLOSER_PREDICTION']):
+                existing_record.MY_MODEL_CLOSER_PREDICTION = row['MY_MODEL_CLOSER_PREDICTION']
+        else:
+            new_record_data = {
+                "PLAYER": row['PLAYER'],
+                "GAME_DATE": row['GAME_DATE'],
+                "PPG_PROJECTION": safe_float(row['PPG Projection']),
+                "MY_MODEL_PREDICTED_FP": safe_float(row['My Model Predicted FP']),
+            }
+            # Add ACTUAL_FP and MY_MODEL_CLOSER_PREDICTION if they exist in the row
+            if 'ACTUAL_FP' in row and pd.notna(row['ACTUAL_FP']):
+                new_record_data["ACTUAL_FP"] = safe_float(row['ACTUAL_FP'])
+            if 'MY_MODEL_CLOSER_PREDICTION' in row and pd.notna(row['MY_MODEL_CLOSER_PREDICTION']):
+                new_record_data["MY_MODEL_CLOSER_PREDICTION"] = row['MY_MODEL_CLOSER_PREDICTION']
+            
+            # Create a new DailyPlayerPredictions object
+            new_record = DailyPlayerPredictions(**new_record_data)
+            session.add(new_record)
+    session.commit()
+    session.close()
 
 
 def checkScoresForFP():
-    # TODO Add a check to boxScores.xlsx to see if the game has been played and the actual FP can be updated. This can be done by finding PLAYER AND GAME DATE there and comparing
-    box_scores_file = 'data/boxScores.xlsx'
-    fp_file = 'data/dailyPredictions.xlsx'
-    df_box = pd.read_excel(box_scores_file)
-    # Ensure 'GAME DATE' is in datetime format
-    df_box['GAME DATE'] = pd.to_datetime(df_box['GAME DATE'])
-    df_fp = pd.read_excel(fp_file)
+    session = SessionLocal()
+    games = session.query(BoxScores).all()
+    data = []
+    for game in games:
+        game_dict = {column.name: getattr(game, column.name) for column in game.__table__.columns}
+        data.append(game_dict)
+    df_box = pd.DataFrame(data)
+
+    games = session.query(DailyPlayerPredictions).all()
+    data = []
+    for game in games:
+        game_dict = {column.name: getattr(game, column.name) for column in game.__table__.columns}
+        data.append(game_dict)
+    df_fp = pd.DataFrame(data)
+
+
+
 
     # Add an 'ACTUAL FP' column to df_fp if it doesn't exist
-    if 'ACTUAL FP' not in df_fp.columns:
-        df_fp['ACTUAL FP'] = None
+    if 'ACTUAL_FP' not in df_fp.columns:
+        df_fp['ACTUAL_FP'] = None
 
-    if 'My Model Closer Prediction' not in df_fp.columns:
-        df_fp['My Model Closer Prediction'] = pd.Series(dtype=bool)
+    if 'MY_MODEL_CLOSER_PREDICTION' not in df_fp.columns:
+        df_fp['MY_MODEL_CLOSER_PREDICTION'] = pd.Series(dtype=bool)
 
-    # Iterate through rows in dailyPredictions.xlsx
-    for index, row in df_fp.iterrows():
-        player = row['PLAYER']
-        game_date = row['GAME DATE']
-        fp = row['ACTUAL FP']  # Assuming this is the column for FP
-        if not pd.isnull(fp) and fp != None:
-            continue
-        # Check if this player's game exists in boxScores.xlsx
-        matching_game = df_box[
-            (df_box['PLAYER'] == player) & (df_box['GAME DATE'] == game_date)
-        ]
-        # If a matching game is found, update FP in df_fp
-        if not matching_game.empty:
-            actual_fp = matching_game.iloc[0]['FP']  # Assuming 'FP' column contains the actual FP
-            if not pd.isnull(actual_fp):
-                df_fp.at[index, 'ACTUAL FP'] = actual_fp
-                print(f"Updated FP for {player} on {game_date.date()}: {actual_fp}")
+    df_box = df_box[['PLAYER', 'GAME_DATE', 'FP']].rename(columns={'FP': 'ACTUAL_FP'})
+
+    # Ensure no conflict by dropping 'ACTUAL_FP' in df_fp (if it exists)
+    if 'ACTUAL_FP' in df_fp.columns:
+        df_fp.drop(columns=['ACTUAL_FP'], inplace=True)
+
+    # Now merge without suffixes
+    df_fp = df_fp.merge(df_box, on=['PLAYER', 'GAME_DATE'], how='left') 
 
     false_count = 0
     true_count = 0
+
+    # Iterate through rows in dailyPredictions.xlsx
     for index, row in df_fp.iterrows():
-        actual_fp = row['ACTUAL FP']
-        ppg_projection = row['PPG Projection']
-        model_predicted_fp = row['My Model Predicted FP']
+        existing_record = (
+            session.query(DailyPlayerPredictions)
+            .filter_by(PLAYER=row['PLAYER'], GAME_DATE=row['GAME_DATE'])
+            .one_or_none()
+        )
+        actual_fp = safe_float(row['ACTUAL_FP'])
+        ppg_projection = safe_float(row['PPG_PROJECTION'])
+        model_predicted_fp = safe_float(row['MY_MODEL_PREDICTED_FP'])
+        my_model_closer_prediction = None
+
         if not pd.isnull(actual_fp):
             ppg_diff = abs(ppg_projection - actual_fp) if not pd.isnull(ppg_projection) else float('inf')
             model_diff = abs(model_predicted_fp - actual_fp) if not pd.isnull(model_predicted_fp) else float('inf')
-
             if ppg_diff < model_diff:
-                df_fp.at[index, 'My Model Closer Prediction'] = False
+                my_model_closer_prediction = False
                 false_count += 1
             else:
-                df_fp.at[index, 'My Model Closer Prediction'] = True
+                my_model_closer_prediction = True
                 true_count += 1
 
+        if existing_record:
+            existing_record.PPG_PROJECTION = ppg_projection
+            existing_record.MY_MODEL_PREDICTED_FP = model_predicted_fp
+
+            if 'ACTUAL_FP' in row and pd.notna(row['ACTUAL_FP']):
+                existing_record.ACTUAL_FP = actual_fp
+            if 'MY_MODEL_CLOSER_PREDICTION' in row and pd.notna(row['ACTUAL_FP']):
+                existing_record.MY_MODEL_CLOSER_PREDICTION = my_model_closer_prediction
+        else:
+            new_record_data = {
+                "PLAYER": row['PLAYER'],
+                "GAME_DATE": row['GAME_DATE'],
+                "PPG_PROJECTION": safe_float(row['PPG_PROJECTION']),
+                "MY_MODEL_PREDICTED_FP": safe_float(row['MY_MODEL_PREDICTED_FP']),
+            }
+            if 'ACTUAL_FP' in row and pd.notna(row['ACTUAL_FP']):
+                new_record_data["ACTUAL_FP"] = actual_fp
+            if 'MY_MODEL_CLOSER_PREDICTION' in row and pd.notna(row['ACTUAL_FP']):
+                new_record_data["MY_MODEL_CLOSER_PREDICTION"] = my_model_closer_prediction
+            new_record = DailyPlayerPredictions(**new_record_data)
+            session.add(new_record)
+        session.commit()
 
 
     ratio = true_count / (true_count + false_count)
     print(f"% of more accurate predictions: {ratio}")
-    # Save the updated dailyPredictions.xlsx
-    df_fp.to_excel(fp_file, index=False)
+    session.close()
 
 df = scrapeData()
 runModel(df)

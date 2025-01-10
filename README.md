@@ -1,38 +1,115 @@
 # **NBA_Machine_Learning**
 
+## **Overview**
+This repository contains work for a machine learning (ML) model designed to predict NBA player fantasy points.
 
-## This repository will contain work towards a ML model designed to predit NBA player statistics. Most of the work will be done in the scripts directory.
+## **Table of Contents**
+- [Scripts](#scripts)
+- [Postgres](#postgres)
+- [Images](#images)
+- [Models](#models)
+- [Main](#main)
+- [FlowChart](#flowchart)
 
+---
+## **Scripts**
 
-```**\scripts\unsupervisedLearningIntro.ipynb:**```
+- [unsupervisedLearningIntro.ipynb](#unsupervisedlearningintropynb)
+- [clusterScraper.py](#clusterscraperpy)
+- [nbaClustering.ipynb](#nbaclusteringipynb)
+- [boxScoreScraper.py](#boxscorescraperpy)
+- [nbaSupervisedLearningFullNBA.ipynb](#nbasupervisedlearningfullnbaipynb)
+- [nbaSupervisedLearningClusters.ipynb](#nbasupervisedlearningclustersipynb)
+- [dailyPredictionsScraper.py](#dailypredictionsscraperpy)
 
+### **unsupervisedLearningIntro.ipynb:**
 This notebook contains an introduction to unsupervised learning. It covers the KMeans algorithm and basic clustering. It has no relevance to the NBA beyond serving as an introduction to the techniques used in the project.
 
-```**\scripts\clusterScraper.py:**```
+---
 
-This script scrapes the NBA website for various player statistics and stores them in a pandas dataframe. No clustering occurs here, it is rather a data collection tool which gathers every player's statistics for a given season. This data is then fed into \scripts\nbaClustering.ipynb where the player archetype clusters can be formed
+### **clusterScraper.py:**
+This script scrapes https://www.nba.com/stats/players/advanced for various player statistics and stores them in a pandas DataFrame. No clustering occurs here; it is a data collection tool that gathers every player's statistics for a given season. This data is stored in PostgreSQL table **advancedPlayerStats** which serves as the primary point of reference for other tables. Info from this table is extracted into `nbaClustering.ipynb`, where player archetype clusters can be formed.
 
-```**\scripts\boxScoreScraper.py:**```
-This script scrapes the NBA website for all the box scores for each player in a given season. It stores the data in a pandas dataframe. The data is saved to data/boxScores.xlsx, along with some computations regarding fantasy points. This data is used in the Supervised Learning Files.
+---
+
+### **nbaClustering.ipynb:**
+This notebook contains the code to cluster NBA players into archetypes. It uses the data collected by `clusterScraper.py` in PostgreSQL table **ClusteredPlayers** to form the player archetype clusters. 
+
+#### **Clustering Methodology:**
+- **PCA (Principal Component Analysis):** Dimensions are reduced to balance data representativeness (high variance ratio) and computational efficiency (low rate of change in the variance ratio using the elbow method).
+- **Silhouette Score:** Used to evaluate clustering performance.
+- **KMeans Algorithm:** Clusters are formed to correspond to player archetypes.
+
+#### **Outputs:**
+- Cluster assignments are stored in PostgreSQL table **advancedPlayerStats**.
+- Visualizations are included in the `images` directory.
+---
+
+### **boxScoreScraper.py:**
+This script scrapes the NBA website for all the box scores for each player in a given season. It stores the data in a pandas DataFrame and saves it to PostgreSQL table **boxScores**, along with some computations regarding fantasy points. This data is used in the Supervised Learning files.
 
 
-```\scripts\nbaClustering.ipynb:```
+---
 
-This notebook contains the code to cluster NBA players into archetypes. It uses the data collected by \scripts\clusterScraper.py in \data\NBAStats.xlsx to form the clusters. A number of factors go into deciding the number of clusters. Ideal clusters are determined by balancing a high PCA Variance Ratio with a low rate of change in the Variance Ratio (e.g., using the elbow method) and a relatively high silhouette score. By using both criteria, you balance data representativeness (high variance ratio) and computational efficiency (low derivative). The clusters are formed using the KMeans algorithm and dimensions are reduced using PCA. The resulting clusters correspond to player archetypes which are used in future analysis. These cluster assignments are stored within /data/clusteredPlayers.xlsx. Visualizations of the data are included in the ```images``` directory.
+### **nbaSupervisedLearningFullNBA.ipynb:**
+This notebook applies Decision Tree and Random Forest algorithms to the entire NBA dataset, rather than a single player.
+
+#### **Details:**
+- **Training Dataset:** 75% of NBA player data.
+- **Testing Dataset:** Remaining 25% of NBA player data
+- **Evaluation Metric:** Mean error.
+
+---
+
+### **nbaSupervisedLearningClusters.ipynb:**
+This notebook applies Decision Tree and Random Forest models to each cluster of players, calculated in the clustering step. Stored in the PostgreSQL table **testPlayerPredictions**.
+
+#### **Details:**
+- **Training Dataset:** 75% of NBA player data.
+- **Testing Dataset:** Remaining 25% of NBA player data
+- **Evaluation Metric:** Mean error.
+- **Relevancy:** More accurate and relevant than the supervised learning without clusters. Therefore the model generated is being used in the following files.
+
+---
+
+### **dailyPredictionsScraper.py:**
+This script scrapes https://www.dailyfantasyfuel.com/nba/projections/draftkings for the daily player matchups and stores them in a pandas DataFrame. It then uses the Random Forest model generated in `nbaSupervisedLearningClusters.ipynb` to predict the fantasy points for each player. The predictions are stored in PostgreSQL table **dailyPlayerPredictions**.
+
+## **Postgres**
+Database models and configuration for storing and querying NBA data.
+
+## **Images**
+Visualizations explaining the project workflow and model details.
+
+## **Models**
+Serialized machine learning models (e.g., `.sav` files) for fantasy point predictions.
+
+## **FlowChart**
+A visual representation of the data pipeline and machine learning workflow.
+```mermaid
+graph TD;
+    clusterScraper.py-->advancedPlayerStatsdb;
+    boxScoreScraper.py-->boxScoresdb;
+    advancedPlayerStatsdb-->nbaClustering.ipynb;
+    nbaClustering.ipynb-->ClusteredPlayersdb;
+    boxScoresdb-->nbaSupervisedLearningFullNBA.ipynb;
+    boxScoresdb-->nbaSupervisedLearningClusters.ipynb;
+    ClusteredPlayersdb-->nbaSupervisedLearningClusters.ipynb;
+    nbaSupervisedLearningClusters.ipynb-->testPlayerPredictionsdb;
+    nbaSupervisedLearningClusters.ipynb-->RFCluster.sav;
+    nbaSupervisedLearningFullNBA.ipynb-->RFFullNBA.sav;
+    RFCluster.sav-->dailyPredictionsScraper.py;
+    testPlayerPredictionsdb-->dailyPredictionsScraper.py;
+    ClusteredPlayersdb-->boxScoreScraper.py;
+    dailyPredictionsScraper.py-->dailyPlayerPredictionsdb;
+
+```
+
+## **Main**
+`main.py` serves as the entry point for the project. Scripts will run in the order demonstrated in the flowchart.
 
 
-```\scripts\nbaSupervisedLearningCodyMartin.ipynb:```
-
-This notebook contains the code to create a ML model based only on Cody Martin's statistics. A decision tree is created based on his prior FP outputs which are extracted from \data\boxScores.xlsx. A random forest model is then used, which contains many different decision trees. This model performed better than a single decision tree, as expected. The mean error serves as a good way to test model accuracy.
-
-```scripts\nbaSupervisedLearningFullNBA.ipynb:```
- 
-Decision Tree and random forest for the full nba dataset. This model is trained on all players in the NBA, not just Cody Martin. The model is trained on the same data as the Cody Martin model, but with more data. The model is then tested on the same data as the Cody Martin model. The mean error serves as a good way to test model accuracy.
-
-```scripts\nbaSupervisedLearningClusters.ipynb:```
-Decision Tree and random forest for each cluster, which has been calculated before. Each cluster has about 500 games played. The model is trained and tested on the same data as the full NBA model. The mean error serves as a good way to test model accuracy. Right now, the clusters are performing worse than the full NBA model which should not be the case.
-
-
+---
 # Thoughts on clustering errors:
 * Migrate from excel to database ughhh
 * Issue with accented names such as jokic being stored in dailyPredictions.xlsx
@@ -62,22 +139,3 @@ For clusters:
 * split the cluster data into test and training
 * training data, cross validate the clusters
 
-## **Flow Chart Diagram**
-```mermaid
-graph TD;
-    clusterScraper.py-->NBAStats.xlsx;
-    boxScoreScraper.py-->boxScores.xlsx;
-    NBAStats.xlsx-->nbaClustering.ipynb;
-    nbaClustering.ipynb-->clusteredPlayers.xlsx;
-    boxScores.xlsx-->nbaSupervisedLearningFullNBA.ipynb;
-    boxScores.xlsx-->nbaSupervisedLearningClusters.ipynb;
-    clusteredPlayers.xlsx-->nbaSupervisedLearningClusters.ipynb;
-    nbaSupervisedLearningClusters.ipynb-->testPlayerPredictions.xlsx;
-    nbaSupervisedLearningClusters.ipynb-->RFCluster.sav;
-    nbaSupervisedLearningFullNBA.ipynb-->RFFullNBA.sav;
-    RFCluster.sav-->dailyPredictionsScraper.py;
-    testPlayerPredictions.xlsx-->dailyPredictionsScraper.py;
-    clusteredPlayers.xlsx-->boxScoreScraper.py;
-    dailyPredictionsScraper.py-->dailyPredictions.xlsx;
-
-```
