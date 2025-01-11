@@ -171,4 +171,11 @@ def scrapeBoxScores():
 
     session.close()
 
-scrapeBoxScores()
+def run_scrape_box_scores():
+    """
+    Scrapes box scores and updates the database.
+    """
+    scrapeBoxScores()
+
+if __name__ == "__main__":
+    run_scrape_box_scores()

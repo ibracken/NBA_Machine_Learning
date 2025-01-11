@@ -250,6 +250,10 @@ def checkScoresForFP():
     print(f"% of more accurate predictions: {ratio}")
     session.close()
 
-df = scrapeData()
-runModel(df)
-checkScoresForFP()
+def run_daily_predictions_scraper():
+    df = scrapeData()
+    runModel(df)
+    checkScoresForFP()
+
+if __name__ == "__main__":
+    run_daily_predictions_scraper()

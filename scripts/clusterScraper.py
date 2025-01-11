@@ -132,7 +132,7 @@ def scrape_and_insert_data(url, session, table_model):
             player_stat = AdvancedPlayerStats(**player_data)
             session.add(player_stat)
 
-def main():
+def run_cluster_scraper():
     session = SessionLocal()
     
     # Scrape Advanced Stats
@@ -161,4 +161,5 @@ def main():
 
     session.close()
 
-main()
+if __name__ == "__main__":
+    run_cluster_scraper()
