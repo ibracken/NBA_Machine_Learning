@@ -110,19 +110,16 @@ graph TD;
 
 
 ---
-# Thoughts on clustering errors:
-* Migrate from excel to database ughhh
-* Issue with accented names such as jokic being stored in dailyPredictions.xlsx
+# Thoughts on future work errors:
 * Instead of injury, simply use projected minutes(with some leve of variation) along with a season average of min/game, historical points per minute played
   * Using this: https://www.sportsline.com/nba/expert-projections/simulation/ 
 * TODO Matchup data: Home/Away, Opponent, Rest, etc.
-* Injury account
 * Take Salary into account
 * Add prior year data for clustering to give more values
 
 
 
-JMO ADVICE(for the future):
+Advice from friend with stats background:
 Model notes:
 * look into other regresssion models
 * Stepwise regression
