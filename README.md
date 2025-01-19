@@ -78,6 +78,15 @@ This script scrapes https://www.dailyfantasyfuel.com/nba/projections/draftkings 
 ## **Postgres**
 Database models and configuration for storing and querying NBA data.
 
+---
+### **config.py:**
+This script contains the configuration settings for the PostgreSQL database. It should be used by all other scripts to connect to the database.
+
+---
+### **create_tables.py:**
+This script will build all tables necessary for the project. It should be run before any other scripts outside of config to ensure the database is properly configured.
+
+
 ## **Images**
 Visualizations explaining the project workflow and model details.
 
@@ -110,9 +119,7 @@ graph TD;
 
 
 ---
-# Thoughts on future work errors:
-* Instead of injury, simply use projected minutes(with some leve of variation) along with a season average of min/game, historical points per minute played
-  * Using this: https://www.sportsline.com/nba/expert-projections/simulation/ 
+# Thoughts on future work:
 * TODO Matchup data: Home/Away, Opponent, Rest, etc.
 * Take Salary into account
 * Add prior year data for clustering to give more values

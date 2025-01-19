@@ -131,6 +131,7 @@ def scrape_and_insert_data(url, session, table_model):
             # Create and add the new player
             player_stat = AdvancedPlayerStats(**player_data)
             session.add(player_stat)
+    driver.quit()
 
 def run_cluster_scraper():
     session = SessionLocal()

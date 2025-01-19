@@ -2,6 +2,8 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.action_chains import ActionChains
 from bs4 import BeautifulSoup
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 import pandas as pd
 import pickle
 import time
@@ -19,6 +21,73 @@ def safe_float(value):
 def normalize_name(name):
     return unidecode(name.strip().lower())
 
+def scrape_minutes_projection():
+    driver = webdriver.Chrome()
+    url = r"https://www.fanduel.com/research/nba/fantasy/dfs-projections"
+    driver.get(url)
+
+    # Wait for the table to load
+    scrollable_container = WebDriverWait(driver, 10).until(
+        EC.presence_of_element_located((By.CSS_SELECTOR, 'div[data-testid="virtuoso-scroller"]'))
+    )
+
+    player_minutes = {}
+    seen_rows = set()
+    scroll_pause_time = 1  # Adjust this if needed
+
+    while True:
+        # time.sleep(1)
+        # Get the currently visible HTML
+        html = driver.execute_script("return document.documentElement.outerHTML;")
+        parser = BeautifulSoup(html, 'lxml')
+        tbody = parser.find('tbody', class_='tableStyles_vtbody__Tj_Pq')
+
+        if not tbody:
+            print("No table body found.")
+            break
+
+        rows = tbody.find_all('tr')
+        new_rows_found = False
+
+        for row in rows:
+            # Skip spacer rows
+            if 'height' in row.get('style', ''):
+                continue
+
+            row_id = str(row)  # Unique identifier for each row based on HTML
+            if row_id in seen_rows:
+                continue  # Skip already processed rows
+
+            seen_rows.add(row_id)
+            new_rows_found = True
+
+            td_elements = row.find_all('td', class_="tableStyles_vtd__HAZr4")
+            if len(td_elements) >= 5:
+                try:
+                    name_td = td_elements[0]
+                    player_name = name_td.find('a', class_='link_link__fHWk6').find('div', class_='PlayerCell_nameLinkText__P3INe').text.strip()
+                    player_name = normalize_name(player_name)
+                    minutes = td_elements[4].text.strip()
+                    player_minutes[player_name] = minutes
+                    print(f"Found player: {player_name} - Minutes: {minutes}")  # Debug print
+                except (AttributeError, IndexError) as e:
+                    print(f"Error processing row: {e}")
+                    continue
+
+        # Scroll down to load more rows
+        driver.execute_script("arguments[0].scrollBy(0, 500);", scrollable_container)
+        time.sleep(scroll_pause_time)
+
+        # Break the loop if no new rows are found
+        if not new_rows_found:
+            break
+    
+
+    driver.quit()
+    return player_minutes
+
+
+
 def scrapeData():
     driver = webdriver.Chrome()
 
@@ -33,7 +102,6 @@ def scrapeData():
     parser = BeautifulSoup(src, 'lxml')
 
     table = parser.find('table', class_="col-pad-lg-left-5 col-pad-lg-right-5 col-pad-md-left-3 col-pad-md-right-3 text-black row-pad-lg-top-2 row-pad-md-top-2 row-pad-sm-top-2 col-12 row-pad-5 row-pad-xs-1")
-
 
     if table:
         tbody = table.find('tbody')
@@ -51,6 +119,11 @@ def scrapeData():
                     player_data[data_name] = data_ppg_proj
             # Player Name and Projected FP based upon DraftKings
             df = pd.DataFrame(list(player_data.items()), columns=['Player', 'PPG Projection'])
+            minutes_dict = scrape_minutes_projection()
+            df['MIN'] = df['Player'].map(minutes_dict)
+            df = df.dropna(subset=['MIN'])
+    
+    driver.quit()
     return df
 
 def runModel(df):
@@ -83,7 +156,7 @@ def runModel(df):
             .transform(lambda x: x.rolling(window, min_periods=1).mean())
         )
 
-    # Calculate the season average FP for each player
+    # Recalculate the season average FP for each player
     dataset_sorted['Season_FP_Avg'] = (
         dataset_sorted.groupby('PLAYER')['FP']
         .transform(lambda x: x.expanding(min_periods=1).mean())
@@ -96,12 +169,10 @@ def runModel(df):
     # Group by PLAYER and take the first row for each group (most recent game)
     most_recent_games = dataset_sorted.groupby('PLAYER').tail(1)
 
-
-    # This removes players without clusters
-    refined_most_recent_games = most_recent_games[most_recent_games['PLAYER'].isin(df['Player'].unique())]
     # Merge with PPG Projection from the scraped dataset; only the players in the scraped dataset will remain
+    refined_most_recent_games = most_recent_games[most_recent_games['PLAYER'].isin(df['Player'].unique())]
     refined_most_recent_games = refined_most_recent_games.merge(
-        df.rename(columns={'Player': 'PLAYER'}), on='PLAYER', how='left'
+        df.rename(columns={'Player': 'PLAYER', 'MIN': 'PRED_MIN'}), on='PLAYER', how='left'
     )
 
     # If no players from a cluster are in the most recent games, add the column with all False values
@@ -110,7 +181,7 @@ def runModel(df):
             refined_most_recent_games[col] = False
 
 
-    feature_columns = ['Last3_FP_Avg', 'Last5_FP_Avg', 'Last7_FP_Avg', 'Season_FP_Avg'] + all_cluster_columns
+    feature_columns = ['Last3_FP_Avg', 'Last5_FP_Avg', 'Last7_FP_Avg', 'Season_FP_Avg', 'PRED_MIN'] + all_cluster_columns
 
     # Reorder columns to match the training data
     refined_most_recent_games_model = refined_most_recent_games[feature_columns]
@@ -177,8 +248,6 @@ def checkScoresForFP():
         game_dict = {column.name: getattr(game, column.name) for column in game.__table__.columns}
         data.append(game_dict)
     df_fp = pd.DataFrame(data)
-
-
 
 
     # Add an 'ACTUAL FP' column to df_fp if it doesn't exist
@@ -256,4 +325,5 @@ def run_daily_predictions_scraper():
     checkScoresForFP()
 
 if __name__ == "__main__":
+    # scrape_minutes_projection()
     run_daily_predictions_scraper()
