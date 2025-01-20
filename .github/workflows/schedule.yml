@@ -1,0 +1,33 @@
+name: Run Script on Schedule
+
+on:
+  schedule:
+    # Run at 8:30 PM UTC during daylight savings (March–November)
+    - cron: "30 20 * 3-11 1-5"
+    # Run at 9:30 PM UTC during standard time (November–March)
+    - cron: "30 21 * 11-3 1-5"
+
+
+jobs:
+  run-script:
+    runs-on: ubuntu-latest
+
+    steps:
+    # Step 1: Checkout the repository
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    # Step 2: Set up Python
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: "3.11.7"  # Adjust the version as needed
+
+    # Step 3: Install dependencies (if needed)
+    - name: Install dependencies
+      run: |
+        pip install -r requirements.txt  # Use this if you have a requirements.txt file
+
+    # Step 4: Run the script
+    - name: Run your script
+      run: python your_script.py  # Replace with the name of your Python file
