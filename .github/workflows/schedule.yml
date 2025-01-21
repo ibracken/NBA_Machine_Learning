@@ -2,10 +2,8 @@ name: Run Script on Schedule
 
 on:
   schedule:
-    # Run at 8:30 PM UTC during daylight savings (March–November)
-    - cron: "30 20 * 3-11 1-5"
-    # Run at 9:30 PM UTC during standard time (November–March)
-    - cron: "30 21 * 11-3 1-5"
+    # Run at 4:30 PM UTC during daylight savings (March–November)
+    - cron: "30 21 * * *"
 
 
 jobs:
