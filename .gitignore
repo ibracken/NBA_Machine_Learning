@@ -9,4 +9,8 @@ data/
 .ipynb_checkpoints/
 
 .env
-models/
+# Ignore everything in the models directory
+models/*
+
+# Allow the models directory itself
+!models/
