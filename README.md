@@ -136,7 +136,7 @@ Model notes:
 For box score data:
 * use time as x axis, and points on y axis, find trends for box score data; perhaps use this in addtion to FP
 * Find feature importance: importances = rf.feature_importances_
-* Make sure I'm not deleting and reinserting the db every time I run the script
+* Make sure R/W operations are efficient, especially for the box scores table, each time main.py runs
 
 For clusters:
 * split the cluster data into test and training
