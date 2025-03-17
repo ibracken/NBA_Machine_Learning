@@ -250,21 +250,15 @@ def checkScoresForFP():
     df_fp = pd.DataFrame(data)
 
 
-    # Add an 'ACTUAL FP' column to df_fp if it doesn't exist
-    if 'ACTUAL_FP' not in df_fp.columns:
-        df_fp['ACTUAL_FP'] = None
+    df_box = df_box[['PLAYER', 'GAME_DATE', 'FP']].rename(columns={'FP': 'ACTUAL_FP'})
+
+    # Drop and merge 'ACTUAL_FP' to avoid conflict
+    df_fp = df_fp.drop(columns=['ACTUAL_FP'], errors='ignore')
+    df_fp = df_fp.merge(df_box, on=['PLAYER', 'GAME_DATE'], how='left')
 
     if 'MY_MODEL_CLOSER_PREDICTION' not in df_fp.columns:
         df_fp['MY_MODEL_CLOSER_PREDICTION'] = pd.Series(dtype=bool)
 
-    df_box = df_box[['PLAYER', 'GAME_DATE', 'FP']].rename(columns={'FP': 'ACTUAL_FP'})
-
-    # Ensure no conflict by dropping 'ACTUAL_FP' in df_fp (if it exists)
-    if 'ACTUAL_FP' in df_fp.columns:
-        df_fp.drop(columns=['ACTUAL_FP'], inplace=True)
-
-    # Now merge without suffixes
-    df_fp = df_fp.merge(df_box, on=['PLAYER', 'GAME_DATE'], how='left') 
 
     false_count = 0
     true_count = 0

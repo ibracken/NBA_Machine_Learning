@@ -136,8 +136,7 @@ Model notes:
 For box score data:
 * use time as x axis, and points on y axis, find trends for box score data; perhaps use this in addtion to FP
 * Find feature importance: importances = rf.feature_importances_
-* Matchup could help
-* lots of trial and error
+* Make sure I'm not deleting and reinserting the db every time I run the script
 
 For clusters:
 * split the cluster data into test and training
