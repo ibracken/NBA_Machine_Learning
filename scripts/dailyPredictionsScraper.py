@@ -21,6 +21,7 @@ def safe_float(value):
 def normalize_name(name):
     return unidecode(name.strip().lower())
 
+# Run within scrapeData()
 def scrape_minutes_projection():
     driver = webdriver.Chrome()
     url = r"https://www.fanduel.com/research/nba/fantasy/dfs-projections"
@@ -263,7 +264,7 @@ def checkScoresForFP():
     false_count = 0
     true_count = 0
 
-    # Iterate through rows in dailyPredictions.xlsx
+    # Iterate through rows in DailyPlayerPredictions
     for index, row in df_fp.iterrows():
         existing_record = (
             session.query(DailyPlayerPredictions)
@@ -319,5 +320,4 @@ def run_daily_predictions_scraper():
     checkScoresForFP()
 
 if __name__ == "__main__":
-    # scrape_minutes_projection()
     run_daily_predictions_scraper()
