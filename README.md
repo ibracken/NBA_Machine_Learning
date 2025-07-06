@@ -120,25 +120,23 @@ graph TD;
 
 ---
 # Thoughts on future work:
-* TODO Matchup data: Home/Away, Opponent, Rest, etc.
+* TODO Matchup data: Home/Away, Opponent, injury reports, Rest, -- harder but usage rates depending on teammate availability.
 * Take Salary into account
-* Add prior year data for clustering to give more values
+* Add data from prior year or two clealry marking the year, for clustering.
+* Add confidence intervals
 
-
+Cloud Migration:
+* AWS Lambda for scraping scripts
+* Amazon S3 for storing models and json data(let me know if you have something cheaper in mind)
+* AWS RDS for backup
+* Set up automated pipeline
 
 Advice from friend with stats background:
 Model notes:
-* look into other regresssion models
-* Stepwise regression
-* lasso, ridge regression
-* throw different values in and see what ya get
+* look into other regresssion models -- for now XGBoost but stepwise, lasso, and ridge down the line
 
 For box score data:
 * use time as x axis, and points on y axis, find trends for box score data; perhaps use this in addtion to FP
-* Find feature importance: importances = rf.feature_importances_
 * Make sure R/W operations are efficient, especially for the box scores table, each time main.py runs
-
-For clusters:
-* split the cluster data into test and training
-* training data, cross validate the clusters
+* Look into moving it to the cloud, that way web scraping can be automated and run on a schedule
 
