@@ -42,6 +42,16 @@ def save_json_to_s3(data, key):
     s3.put_object(
         Bucket=BUCKET_NAME, 
         Key=key, 
-        Body=json.dumps(data),
+        Body=json.dumps(data, indent=2, default=str),
         ContentType='application/json'
     )
+    print(f"Saved JSON to s3://{BUCKET_NAME}/{key}")
+
+def load_json_from_s3(key):
+    """Load JSON data from S3"""
+    try:
+        obj = s3.get_object(Bucket=BUCKET_NAME, Key=key)
+        return json.loads(obj['Body'].read())
+    except Exception as e:
+        print(f"Error loading JSON {key}: {e}")
+        return {}

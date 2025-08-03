@@ -1,26 +1,19 @@
 from selenium import webdriver
-from selenium.webdriver.support.ui import Select
+from selenium.webdriver.support.ui import Select, WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.options import Options
 from bs4 import BeautifulSoup, NavigableString, Tag
 import pandas as pd
 import time
-from postgres.config import SessionLocal
-from postgres.models import AdvancedPlayerStats
+from datetime import datetime
 from unidecode import unidecode
 import logging
 import sys
 import os
-from postgres.s3_utils import save_dataframe_to_s3, load_dataframe_from_s3
+from aws.s3_utils import save_dataframe_to_s3, save_json_to_s3, load_dataframe_from_s3
 
-# Set up logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('cluster_scraper.log'),
-        logging.StreamHandler(sys.stdout)
-    ]
-)
+
 logger = logging.getLogger(__name__)
 
 numeric_columns = {
@@ -78,8 +71,6 @@ string_columns = {
     'TEAM': 'TEAM',
 }
 
-
-
 def safe_float(value):
     try:
         return float(value)
@@ -89,152 +80,218 @@ def safe_float(value):
 def normalize_name(name):
     return unidecode(name.strip().lower())
 
-
-
-def scrape_and_insert_data(url, session, table_model):
-    logger.info(f"Starting scrape for URL: {url}")
+def scrape_stats_from_url(url, stat_type):
+    """Scrape stats from a single URL and return DataFrame"""
+    logger.info(f"Starting scrape for {stat_type} from: {url}")
     
-    driver = webdriver.Chrome()
-    driver.get(url)
-    logger.info(f"Navigated to {url}")
+    chrome_options = Options()
+    chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    # chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument('--ignore-certificate-errors')
+    chrome_options.add_argument('--allow-running-insecure-content')
+    chrome_options.add_argument("--window-size=1920x1080")  # Wider viewport
+    chrome_options.add_argument("--force-device-scale-factor=0.75")  # Zoom out
+    chrome_options.add_argument("--start-maximized")  # Start maximized
+    chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
     
-    # Found using copy full xml path on the dropdown menu(inspect element)s
-    select = Select(driver.find_element(By.XPATH, r"/html/body/div[1]/div[2]/div[2]/div[3]/section[1]/div/div/div[2]/label/div/select"))
-    select.select_by_index(1)
-    logger.info("Selected 'Regular Season' from dropdown")
-    time.sleep(1)
-    select = Select(driver.find_element(By.XPATH, r"/html/body/div[1]/div[2]/div[2]/div[3]/section[2]/div/div[2]/div[2]/div[1]/div[3]/div/label/div/select"))
-    select.select_by_index(0)
-    logger.info("Selected 'All' from dropdown")
-
-    src = driver.page_source 
-    parser = BeautifulSoup(src, 'lxml')
-    table = parser.find("div", attrs = {"class": "Crom_container__C45Ti crom-container"})
-    
-    if not table or isinstance(table, NavigableString) or not isinstance(table, Tag):
-        logger.error(f"Could not find valid table on {url}")
-        driver.quit()
-        return
-    
-    headers = table.findAll('th')
-    headerlist = [h.text.strip().upper() for h in headers[1:]]
-    headerlist = [a for a in headerlist if not 'RANK' in a]
-    logger.info(f"Found headers: {headerlist}")
-    
-    for i, header in enumerate(headerlist):
-        if header == "DREB%" and url == "https://www.nba.com/stats/players/defense":
-            headerlist[i] = "DREB%TEAM"
-            break
-    
-    rows = table.findAll('tr')[1:]
-    player_stats = [[td.getText().strip() for td in rows[i].findAll('td')[1:]] for i in range(len(rows))]
-    print(player_stats)
-    logger.info(f"Scraped {len(player_stats)} player rows")
-    
-    if url == r"https://www.nba.com/stats/players/advanced":
-        headerlist = headerlist[:-5]
-    
-    stats = pd.DataFrame(player_stats, columns=headerlist)  # type: ignore
-    logger.info(f"Created DataFrame with shape: {stats.shape}")
-
-    updates = 0
-    inserts = 0
-    errors = 0
-
-    for idx, row in stats.iterrows():
-        try:
-            normalized_name = normalize_name(row["PLAYER"])
-            existing_player = session.query(table_model).filter_by(PLAYER=normalized_name).first()
-
-            # Update or Insert Logic
-            if existing_player:
-                logger.debug(f"Updating existing player: {normalized_name}")
-                for scraped_col, db_col in numeric_columns.items():
-                    if scraped_col in row:
-                        setattr(existing_player, db_col, safe_float(row[scraped_col]))
-                for scraped_col, db_col in string_columns.items():
-                    if scraped_col in row:
-                        setattr(existing_player, db_col, row[scraped_col])
-                updates += 1
-            else:
-                logger.debug(f"Inserting new player: {normalized_name}")
-                player_data = {}
-                player_data['PLAYER'] = normalized_name
-                
-                # Add string columns
-                for scraped_col, db_col in string_columns.items():
-                    if scraped_col in row:
-                        player_data[db_col] = row[scraped_col]
-                
-                # Add numeric columns
-                for scraped_col, db_col in numeric_columns.items():
-                    if scraped_col in row:
-                        player_data[db_col] = safe_float(row[scraped_col])
-                
-                # Create and add the new player
-                player_stat = AdvancedPlayerStats(**player_data)
-                session.add(player_stat)
-                inserts += 1
-                
-        except Exception as e:
-            logger.error(f"Error processing player {row.get('PLAYER', 'Unknown')}: {str(e)}")
-            errors += 1
-    
-    logger.info(f"Database operations - Updates: {updates}, Inserts: {inserts}, Errors: {errors}")
-    driver.quit()
-
-def run_cluster_scraper():
-    logger.info("Starting cluster scraper")
+    driver = webdriver.Chrome(options=chrome_options)
     
     try:
-        session = SessionLocal()
-        logger.info("Database session created successfully")
+        driver.get(url)
+        logger.info(f"Navigated to {url}")
         
-        # Get initial count
-        initial_count = session.query(AdvancedPlayerStats).count()
-        logger.info(f"Initial database count: {initial_count}")
+        # Select Regular Season
+        select = Select(driver.find_element(By.XPATH, r"/html/body/div[1]/div[2]/div[2]/div[3]/section[1]/div/div/div[2]/label/div/select"))
+        select.select_by_index(1)
+        logger.info("Selected 'Regular Season' from dropdown")
+        time.sleep(2)
+        
+        # Select All
+        select = Select(driver.find_element(By.XPATH, r"/html/body/div[1]/div[2]/div[2]/div[3]/section[2]/div/div[2]/div[2]/div[1]/div[3]/div/label/div/select"))
+        select.select_by_index(0)
+        logger.info("Selected 'All' from dropdown")
+        
+        src = driver.page_source 
+        parser = BeautifulSoup(src, 'lxml')
+        table = parser.find("div", attrs = {"class": "Crom_container__C45Ti crom-container"})
+        
+        if not table or isinstance(table, NavigableString) or not isinstance(table, Tag):
+            logger.error(f"Could not find valid table on {url}")
+            return pd.DataFrame()
+        
+        headers = table.findAll('th')
+        headerlist = [h.text.strip().upper() for h in headers[1:]]
+        headerlist = [a for a in headerlist if not 'RANK' in a]
+        logger.info(f"Found headers: {headerlist}")
+        
+        # Special handling for defense stats
+        for i, header in enumerate(headerlist):
+            if header == "DREB%" and url == "https://www.nba.com/stats/players/defense":
+                headerlist[i] = "DREB%TEAM"
+                break
+        
+        rows = table.findAll('tr')[1:]
+        player_stats = [[td.getText().strip() for td in rows[i].findAll('td')[1:]] for i in range(len(rows))]
+        logger.info(f"Scraped {len(player_stats)} player rows")
+        
+        if url == r"https://www.nba.com/stats/players/advanced":
+            headerlist = headerlist[:-5]
+        
+        stats_df = pd.DataFrame(player_stats, columns=headerlist)
+        
+        # Normalize player names
+        stats_df['PLAYER'] = stats_df['PLAYER'].apply(normalize_name)
+        
+        # Add stat type for tracking
+        stats_df['STAT_TYPE'] = stat_type
+        stats_df['SCRAPED_DATE'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
+        logger.info(f"Created DataFrame with shape: {stats_df.shape}")
+        return stats_df
+        
+    except Exception as e:
+        logger.error(f"Error scraping {stat_type}: {str(e)}")
+        return pd.DataFrame()
+    finally:
+        driver.quit()
+
+def merge_stats_dataframes(advanced_df, scoring_df, defense_df):
+    """Merge all stats DataFrames into one comprehensive DataFrame"""
+    logger.info("Merging stats DataFrames")
+    
+    # Start with advanced stats as base
+    merged_df = advanced_df.copy()
+    logger.info(f"Base advanced stats: {len(merged_df)} players")
+    
+    # Merge scoring stats
+    if not scoring_df.empty:
+        merged_df = merged_df.merge(scoring_df, on='PLAYER', how='left', suffixes=('', '_scoring'))
+        # Drop duplicate columns from scoring merge
+        merged_df = merged_df.loc[:, ~merged_df.columns.str.endswith('_scoring')]
+    
+    # Merge defense stats
+    if not defense_df.empty:
+        merged_df = merged_df.merge(defense_df, on='PLAYER', how='left', suffixes=('', '_defense'))
+        # Drop duplicate columns from defense merge
+        merged_df = merged_df.loc[:, ~merged_df.columns.str.endswith('_defense')]
+    
+    # Convert numeric columns
+    for scraped_col, db_col in numeric_columns.items():
+        if scraped_col in merged_df.columns:
+            merged_df[db_col] = merged_df[scraped_col].apply(safe_float)
+    
+    # Handle string columns
+    for scraped_col, db_col in string_columns.items():
+        if scraped_col in merged_df.columns:
+            merged_df[db_col] = merged_df[scraped_col]
+    
+    logger.info(f"Final merged DataFrame shape: {merged_df.shape}")
+    logger.info(f"Final columns: {list(merged_df.columns)}")
+    return merged_df
+
+def run_cluster_scraper():
+    """Main function to scrape all player stats and save to S3"""
+    logger.info("Starting S3 cluster scraper")
+    
+    try:
+        # Load existing data from S3 (if any)
+        existing_df = load_dataframe_from_s3('data/advanced_player_stats/current.parquet')
+        logger.info(f"Loaded existing data: {len(existing_df)} records")
         
         # Scrape Advanced Stats
         logger.info("=== SCRAPING ADVANCED STATS ===")
-        scrape_and_insert_data(
+        advanced_df = scrape_stats_from_url(
             url="https://www.nba.com/stats/players/advanced",
-            session=session,
-            table_model=AdvancedPlayerStats
+            stat_type="advanced"
         )
-        session.commit()
-        logger.info("Advanced stats committed to database")
         
         # Scrape Scoring Stats
         logger.info("=== SCRAPING SCORING STATS ===")
-        scrape_and_insert_data(
+        scoring_df = scrape_stats_from_url(
             url="https://www.nba.com/stats/players/scoring",
-            session=session,
-            table_model=AdvancedPlayerStats
+            stat_type="scoring"
         )
-        session.commit()
-        logger.info("Scoring stats committed to database")
         
         # Scrape Defense Stats
         logger.info("=== SCRAPING DEFENSE STATS ===")
-        scrape_and_insert_data(
+        defense_df = scrape_stats_from_url(
             url="https://www.nba.com/stats/players/defense",
-            session=session,
-            table_model=AdvancedPlayerStats
+            stat_type="defense"
         )
-        session.commit()
-        logger.info("Defense stats committed to database")
-
-        # Get final count
-        final_count = session.query(AdvancedPlayerStats).count()
-        logger.info(f"Final database count: {final_count}")
-        logger.info(f"Total records added/updated: {final_count - initial_count}")
-
-        session.close()
-        logger.info("Cluster scraper completed successfully")
         
+        # Merge all stats
+        if not advanced_df.empty:
+            merged_df = merge_stats_dataframes(advanced_df, scoring_df, defense_df)
+            
+            # Save current version only
+            save_dataframe_to_s3(merged_df, 'data/advanced_player_stats/current.parquet')
+            logger.info(f"Successfully saved {len(merged_df)} player records to S3")
+            logger.info(f"Data shape: {merged_df.shape}")
+            
+            # Check for duplicates
+            duplicate_check = merged_df[merged_df.duplicated(subset=['PLAYER'], keep=False)]
+            if not duplicate_check.empty:
+                logger.warning(f"Found {len(duplicate_check)} duplicate player entries")
+                logger.warning(f"Duplicate players: {duplicate_check['PLAYER'].tolist()}")
+            
+            return {
+                'success': True,
+                'records_scraped': len(merged_df),
+                'columns_count': len(merged_df.columns)
+            }
+        else:
+            logger.error("No data scraped - advanced stats DataFrame is empty")
+            return {
+                'success': False,
+                'error': 'No data scraped'
+            }
+            
     except Exception as e:
         logger.error(f"Error in cluster scraper: {str(e)}")
-        raise
+        return {
+            'success': False,
+            'error': str(e)
+        }
 
+# Lambda handler function
+def lambda_handler(event, context):
+    """AWS Lambda handler function"""
+    logger.info("Lambda function started")
+    
+    try:
+        result = run_cluster_scraper()
+        
+        if result['success']:
+            return {
+                'statusCode': 200,
+                'body': {
+                    'message': 'Cluster scraper completed successfully',
+                    'records_scraped': result['records_scraped'],
+                    'columns_count': result['columns_count']
+                }
+            }
+        else:
+            return {
+                'statusCode': 500,
+                'body': {
+                    'message': 'Cluster scraper failed',
+                    'error': result['error']
+                }
+            }
+            
+    except Exception as e:
+        logger.error(f"Lambda handler error: {str(e)}")
+        return {
+            'statusCode': 500,
+            'body': {
+                'message': 'Lambda execution failed',
+                'error': str(e)
+            }
+        }
+
+# For local testing
 if __name__ == "__main__":
-    run_cluster_scraper()
+    result = run_cluster_scraper()
+    print(f"Scraper result: {result}")
