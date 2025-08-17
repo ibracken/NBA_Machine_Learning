@@ -1,4 +1,4 @@
-from selenium import webdriver
+from seleniumwire import webdriver
 from selenium.webdriver.support.ui import Select, WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.by import By
@@ -14,6 +14,14 @@ import os
 from aws.s3_utils import save_dataframe_to_s3, save_json_to_s3, load_dataframe_from_s3
 
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler()
+    ]
+)
 logger = logging.getLogger(__name__)
 
 numeric_columns = {
@@ -84,34 +92,83 @@ def scrape_stats_from_url(url, stat_type):
     """Scrape stats from a single URL and return DataFrame"""
     logger.info(f"Starting scrape for {stat_type} from: {url}")
     
+    proxy_url = "http://smart-b0ibmkjy90uq_area-US_state-Northcarolina_life-15_session-0Ve35bhsUr:sU8CQmV8LDmh2mXj@proxy.smartproxy.net:3120"
+    
+    seleniumwire_options = {
+        'proxy': {
+            'http': proxy_url,
+            'https': proxy_url,
+            'no_proxy': 'localhost,127.0.0.1'
+        },
+        'connection_timeout': 30,
+        'verify_ssl': False
+    }
+    
     chrome_options = Options()
-    chrome_options.add_argument("--headless")
+    # chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
-    # chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument('--ignore-certificate-errors')
+    chrome_options.add_argument('--ignore-ssl-errors')
+    chrome_options.add_argument('--ignore-certificate-errors-spki-list')
     chrome_options.add_argument('--allow-running-insecure-content')
-    chrome_options.add_argument("--window-size=1920x1080")  # Wider viewport
-    chrome_options.add_argument("--force-device-scale-factor=0.75")  # Zoom out
-    chrome_options.add_argument("--start-maximized")  # Start maximized
+    chrome_options.add_argument('--disable-web-security')
+    chrome_options.add_argument("--window-size=1920x1080")
+    chrome_options.add_argument("--force-device-scale-factor=0.75")
+    chrome_options.add_argument("--start-maximized")
     chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
     
-    driver = webdriver.Chrome(options=chrome_options)
-    
+    driver = None
     try:
+        logger.info("Initializing Chrome driver with proxy...")
+        driver = webdriver.Chrome(options=chrome_options, seleniumwire_options=seleniumwire_options)
+        logger.info("Chrome driver initialized successfully")
+        
         driver.get(url)
         logger.info(f"Navigated to {url}")
         
-        # Select Regular Season
-        select = Select(driver.find_element(By.XPATH, r"/html/body/div[1]/div[2]/div[2]/div[3]/section[1]/div/div/div[2]/label/div/select"))
-        select.select_by_index(1)
-        logger.info("Selected 'Regular Season' from dropdown")
-        time.sleep(2)
+        # Wait for page to load completely
+        wait = WebDriverWait(driver, 20)
+        logger.info("Waiting for page elements to load...")
         
-        # Select All
-        select = Select(driver.find_element(By.XPATH, r"/html/body/div[1]/div[2]/div[2]/div[3]/section[2]/div/div[2]/div[2]/div[1]/div[3]/div/label/div/select"))
+        # Wait for and select Regular Season
+        logger.info("Looking for season selector dropdown...")
+        season_dropdown = wait.until(
+            EC.element_to_be_clickable((By.XPATH, r"/html/body/div[1]/div[2]/div[2]/div[3]/section[1]/div/div/div[2]/label/div/select"))
+        )
+        select = Select(season_dropdown)
+        
+        # Log available options before selecting
+        options = [option.text for option in select.options]
+        logger.info(f"Season dropdown options: {options}")
+        
+        # Select Regular Season (index 1)
+        select.select_by_index(1)
+        selected_option = select.first_selected_option.text
+        logger.info(f"Selected season: '{selected_option}'")
+        
+        # Wait for page to update
+        time.sleep(3)
+        
+        # Wait for and select All
+        logger.info("Looking for team selector dropdown...")
+        team_dropdown = wait.until(
+            EC.element_to_be_clickable((By.XPATH, r"/html/body/div[1]/div[2]/div[2]/div[3]/section[2]/div/div[2]/div[2]/div[1]/div[3]/div/label/div/select"))
+        )
+        select = Select(team_dropdown)
+        
+        # Log available options before selecting
+        team_options = [option.text for option in select.options]
+        logger.info(f"Team dropdown options: {team_options}")
+        
         select.select_by_index(0)
-        logger.info("Selected 'All' from dropdown")
+        selected_team = select.first_selected_option.text
+        logger.info(f"Selected team filter: '{selected_team}'")
+        
+        # Wait for table to load
+        time.sleep(3)
+        logger.info("Waiting for data table to load...")
         
         src = driver.page_source 
         parser = BeautifulSoup(src, 'lxml')
@@ -153,9 +210,17 @@ def scrape_stats_from_url(url, stat_type):
         
     except Exception as e:
         logger.error(f"Error scraping {stat_type}: {str(e)}")
+        import traceback
+        logger.error(f"Full traceback: {traceback.format_exc()}")
         return pd.DataFrame()
     finally:
-        driver.quit()
+        if driver:
+            try:
+                logger.info("Cleaning up Chrome driver...")
+                driver.quit()
+                logger.info("Chrome driver closed successfully")
+            except Exception as cleanup_error:
+                logger.warning(f"Error during driver cleanup: {cleanup_error}")
 
 def merge_stats_dataframes(advanced_df, scoring_df, defense_df):
     """Merge all stats DataFrames into one comprehensive DataFrame"""
