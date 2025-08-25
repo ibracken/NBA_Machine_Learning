@@ -52,6 +52,27 @@ def run_supervised_learning():
         df = load_dataframe_from_s3('data/box_scores/current.parquet')
         logger.info(f"Loaded {len(df)} box score records")
         
+        # Validate box scores data structure
+        required_box_score_cols = ['PLAYER', 'GAME_DATE', 'FP', 'Last3_FP_Avg', 'Last5_FP_Avg', 'Last7_FP_Avg', 'Season_FP_Avg', 'MIN']
+        missing_cols = [col for col in required_box_score_cols if col not in df.columns]
+        if missing_cols:
+            error_msg = f"Missing required columns in box scores data: {missing_cols}"
+            logger.error(error_msg)
+            return {'success': False, 'error': error_msg}
+        
+        # Validate data types and ranges
+        if df['FP'].isna().all():
+            error_msg = "All FP values are null"
+            logger.error(error_msg)
+            return {'success': False, 'error': error_msg}
+        
+        if len(df) == 0:
+            error_msg = "Box scores data is empty"
+            logger.error(error_msg)
+            return {'success': False, 'error': error_msg}
+        
+        logger.info(f"Box scores data validation passed: {len(df)} records with required columns")
+        
         # Filter out players with zero minutes (data validation)
         if 'MIN' in df.columns:
             original_count = len(df)
@@ -62,6 +83,27 @@ def run_supervised_learning():
         logger.info("Loading player stats and cluster data")
         players_df = load_dataframe_from_s3('data/advanced_player_stats/current.parquet')
         clustered_players_df = load_dataframe_from_s3('data/clustered_players/current.parquet')
+        
+        # Validate player stats data
+        if len(players_df) == 0:
+            error_msg = "Player stats data is empty"
+            logger.error(error_msg)
+            return {'success': False, 'error': error_msg}
+        
+        if 'PLAYER' not in players_df.columns:
+            error_msg = "Player stats data missing PLAYER column"
+            logger.error(error_msg)
+            return {'success': False, 'error': error_msg}
+        
+        # Validate clustered players data
+        if len(clustered_players_df) == 0:
+            logger.warning("Clustered players data is empty - proceeding without clusters")
+        elif 'PLAYER' not in clustered_players_df.columns or 'CLUSTER' not in clustered_players_df.columns:
+            error_msg = "Clustered players data missing required columns (PLAYER, CLUSTER)"
+            logger.error(error_msg)
+            return {'success': False, 'error': error_msg}
+        
+        logger.info(f"Player data validation passed: {len(players_df)} player stats, {len(clustered_players_df)} clustered players")
         
         # Merge cluster assignments with player stats
         dataset_clusters = pd.merge(
@@ -79,7 +121,7 @@ def run_supervised_learning():
         logger.info(f"Mapped clusters to {(~df['CLUSTER'].isna()).sum()} players")
         
         # Sort by game date (most recent first)
-        df = df.sort_values(by=['GAME DATE'], ascending=[False])
+        df = df.sort_values(by=['GAME_DATE'], ascending=[False])
         
         # Data preprocessing for MIN column (convert to numeric and add noise as in notebook)
         df['MIN'] = pd.to_numeric(df['MIN'], errors='coerce')
@@ -93,9 +135,30 @@ def run_supervised_learning():
         feature_names = ['Last3_FP_Avg', 'Last5_FP_Avg', 'Last7_FP_Avg', 'Season_FP_Avg', 'CLUSTER', 'MIN']
         label_name = 'FP'
         
+        # Validate feature columns exist
+        missing_features = [col for col in feature_names if col not in df.columns]
+        if missing_features:
+            error_msg = f"Missing feature columns: {missing_features}"
+            logger.error(error_msg)
+            return {'success': False, 'error': error_msg}
+        
         # Prepare feature dataframe
         df_features = df[feature_names].copy()
         df_labels = df[label_name].copy()
+        
+        # Validate feature data quality
+        numeric_features = ['Last3_FP_Avg', 'Last5_FP_Avg', 'Last7_FP_Avg', 'Season_FP_Avg', 'MIN']
+        for feature in numeric_features:
+            if df_features[feature].isna().all():
+                error_msg = f"All values in feature '{feature}' are null"
+                logger.error(error_msg)
+                return {'success': False, 'error': error_msg}
+        
+        # Check for reasonable data ranges
+        if (df_features['MIN'] < 0).any():
+            logger.warning("Found negative MIN values after preprocessing")
+        
+        logger.info(f"Feature validation passed: {len(df_features)} records with {len(feature_names)} features")
         
         # One-hot encode clusters
         logger.info("One-hot encoding cluster features")
@@ -104,6 +167,30 @@ def run_supervised_learning():
         # Convert to numpy arrays
         features = np.array(df_features)
         labels = np.array(df_labels)
+        
+        # Validate arrays for training
+        if features.shape[0] == 0:
+            error_msg = "No features available for training"
+            logger.error(error_msg)
+            return {'success': False, 'error': error_msg}
+        
+        if len(labels) == 0:
+            error_msg = "No labels available for training"
+            logger.error(error_msg)
+            return {'success': False, 'error': error_msg}
+        
+        if features.shape[0] != len(labels):
+            error_msg = f"Feature-label mismatch: {features.shape[0]} features vs {len(labels)} labels"
+            logger.error(error_msg)
+            return {'success': False, 'error': error_msg}
+        
+        # Check for sufficient data for train-test split
+        if len(features) < 10:
+            error_msg = f"Insufficient data for training: {len(features)} records (need at least 10)"
+            logger.error(error_msg)
+            return {'success': False, 'error': error_msg}
+        
+        logger.info(f"Training data validation passed: {features.shape[0]} samples with {features.shape[1]} features")
         
         # Store additional data for test results
         players = df['PLAYER']
@@ -123,6 +210,14 @@ def run_supervised_learning():
         
         # Train RandomForest model
         logger.info("Training RandomForest model")
+        logger.info(f"Training set size: {len(train)}, Test set size: {len(test)}")
+        
+        # Validate training data
+        if np.isnan(train).any():
+            logger.warning("Training data contains NaN values")
+        if np.isinf(train).any():
+            logger.warning("Training data contains infinite values")
+        
         rf = RandomForestRegressor(random_state=4)
         rf.fit(train, train_labels.ravel())
         

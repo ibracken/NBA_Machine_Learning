@@ -14,13 +14,13 @@ def deploy_container():
     # Build the image
     print("Building Docker image...")
     subprocess.run([
-        "docker", "buildx", "build", "--platform", "linux/amd64", "--output", "type=docker", "-t", "cluster-scraper", "."
+        "docker", "buildx", "build", "--platform", "linux/amd64", "--output", "type=docker", "-t", "box-score-scraper", "."
     ], check=True, shell=True)
     
     # Tag for ECR
-    ecr_repo = f"{AWS_ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com/cluster-scraper"
+    ecr_repo = f"{AWS_ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com/box-score-scraper"
     subprocess.run([
-        "docker", "tag", "cluster-scraper:latest", f"{ecr_repo}:latest"
+        "docker", "tag", "box-score-scraper:latest", f"{ecr_repo}:latest"
     ], check=True, shell=True)
     
     # Login to ECR
@@ -46,7 +46,7 @@ def deploy_container():
     
     try:
         response = lambda_client.update_function_code(
-            FunctionName='cluster-scraper',
+            FunctionName='box-score-scraper',
             ImageUri=f"{ecr_repo}:latest"
         )
         print("Lambda function updated successfully!")
@@ -54,13 +54,13 @@ def deploy_container():
     except lambda_client.exceptions.ResourceNotFoundException:
         print("Creating new Lambda function...")
         response = lambda_client.create_function(
-            FunctionName='cluster-scraper',
+            FunctionName='box-score-scraper',
             Role=f'arn:aws:iam::{AWS_ACCOUNT_ID}:role/lambda-execution-role',
             Code={'ImageUri': f"{ecr_repo}:latest"},
             PackageType='Image',
-            Description='NBA Cluster Scraper Lambda Function',
+            Description='NBA Box Score Scraper Lambda Function (API-based)',
             Timeout=900,
-            MemorySize=2048,
+            MemorySize=512,  # Less memory needed without Selenium/Chrome
             Environment={
                 'Variables': {
                     'BUCKET_NAME': 'nba-prediction-ibracken'

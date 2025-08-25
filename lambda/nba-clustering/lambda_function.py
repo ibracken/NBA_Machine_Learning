@@ -55,9 +55,26 @@ def run_clustering_analysis():
         filtered_count = len(df)
         logger.info(f"Filtered from {original_count} to {filtered_count} players (GP>=10, MIN>=15)")
         
-        # Drop columns we don't want to use for clustering
-        df = df.drop(columns=['TEAM', 'W', 'L', 'GP', 'DREB', 'STL', 'BLK', 'STAT_TYPE', 'SCRAPED_DATE'], errors='ignore')
+        # Drop columns we don't want to use for clustering (updated for new data structure)
+        columns_to_drop = ['PLAYER TEAM', 'W', 'L', 'GP', 'DREB', 'STL', 'BLK', 'STAT_TYPE', 'SCRAPED_DATE', 
+                          'PLAYER_ID', 'SOURCE', 'id']
+        df = df.drop(columns=columns_to_drop, errors='ignore')
         logger.info(f"Using {len(df.columns)} features for clustering")
+        
+        # Clean data - log non-numeric conversions
+        logger.info("Cleaning data for clustering")
+        conversion_count = 0
+        for col in df.columns:
+            original_series = df[col].copy()
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+            non_numeric_mask = df[col].isna() & original_series.notna()
+            if non_numeric_mask.any():
+                non_numeric_values = original_series[non_numeric_mask].unique()
+                conversion_count += non_numeric_mask.sum()
+                logger.info(f"Column '{col}': Found {non_numeric_mask.sum()} non-numeric values: {list(non_numeric_values)}")
+        
+        logger.info(f"Total non-numeric conversions: {conversion_count}")
+        df = df.fillna(0)
         
         # Prepare data for clustering
         dfPlayerCol = df.reset_index()

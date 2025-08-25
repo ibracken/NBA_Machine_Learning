@@ -17,12 +17,14 @@ from aws.s3_utils import save_dataframe_to_s3, save_json_to_s3, load_dataframe_f
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler()
-    ]
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# Silence selenium-wire verbose logging
+logging.getLogger('seleniumwire.handler').setLevel(logging.WARNING)
+logging.getLogger('seleniumwire.server').setLevel(logging.WARNING)
+logging.getLogger('seleniumwire.storage').setLevel(logging.WARNING)
 
 numeric_columns = {
     "AGE": "AGE",
@@ -128,47 +130,26 @@ def scrape_stats_from_url(url, stat_type):
         driver.get(url)
         logger.info(f"Navigated to {url}")
         
-        # Wait for page to load completely
+        # Wait for page to load and select dropdowns
         wait = WebDriverWait(driver, 20)
-        logger.info("Waiting for page elements to load...")
         
-        # Wait for and select Regular Season
-        logger.info("Looking for season selector dropdown...")
+        # Select Regular Season
         season_dropdown = wait.until(
             EC.element_to_be_clickable((By.XPATH, r"/html/body/div[1]/div[2]/div[2]/div[3]/section[1]/div/div/div[2]/label/div/select"))
         )
         select = Select(season_dropdown)
-        
-        # Log available options before selecting
-        options = [option.text for option in select.options]
-        logger.info(f"Season dropdown options: {options}")
-        
-        # Select Regular Season (index 1)
         select.select_by_index(1)
         selected_option = select.first_selected_option.text
         logger.info(f"Selected season: '{selected_option}'")
-        
-        # Wait for page to update
         time.sleep(3)
         
-        # Wait for and select All
-        logger.info("Looking for team selector dropdown...")
+        # Select All teams
         team_dropdown = wait.until(
             EC.element_to_be_clickable((By.XPATH, r"/html/body/div[1]/div[2]/div[2]/div[3]/section[2]/div/div[2]/div[2]/div[1]/div[3]/div/label/div/select"))
         )
         select = Select(team_dropdown)
-        
-        # Log available options before selecting
-        team_options = [option.text for option in select.options]
-        logger.info(f"Team dropdown options: {team_options}")
-        
         select.select_by_index(0)
-        selected_team = select.first_selected_option.text
-        logger.info(f"Selected team filter: '{selected_team}'")
-        
-        # Wait for table to load
         time.sleep(3)
-        logger.info("Waiting for data table to load...")
         
         src = driver.page_source 
         parser = BeautifulSoup(src, 'lxml')

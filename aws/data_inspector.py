@@ -12,8 +12,8 @@ def inspect_s3_data():
             print("\nAdvanced Stats:")
             print(f"- {len(stats_df)} players, {len(stats_df.columns)} stats")
             print("\nSample Stats:")
-            display_cols = ['PLAYER', 'TEAM', 'MIN', 'OFFRTG', 'DEFRTG']
-            print(stats_df[display_cols].head().to_string())
+            display_cols = ['PLAYER', 'PLAYER TEAM', 'MIN', 'OFFRTG', 'DEFRTG']
+            print(stats_df.head().to_string())
             print(f"Last Updated: {stats_df['SCRAPED_DATE'].max()}")
         
         # Load box score data
@@ -26,8 +26,8 @@ def inspect_s3_data():
             print(f"- Date Range: {box_df['GAME_DATE'].min()} to {box_df['GAME_DATE'].max()}")
             
             print("\nSample Box Scores:")
-            display_cols = ['PLAYER', 'TEAM', 'GAME_DATE', 'MIN', 'PTS', 'FP', 'CLUSTER']
-            print(box_df[display_cols].head().to_string())
+            display_cols = ['PLAYER', 'PLAYER TEAM', 'GAME_DATE', 'MIN', 'PTS', 'FP', 'CLUSTER']
+            print(box_df.head().to_string())
             
             # Show some cluster distribution in box scores
             if 'CLUSTER' in box_df.columns:

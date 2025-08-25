@@ -1,36 +1,16 @@
 import requests
+import json
 import pandas as pd
 from datetime import datetime
 import logging
-import boto3
-import json
-from io import BytesIO
+from aws.s3_utils import save_dataframe_to_s3
 
 # Configure logging
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
-
-# S3 client
-s3 = boto3.client('s3')
-BUCKET_NAME = 'nba-prediction-ibracken'
-
-# S3 utility functions
-def save_dataframe_to_s3(df, key):
-    """Save DataFrame as Parquet to S3"""
-    parquet_buffer = BytesIO()
-    df.to_parquet(parquet_buffer, index=False)
-    parquet_buffer.seek(0)
-    s3.put_object(Bucket=BUCKET_NAME, Key=key, Body=parquet_buffer.getvalue())
-    logger.info(f"Saved {len(df)} records to s3://{BUCKET_NAME}/{key}")
-
-def load_dataframe_from_s3(key):
-    """Load DataFrame from S3 Parquet"""
-    try:
-        obj = s3.get_object(Bucket=BUCKET_NAME, Key=key)
-        return pd.read_parquet(BytesIO(obj['Body'].read()))
-    except Exception as e:
-        logger.info(f"No existing data found at {key}: {e}")
-        return pd.DataFrame()
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 # Column mapping from API response to original clusterScraper format
 # Based on your original numeric_columns mapping
@@ -38,7 +18,7 @@ api_to_cluster_mapping = {
     # Core identifiers
     'PLAYER_ID': 'PLAYER_ID',  # Keep this new field
     'PLAYER_NAME': 'PLAYER',
-    'TEAM_ABBREVIATION': 'TEAM',
+    'TEAM_ABBREVIATION': 'PLAYER TEAM',
     
     # Basic stats (from Advanced)
     'AGE': 'AGE',
@@ -351,7 +331,6 @@ def scrape_nba_api():
             'error': str(e)
         }
 
-
 def lambda_handler(event, context):
     """AWS Lambda handler function"""
     logger.info("Lambda function started - NBA API scraper")
@@ -362,27 +341,32 @@ def lambda_handler(event, context):
         if result['success']:
             return {
                 'statusCode': 200,
-                'body': json.dumps({
+                'body': {
                     'message': 'NBA API scraper completed successfully',
                     'records_scraped': result['records_scraped'],
                     'columns_count': result['columns_count']
-                })
+                }
             }
         else:
             return {
                 'statusCode': 500,
-                'body': json.dumps({
+                'body': {
                     'message': 'NBA API scraper failed',
                     'error': result['error']
-                })
+                }
             }
             
     except Exception as e:
         logger.error(f"Lambda handler error: {str(e)}")
         return {
             'statusCode': 500,
-            'body': json.dumps({
+            'body': {
                 'message': 'Lambda execution failed',
                 'error': str(e)
-            })
+            }
         }
+
+# For local testing
+if __name__ == "__main__":
+    result = scrape_nba_api()
+    print(f"Scraper result: {result}")
