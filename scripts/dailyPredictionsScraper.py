@@ -175,7 +175,7 @@ def runModel(df):
     dataset = load_dataframe_from_s3('data/box_scores/current.parquet')
     
     # Defensive checks for required columns
-    required_cols = {'MIN', 'W/L', 'FP', 'PLAYER', 'GAME DATE'}
+    required_cols = {'MIN', 'W/L', 'FP', 'PLAYER', 'GAME_DATE'}
     missing_cols = required_cols - set(dataset.columns)
     if missing_cols:
         print(f"[Fallback] Missing required columns {missing_cols} in data/box_scores/current.parquet. Skipping runModel.")
@@ -183,9 +183,9 @@ def runModel(df):
     
     dataset = dataset[dataset['MIN'] != 0]
     dataset = dataset.dropna(subset=['W/L'])
-    dataset['GAME DATE'] = pd.to_datetime(dataset['GAME DATE'])
-    # Sort by PLAYER and GAME DATE in ascending order
-    dataset_sorted = dataset.sort_values(by=['PLAYER', 'GAME DATE'], ascending=[True, True])
+    dataset['GAME_DATE'] = pd.to_datetime(dataset['GAME_DATE'])
+    # Sort by PLAYER and GAME_DATE in ascending order
+    dataset_sorted = dataset.sort_values(by=['PLAYER', 'GAME_DATE'], ascending=[True, True])
     windows = [3, 5, 7]
     for window in windows:
         dataset_sorted[f'Last{window}_FP_Avg'] = (
@@ -226,20 +226,20 @@ def runModel(df):
     # Add predictions to the DataFrame
     refined_most_recent_games['My Model Predicted FP'] = predictions
     # Retain the Player and PPG Projection columns
-    final_columns = ['PLAYER', 'PPG Projection', 'My Model Predicted FP', 'GAME DATE']
+    final_columns = ['PLAYER', 'PPG Projection', 'My Model Predicted FP', 'GAME_DATE']
     refined_most_recent_games = refined_most_recent_games[final_columns]
     current_date = datetime.date.today()
-    refined_most_recent_games['GAME DATE'] = current_date
+    refined_most_recent_games['GAME_DATE'] = current_date
     # Load DailyPlayerPredictions from S3
     df_fp = load_dataframe_from_s3('data/daily_predictions/current.parquet')
     
     # Defensive check: if df_fp is empty, create it with proper columns
     if df_fp.empty:
-        df_fp = pd.DataFrame(columns=['PLAYER', 'GAME DATE', 'PPG_PROJECTION', 'MY_MODEL_PREDICTED_FP', 'ACTUAL_FP', 'MY_MODEL_CLOSER_PREDICTION'])
+        df_fp = pd.DataFrame(columns=['PLAYER', 'GAME_DATE', 'PPG_PROJECTION', 'MY_MODEL_PREDICTED_FP', 'ACTUAL_FP', 'MY_MODEL_CLOSER_PREDICTION'])
         print("[Fallback] No daily player predictions found. Creating empty DataFrame.")
     # Merge or update predictions
     for _, row in refined_most_recent_games.iterrows():
-        mask = (df_fp['PLAYER'] == row['PLAYER']) & (df_fp['GAME DATE'] == row['GAME DATE'])
+        mask = (df_fp['PLAYER'] == row['PLAYER']) & (df_fp['GAME_DATE'] == row['GAME_DATE'])
         if mask.any():
             df_fp.loc[mask, 'PPG_PROJECTION'] = safe_float(row['PPG Projection'])
             df_fp.loc[mask, 'MY_MODEL_PREDICTED_FP'] = safe_float(row['My Model Predicted FP'])
@@ -250,7 +250,7 @@ def runModel(df):
         else:
             new_record_data = {
                 "PLAYER": row['PLAYER'],
-                "GAME DATE": row['GAME DATE'],
+                "GAME_DATE": row['GAME_DATE'],
                 "PPG_PROJECTION": safe_float(row['PPG Projection']),
                 "MY_MODEL_PREDICTED_FP": safe_float(row['My Model Predicted FP']),
             }
@@ -266,7 +266,7 @@ def checkScoresForFP():
     df_fp = load_dataframe_from_s3('data/daily_predictions/current.parquet')
     
     # Defensive checks for required columns
-    required_box_cols = {'PLAYER', 'GAME DATE', 'FP'}
+    required_box_cols = {'PLAYER', 'GAME_DATE', 'FP'}
     missing_box_cols = required_box_cols - set(df_box.columns)
     if missing_box_cols:
         print(f"[Fallback] Missing required columns {missing_box_cols} in data/box_scores/current.parquet. Skipping checkScoresForFP.")
@@ -277,10 +277,10 @@ def checkScoresForFP():
         print("[Fallback] No daily player predictions found. Skipping checkScoresForFP.")
         return
     
-    df_box = df_box[['PLAYER', 'GAME DATE', 'FP']].rename(columns={'FP': 'ACTUAL_FP'})
+    df_box = df_box[['PLAYER', 'GAME_DATE', 'FP']].rename(columns={'FP': 'ACTUAL_FP'})
     # Drop and merge 'ACTUAL_FP' to avoid conflict
     df_fp = df_fp.drop(columns=['ACTUAL_FP'], errors='ignore')
-    df_fp = df_fp.merge(df_box, on=['PLAYER', 'GAME DATE'], how='left')
+    df_fp = df_fp.merge(df_box, on=['PLAYER', 'GAME_DATE'], how='left')
     if 'MY_MODEL_CLOSER_PREDICTION' not in df_fp.columns:
         df_fp['MY_MODEL_CLOSER_PREDICTION'] = pd.Series(dtype=bool)
     false_count = 0

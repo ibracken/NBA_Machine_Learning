@@ -39,6 +39,7 @@ def inspect_s3_data():
         # Load cluster data
         cluster_df = load_dataframe_from_s3('data/clustered_players/current.parquet')
         if not cluster_df.empty:
+            print(cluster_df)
             print("\nCluster Assignments:")
             print(f"- {len(cluster_df)} players in {cluster_df['CLUSTER'].nunique()} clusters")
             

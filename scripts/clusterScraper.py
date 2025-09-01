@@ -1,18 +1,9 @@
-from seleniumwire import webdriver
-from selenium.webdriver.support.ui import Select, WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.common.by import By
-from selenium.webdriver.chrome.options import Options
-from bs4 import BeautifulSoup, NavigableString, Tag
+import requests
 import pandas as pd
-import time
 from datetime import datetime
-from unidecode import unidecode
 import logging
-import sys
-import os
+from unidecode import unidecode
 from aws.s3_utils import save_dataframe_to_s3, save_json_to_s3, load_dataframe_from_s3
-
 
 # Configure logging
 logging.basicConfig(
@@ -21,323 +12,357 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Silence selenium-wire verbose logging
-logging.getLogger('seleniumwire.handler').setLevel(logging.WARNING)
-logging.getLogger('seleniumwire.server').setLevel(logging.WARNING)
-logging.getLogger('seleniumwire.storage').setLevel(logging.WARNING)
-
-numeric_columns = {
-    "AGE": "AGE",
-    "GP": "GP",
-    "W": "W",
-    "L": "L",
-    "MIN": "MIN",
-    "OFFRTG": "OFFRTG",
-    "DEFRTG": "DEFRTG",
-    "NETRTG": "NETRTG",
-    "AST%": "AST_PERCENT",
-    "AST/TO": "AST_TO",
-    "AST RATIO": "AST_RATIO",
-    "OREB%": "OREB_PERCENT",
-    "DREB%": "DREB_PERCENT",
-    "REB%": "REB_PERCENT",
-    "TO RATIO": "TO_RATIO",
-    "EFG%": "EFG_PERCENT",
-    "TS%": "TS_PERCENT",
-    "USG%": "USG_PERCENT",
-    "PACE": "PACE",
-    "PIE": "PIE",
-    "POSS": "POSS",
-    "%FGA2PT": "FGA2P_PERCENT",
-    "%FGA3PT": "FGA3P_PERCENT",
-    "%PTS2PT": "PTS2P_PERCENT",
-    "%PTS2PT MR": "PTS2P_MR_PERCENT",
-    "%PTS3PT": "PTS3P_PERCENT",
-    "%PTSFBPS": "PTSFBPS_PERCENT",
-    "%PTSFT": "PTSFT_PERCENT",
-    "%PTSOFFTO": "PTS_OFFTO_PERCENT",
-    "%PTSPITP": "PTSPITP_PERCENT",
-    "2FGM%AST": "FG2M_AST_PERCENT",
-    "2FGM%UAST": "FG2M_UAST_PERCENT",
-    "3FGM%AST": "FG3M_AST_PERCENT",
-    "3FGM%UAST": "FG3M_UAST_PERCENT",
-    "FGM%AST": "FGM_AST_PERCENT",
-    "FGM%UAST": "FGM_UAST_PERCENT",
-    "DEF RTG": "DEF_RTG",
-    "DREB": "DREB",
-    "DREB%TEAM": "DREB_PERCENT_TEAM",
-    "STL": "STL",
-    "STL%": "STL_PERCENT",
-    "BLK": "BLK",
-    "%BLK": "BLK_PERCENT",
-    "OPP PTSOFF TOV": "OPP_PTS_OFFTO",
-    "OPP PTS2ND CHANCE": "OPP_PTS_2ND_CHANCE",
-    "OPP PTSFB": "OPP_PTS_FB",
-    "OPP PTSPAINT": "OPP_PTS_PAINT",
-    "DEFWS": "DEFWS",
+# Column mapping from API response to database format
+api_to_cluster_mapping = {
+    # Core identifiers
+    'PLAYER_ID': 'PLAYER_ID',
+    'PLAYER_NAME': 'PLAYER',
+    'TEAM_ABBREVIATION': 'TEAM',
+    
+    # Basic stats
+    'AGE': 'AGE',
+    'GP': 'GP', 
+    'W': 'W',
+    'L': 'L',
+    'MIN': 'MIN',
+    
+    # Advanced stats
+    'OFF_RATING': 'OFFRTG',
+    'DEF_RATING': 'DEFRTG', 
+    'NET_RATING': 'NETRTG',
+    'AST_PCT': 'AST_PERCENT',
+    'AST_TO': 'AST_TO',
+    'AST_RATIO': 'AST_RATIO',
+    'OREB_PCT': 'OREB_PERCENT',
+    'DREB_PCT': 'DREB_PERCENT',
+    'REB_PCT': 'REB_PERCENT',
+    'TM_TOV_PCT': 'TO_RATIO',
+    'EFG_PCT': 'EFG_PERCENT',
+    'TS_PCT': 'TS_PERCENT',
+    'USG_PCT': 'USG_PERCENT',
+    'PACE': 'PACE',
+    'PIE': 'PIE',
+    'POSS': 'POSS',
+    
+    # Scoring stats
+    'PCT_FGA_2PT': 'FGA2P_PERCENT',
+    'PCT_FGA_3PT': 'FGA3P_PERCENT', 
+    'PCT_PTS_2PT': 'PTS2P_PERCENT',
+    'PCT_PTS_2PT_MR': 'PTS2P_MR_PERCENT',
+    'PCT_PTS_3PT': 'PTS3P_PERCENT',
+    'PCT_PTS_FB': 'PTSFBPS_PERCENT',
+    'PCT_PTS_FT': 'PTSFT_PERCENT',
+    'PCT_PTS_OFF_TOV': 'PTS_OFFTO_PERCENT',
+    'PCT_PTS_PAINT': 'PTSPITP_PERCENT',
+    'PCT_AST_2PM': 'FG2M_AST_PERCENT',
+    'PCT_UAST_2PM': 'FG2M_UAST_PERCENT',
+    'PCT_AST_3PM': 'FG3M_AST_PERCENT', 
+    'PCT_UAST_3PM': 'FG3M_UAST_PERCENT',
+    'PCT_AST_FGM': 'FGM_AST_PERCENT',
+    'PCT_UAST_FGM': 'FGM_UAST_PERCENT',
+    
+    # Defense stats
+    'DEF_RATING': 'DEF_RTG',
+    'DREB': 'DREB',
+    'DREB_PCT': 'DREB_PERCENT_TEAM',
+    'STL': 'STL',
+    'PCT_STL': 'STL_PERCENT',
+    'BLK': 'BLK',
+    'PCT_BLK': 'BLK_PERCENT',
+    'OPP_PTS_OFF_TOV': 'OPP_PTS_OFFTO',
+    'OPP_PTS_2ND_CHANCE': 'OPP_PTS_2ND_CHANCE',
+    'OPP_PTS_FB': 'OPP_PTS_FB',
+    'OPP_PTS_PAINT': 'OPP_PTS_PAINT',
+    'DEF_WS': 'DEFWS',
 }
 
-string_columns = {
-    'TEAM': 'TEAM',
-}
+# Numeric columns list
+numeric_columns_list = [
+    'AGE', 'GP', 'W', 'L', 'MIN', 'OFFRTG', 'DEFRTG', 'NETRTG', 
+    'AST_PERCENT', 'AST_TO', 'AST_RATIO', 'OREB_PERCENT', 'DREB_PERCENT', 
+    'REB_PERCENT', 'TO_RATIO', 'EFG_PERCENT', 'TS_PERCENT', 'USG_PERCENT', 
+    'PACE', 'PIE', 'POSS', 'FGA2P_PERCENT', 'FGA3P_PERCENT', 'PTS2P_PERCENT',
+    'PTS2P_MR_PERCENT', 'PTS3P_PERCENT', 'PTSFBPS_PERCENT', 'PTSFT_PERCENT',
+    'PTS_OFFTO_PERCENT', 'PTSPITP_PERCENT', 'FG2M_AST_PERCENT', 'FG2M_UAST_PERCENT',
+    'FG3M_AST_PERCENT', 'FG3M_UAST_PERCENT', 'FGM_AST_PERCENT', 'FGM_UAST_PERCENT',
+    'DEF_RTG', 'DREB', 'DREB_PERCENT_TEAM', 'STL', 'STL_PERCENT', 'BLK', 'BLK_PERCENT', 
+    'OPP_PTS_OFFTO', 'OPP_PTS_2ND_CHANCE', 'OPP_PTS_FB', 'OPP_PTS_PAINT', 'DEFWS'
+]
 
 def safe_float(value):
+    """Convert value to float safely"""
     try:
         return float(value)
-    except ValueError:
+    except (ValueError, TypeError):
         return None
 
 def normalize_name(name):
-    return unidecode(name.strip().lower())
+    """Normalize player name to match original format"""
+    try:
+        return unidecode(str(name).strip().lower())
+    except:
+        return str(name).strip().lower()
 
-def scrape_stats_from_url(url, stat_type):
-    """Scrape stats from a single URL and return DataFrame"""
-    logger.info(f"Starting scrape for {stat_type} from: {url}")
+def transform_api_data_to_cluster_format(df):
+    """Transform API response DataFrame to match original clusterScraper format"""
+    logger.info("Transforming API data to cluster format")
     
-    proxy_url = "http://smart-b0ibmkjy90uq_area-US_state-Northcarolina_life-15_session-0Ve35bhsUr:sU8CQmV8LDmh2mXj@proxy.smartproxy.net:3120"
+    # Create new DataFrame with mapped columns
+    cluster_df = pd.DataFrame()
     
-    seleniumwire_options = {
-        'proxy': {
-            'http': proxy_url,
-            'https': proxy_url,
-            'no_proxy': 'localhost,127.0.0.1'
-        },
-        'connection_timeout': 30,
-        'verify_ssl': False
+    # Map columns that exist in both API and cluster format
+    for api_col, cluster_col in api_to_cluster_mapping.items():
+        if api_col in df.columns:
+            if cluster_col in numeric_columns_list:
+                # Apply safe_float to numeric columns
+                cluster_df[cluster_col] = df[api_col].apply(safe_float)
+            else:
+                # Keep as string for PLAYER_ID, PLAYER, TEAM
+                cluster_df[cluster_col] = df[api_col]
+    
+    # Normalize player names to match original format
+    if 'PLAYER' in cluster_df.columns:
+        cluster_df['PLAYER'] = cluster_df['PLAYER'].apply(normalize_name)
+    
+    # Add id column to match clusterScraper format
+    if len(cluster_df) > 0:
+        cluster_df.insert(0, 'id', range(1, len(cluster_df) + 1))
+    
+    # Add metadata columns to match original
+    cluster_df['STAT_TYPE'] = 'advanced'
+    cluster_df['SCRAPED_DATE'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    cluster_df['SOURCE'] = 'NBA_API'
+    
+    logger.info(f"Transformed data shape: {cluster_df.shape}")
+    logger.info(f"Transformed columns: {list(cluster_df.columns)}")
+    
+    return cluster_df
+
+def scrape_single_api_endpoint(session, measure_type, stat_type):
+    """Scrape a single NBA API endpoint"""
+    logger.info(f"Scraping {stat_type} stats (MeasureType={measure_type})")
+    
+    base_url = "https://stats.nba.com/stats/leaguedashplayerstats"
+    params = {
+        'College': '',
+        'Conference': '',
+        'Country': '',
+        'DateFrom': '',
+        'DateTo': '',
+        'Division': '',
+        'DraftPick': '',
+        'DraftYear': '',
+        'GameScope': '',
+        'GameSegment': '',
+        'Height': '',
+        'ISTRound': '',
+        'LastNGames': '0',
+        'LeagueID': '00',
+        'Location': '',
+        'MeasureType': measure_type,
+        'Month': '0',
+        'OpponentTeamID': '0',
+        'Outcome': '',
+        'PORound': '0',
+        'PaceAdjust': 'N',
+        'PerMode': 'PerGame',
+        'Period': '0',
+        'PlayerExperience': '',
+        'PlayerPosition': '',
+        'PlusMinus': 'N',
+        'Rank': 'N',
+        'Season': '2024-25',
+        'SeasonSegment': '',
+        'SeasonType': 'Regular Season',
+        'ShotClockRange': '',
+        'StarterBench': '',
+        'TeamID': '0',
+        'VsConference': '',
+        'VsDivision': '',
+        'Weight': ''
     }
     
-    chrome_options = Options()
-    # chrome_options.add_argument("--headless")
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument('--ignore-certificate-errors')
-    chrome_options.add_argument('--ignore-ssl-errors')
-    chrome_options.add_argument('--ignore-certificate-errors-spki-list')
-    chrome_options.add_argument('--allow-running-insecure-content')
-    chrome_options.add_argument('--disable-web-security')
-    chrome_options.add_argument("--window-size=1920x1080")
-    chrome_options.add_argument("--force-device-scale-factor=0.75")
-    chrome_options.add_argument("--start-maximized")
-    chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-    
-    driver = None
     try:
-        logger.info("Initializing Chrome driver with proxy...")
-        driver = webdriver.Chrome(options=chrome_options, seleniumwire_options=seleniumwire_options)
-        logger.info("Chrome driver initialized successfully")
+        response = session.get(base_url, params=params, timeout=30, verify=False)
         
-        driver.get(url)
-        logger.info(f"Navigated to {url}")
-        
-        # Wait for page to load and select dropdowns
-        wait = WebDriverWait(driver, 20)
-        
-        # Select Regular Season
-        season_dropdown = wait.until(
-            EC.element_to_be_clickable((By.XPATH, r"/html/body/div[1]/div[2]/div[2]/div[3]/section[1]/div/div/div[2]/label/div/select"))
-        )
-        select = Select(season_dropdown)
-        select.select_by_index(1)
-        selected_option = select.first_selected_option.text
-        logger.info(f"Selected season: '{selected_option}'")
-        time.sleep(3)
-        
-        # Select All teams
-        team_dropdown = wait.until(
-            EC.element_to_be_clickable((By.XPATH, r"/html/body/div[1]/div[2]/div[2]/div[3]/section[2]/div/div[2]/div[2]/div[1]/div[3]/div/label/div/select"))
-        )
-        select = Select(team_dropdown)
-        select.select_by_index(0)
-        time.sleep(3)
-        
-        src = driver.page_source 
-        parser = BeautifulSoup(src, 'lxml')
-        table = parser.find("div", attrs = {"class": "Crom_container__C45Ti crom-container"})
-        
-        if not table or isinstance(table, NavigableString) or not isinstance(table, Tag):
-            logger.error(f"Could not find valid table on {url}")
+        if response.status_code == 200:
+            logger.info(f"{stat_type} API request successful")
+            data = response.json()
+            
+            if 'resultSets' in data and len(data['resultSets']) > 0:
+                result_set = data['resultSets'][0]
+                headers_list = result_set['headers']
+                rows = result_set['rowSet']
+                
+                logger.info(f"Retrieved {len(rows)} players with {len(headers_list)} columns for {stat_type}")
+                
+                # Create DataFrame
+                df = pd.DataFrame(rows, columns=headers_list)
+                df['STAT_TYPE'] = stat_type
+                
+                return df
+            else:
+                logger.error(f"No resultSets found in {stat_type} API response")
+                return pd.DataFrame()
+        else:
+            logger.error(f"{stat_type} API request failed with status {response.status_code}")
             return pd.DataFrame()
-        
-        headers = table.findAll('th')
-        headerlist = [h.text.strip().upper() for h in headers[1:]]
-        headerlist = [a for a in headerlist if not 'RANK' in a]
-        logger.info(f"Found headers: {headerlist}")
-        
-        # Special handling for defense stats
-        for i, header in enumerate(headerlist):
-            if header == "DREB%" and url == "https://www.nba.com/stats/players/defense":
-                headerlist[i] = "DREB%TEAM"
-                break
-        
-        rows = table.findAll('tr')[1:]
-        player_stats = [[td.getText().strip() for td in rows[i].findAll('td')[1:]] for i in range(len(rows))]
-        logger.info(f"Scraped {len(player_stats)} player rows")
-        
-        if url == r"https://www.nba.com/stats/players/advanced":
-            headerlist = headerlist[:-5]
-        
-        stats_df = pd.DataFrame(player_stats, columns=headerlist)
-        
-        # Normalize player names
-        stats_df['PLAYER'] = stats_df['PLAYER'].apply(normalize_name)
-        
-        # Add stat type for tracking
-        stats_df['STAT_TYPE'] = stat_type
-        stats_df['SCRAPED_DATE'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        
-        logger.info(f"Created DataFrame with shape: {stats_df.shape}")
-        return stats_df
-        
+            
     except Exception as e:
         logger.error(f"Error scraping {stat_type}: {str(e)}")
-        import traceback
-        logger.error(f"Full traceback: {traceback.format_exc()}")
         return pd.DataFrame()
-    finally:
-        if driver:
-            try:
-                logger.info("Cleaning up Chrome driver...")
-                driver.quit()
-                logger.info("Chrome driver closed successfully")
-            except Exception as cleanup_error:
-                logger.warning(f"Error during driver cleanup: {cleanup_error}")
 
-def merge_stats_dataframes(advanced_df, scoring_df, defense_df):
-    """Merge all stats DataFrames into one comprehensive DataFrame"""
-    logger.info("Merging stats DataFrames")
+def merge_api_dataframes(advanced_df, scoring_df, defense_df):
+    """Merge all API DataFrames like the original clusterScraper"""
+    logger.info("Merging API DataFrames")
     
-    # Start with advanced stats as base
+    if advanced_df.empty:
+        logger.error("Advanced stats DataFrame is empty - cannot proceed")
+        return pd.DataFrame()
+    
+    # Start with advanced stats as base (has most complete player list)
     merged_df = advanced_df.copy()
     logger.info(f"Base advanced stats: {len(merged_df)} players")
     
     # Merge scoring stats
     if not scoring_df.empty:
-        merged_df = merged_df.merge(scoring_df, on='PLAYER', how='left', suffixes=('', '_scoring'))
+        merged_df = merged_df.merge(
+            scoring_df, 
+            on=['PLAYER_ID', 'PLAYER_NAME'], 
+            how='left', 
+            suffixes=('', '_scoring')
+        )
         # Drop duplicate columns from scoring merge
         merged_df = merged_df.loc[:, ~merged_df.columns.str.endswith('_scoring')]
+        logger.info(f"After scoring merge: {len(merged_df)} players")
     
-    # Merge defense stats
+    # Merge defense stats  
     if not defense_df.empty:
-        merged_df = merged_df.merge(defense_df, on='PLAYER', how='left', suffixes=('', '_defense'))
+        merged_df = merged_df.merge(
+            defense_df, 
+            on=['PLAYER_ID', 'PLAYER_NAME'], 
+            how='left', 
+            suffixes=('', '_defense')
+        )
         # Drop duplicate columns from defense merge
         merged_df = merged_df.loc[:, ~merged_df.columns.str.endswith('_defense')]
+        logger.info(f"After defense merge: {len(merged_df)} players")
     
-    # Convert numeric columns
-    for scraped_col, db_col in numeric_columns.items():
-        if scraped_col in merged_df.columns:
-            merged_df[db_col] = merged_df[scraped_col].apply(safe_float)
-    
-    # Handle string columns
-    for scraped_col, db_col in string_columns.items():
-        if scraped_col in merged_df.columns:
-            merged_df[db_col] = merged_df[scraped_col]
-    
-    logger.info(f"Final merged DataFrame shape: {merged_df.shape}")
-    logger.info(f"Final columns: {list(merged_df.columns)}")
     return merged_df
 
+def scrape_nba_api():
+    """Scrape NBA stats using all three API endpoints"""
+    logger.info("Starting comprehensive NBA API scraper")
+    
+    # Setup session with proxy
+    proxy_url = "http://smart-b0ibmkjy90uq_area-US_state-Northcarolina_life-15_session-0Ve35bhsUr:sU8CQmV8LDmh2mXj@proxy.smartproxy.net:3120"
+    proxies = {
+        'http': proxy_url,
+        'https': proxy_url
+    }
+    
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Referer': 'https://www.nba.com/stats/players/advanced',
+        'Origin': 'https://www.nba.com',
+        'Host': 'stats.nba.com',
+        'Connection': 'keep-alive',
+        'Sec-Fetch-Dest': 'empty',
+        'Sec-Fetch-Mode': 'cors',
+        'Sec-Fetch-Site': 'same-site',
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache'
+    }
+    
+    session = requests.Session()
+    session.headers.update(headers)
+    session.proxies.update(proxies)
+    
+    try:
+        # Scrape all three stat types
+        logger.info("=== SCRAPING ADVANCED STATS ===")
+        advanced_df = scrape_single_api_endpoint(session, 'Advanced', 'advanced')
+        
+        logger.info("=== SCRAPING SCORING STATS ===") 
+        scoring_df = scrape_single_api_endpoint(session, 'Scoring', 'scoring')
+        
+        logger.info("=== SCRAPING DEFENSE STATS ===")
+        defense_df = scrape_single_api_endpoint(session, 'Defense', 'defense')
+        
+        # Merge all DataFrames
+        if not advanced_df.empty:
+            merged_df = merge_api_dataframes(advanced_df, scoring_df, defense_df)
+            
+            if not merged_df.empty:
+                # Transform to cluster format
+                cluster_df = transform_api_data_to_cluster_format(merged_df)
+                
+                # Save to S3
+                save_dataframe_to_s3(cluster_df, 'data/advanced_player_stats/current.parquet')
+                logger.info(f"Successfully saved {len(cluster_df)} player records to S3")
+                logger.info(f"Saved columns: {list(cluster_df.columns)}")
+                logger.info(f"Column count: {len(cluster_df.columns)}")
+                
+                return {
+                    'success': True,
+                    'records_scraped': len(cluster_df),
+                    'columns_count': len(cluster_df.columns),
+                    'dataframe': cluster_df
+                }
+            else:
+                logger.error("Merged DataFrame is empty")
+                return {
+                    'success': False,
+                    'error': 'Merged data is empty'
+                }
+        else:
+            logger.error("No advanced stats data - cannot proceed")
+            return {
+                'success': False,
+                'error': 'No advanced stats data'
+            }
+            
+    except Exception as e:
+        logger.error(f"Error in comprehensive NBA API scraper: {str(e)}")
+        return {
+            'success': False,
+            'error': str(e)
+        }
+
 def run_cluster_scraper():
-    """Main function to scrape all player stats and save to S3"""
-    logger.info("Starting S3 cluster scraper")
+    """Main function to scrape all player stats and save to S3 (replaces original web scraping)"""
+    logger.info("Starting API-based cluster scraper")
     
     try:
         # Load existing data from S3 (if any)
         existing_df = load_dataframe_from_s3('data/advanced_player_stats/current.parquet')
         logger.info(f"Loaded existing data: {len(existing_df)} records")
         
-        # Scrape Advanced Stats
-        logger.info("=== SCRAPING ADVANCED STATS ===")
-        advanced_df = scrape_stats_from_url(
-            url="https://www.nba.com/stats/players/advanced",
-            stat_type="advanced"
-        )
-        
-        # Scrape Scoring Stats
-        logger.info("=== SCRAPING SCORING STATS ===")
-        scoring_df = scrape_stats_from_url(
-            url="https://www.nba.com/stats/players/scoring",
-            stat_type="scoring"
-        )
-        
-        # Scrape Defense Stats
-        logger.info("=== SCRAPING DEFENSE STATS ===")
-        defense_df = scrape_stats_from_url(
-            url="https://www.nba.com/stats/players/defense",
-            stat_type="defense"
-        )
-        
-        # Merge all stats
-        if not advanced_df.empty:
-            merged_df = merge_stats_dataframes(advanced_df, scoring_df, defense_df)
-            
-            # Save current version only
-            save_dataframe_to_s3(merged_df, 'data/advanced_player_stats/current.parquet')
-            logger.info(f"Successfully saved {len(merged_df)} player records to S3")
-            logger.info(f"Data shape: {merged_df.shape}")
-            
-            # Check for duplicates
-            duplicate_check = merged_df[merged_df.duplicated(subset=['PLAYER'], keep=False)]
-            if not duplicate_check.empty:
-                logger.warning(f"Found {len(duplicate_check)} duplicate player entries")
-                logger.warning(f"Duplicate players: {duplicate_check['PLAYER'].tolist()}")
-            
-            return {
-                'success': True,
-                'records_scraped': len(merged_df),
-                'columns_count': len(merged_df.columns)
-            }
-        else:
-            logger.error("No data scraped - advanced stats DataFrame is empty")
-            return {
-                'success': False,
-                'error': 'No data scraped'
-            }
-            
-    except Exception as e:
-        logger.error(f"Error in cluster scraper: {str(e)}")
-        return {
-            'success': False,
-            'error': str(e)
-        }
-
-# Lambda handler function
-def lambda_handler(event, context):
-    """AWS Lambda handler function"""
-    logger.info("Lambda function started")
-    
-    try:
-        result = run_cluster_scraper()
+        # Scrape using NBA API
+        result = scrape_nba_api()
         
         if result['success']:
-            return {
-                'statusCode': 200,
-                'body': {
-                    'message': 'Cluster scraper completed successfully',
-                    'records_scraped': result['records_scraped'],
-                    'columns_count': result['columns_count']
-                }
-            }
+            logger.info(f"Successfully scraped {result['records_scraped']} player records")
+            logger.info(f"Data has {result['columns_count']} columns")
+            
+            # Check for duplicates
+            merged_df = result['dataframe']
+            if 'PLAYER' in merged_df.columns:
+                duplicates = merged_df.duplicated(subset=['PLAYER'], keep=False)
+                if duplicates.any():
+                    logger.warning(f"Found {duplicates.sum()} duplicate player records")
+                    duplicate_players = merged_df[duplicates]['PLAYER'].unique()
+                    logger.warning(f"Duplicate players: {duplicate_players}")
         else:
-            return {
-                'statusCode': 500,
-                'body': {
-                    'message': 'Cluster scraper failed',
-                    'error': result['error']
-                }
-            }
+            logger.error(f"Scraping failed: {result['error']}")
             
     except Exception as e:
-        logger.error(f"Lambda handler error: {str(e)}")
-        return {
-            'statusCode': 500,
-            'body': {
-                'message': 'Lambda execution failed',
-                'error': str(e)
-            }
-        }
+        logger.error(f"Error in run_cluster_scraper: {str(e)}")
+        import traceback
+        logger.error(f"Full traceback: {traceback.format_exc()}")
 
-# For local testing
 if __name__ == "__main__":
-    result = run_cluster_scraper()
-    print(f"Scraper result: {result}")
+    run_cluster_scraper()

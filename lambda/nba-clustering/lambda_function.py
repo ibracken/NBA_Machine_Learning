@@ -51,12 +51,12 @@ def run_clustering_analysis():
         df.set_index('PLAYER', inplace=True)
         original_count = len(df)
         df = df[df['GP'] >= 10]
-        df = df[df['MIN'] >= 15]
+        df = df[df['MIN'] >= 12]
         filtered_count = len(df)
         logger.info(f"Filtered from {original_count} to {filtered_count} players (GP>=10, MIN>=15)")
         
         # Drop columns we don't want to use for clustering (updated for new data structure)
-        columns_to_drop = ['PLAYER TEAM', 'W', 'L', 'GP', 'DREB', 'STL', 'BLK', 'STAT_TYPE', 'SCRAPED_DATE', 
+        columns_to_drop = ['TEAM', 'W', 'L', 'GP', 'DREB', 'STL', 'BLK', 'STAT_TYPE', 'SCRAPED_DATE', 
                           'PLAYER_ID', 'SOURCE', 'id']
         df = df.drop(columns=columns_to_drop, errors='ignore')
         logger.info(f"Using {len(df.columns)} features for clustering")

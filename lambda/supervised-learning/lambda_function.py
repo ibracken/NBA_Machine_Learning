@@ -7,6 +7,8 @@ import json
 import pickle
 from io import BytesIO
 import logging
+from datetime import datetime, timezone, timedelta
+import pytz
 
 # Configure logging
 logger = logging.getLogger()
@@ -42,6 +44,55 @@ def save_model_to_s3(model, key):
     s3.put_object(Bucket=BUCKET_NAME, Key=key, Body=model_buffer.getvalue())
     logger.info(f"Saved model to s3://{BUCKET_NAME}/{key}")
 
+def calculate_rest_days(df):
+    """Calculate rest days for each player based on their previous game"""
+    logger.info("Calculating rest days for players")
+    
+    # Create a copy to avoid modifying the original
+    df_sorted = df.copy()
+    
+    # Ensure GAME_DATE is datetime
+    df_sorted['GAME_DATE'] = pd.to_datetime(df_sorted['GAME_DATE'])
+    
+    # Sort by player and game date (ascending for proper calculation)
+    df_sorted = df_sorted.sort_values(['PLAYER', 'GAME_DATE'])
+    
+    # Calculate days since last game for each player
+    df_sorted['PREV_GAME_DATE'] = df_sorted.groupby('PLAYER')['GAME_DATE'].shift(1)
+    df_sorted['REST_DAYS'] = (df_sorted['GAME_DATE'] - df_sorted['PREV_GAME_DATE']).dt.days
+    
+    # For first games (no previous game), set rest days to 3 (reasonable default)
+    df_sorted['REST_DAYS'] = df_sorted['REST_DAYS'].fillna(3).astype(int)
+    
+    # For predictions (current games), calculate rest days from most recent game to today
+    # Get current date in ET timezone
+    et_tz = pytz.timezone('America/New_York')
+    today = datetime.now(et_tz).date()
+    
+    # Get most recent game for each player
+    most_recent_games = df_sorted.groupby('PLAYER')['GAME_DATE'].max().reset_index()
+    most_recent_games['MOST_RECENT_DATE'] = most_recent_games['GAME_DATE']
+    
+    # Merge back and update REST_DAYS for prediction cases
+    df_sorted = df_sorted.merge(most_recent_games[['PLAYER', 'MOST_RECENT_DATE']], on='PLAYER', how='left')
+    
+    # Calculate rest days from most recent game to today for predictions
+    current_rest_days = (pd.Timestamp(today) - df_sorted['MOST_RECENT_DATE']).dt.days
+    
+    # For the most recent games, use the calculated rest days from today
+    is_most_recent = df_sorted['GAME_DATE'] == df_sorted['MOST_RECENT_DATE']
+    df_sorted.loc[is_most_recent, 'REST_DAYS'] = current_rest_days[is_most_recent]
+    
+    # Clean up temporary columns
+    df_sorted = df_sorted.drop(columns=['PREV_GAME_DATE', 'MOST_RECENT_DATE'])
+    
+    # Ensure REST_DAYS is non-negative and reasonable (cap at 30 days for outliers)
+    df_sorted['REST_DAYS'] = df_sorted['REST_DAYS'].clip(0, 30)
+    
+    logger.info(f"Rest days calculated: min={df_sorted['REST_DAYS'].min()}, max={df_sorted['REST_DAYS'].max()}, mean={df_sorted['REST_DAYS'].mean():.2f}")
+    
+    return df_sorted
+
 def run_supervised_learning():
     """Main function to train supervised learning model for fantasy point prediction"""
     logger.info("Starting supervised learning model training")
@@ -53,7 +104,7 @@ def run_supervised_learning():
         logger.info(f"Loaded {len(df)} box score records")
         
         # Validate box scores data structure
-        required_box_score_cols = ['PLAYER', 'GAME_DATE', 'FP', 'Last3_FP_Avg', 'Last5_FP_Avg', 'Last7_FP_Avg', 'Season_FP_Avg', 'MIN']
+        required_box_score_cols = ['PLAYER', 'GAME_DATE', 'FP', 'Last3_FP_Avg', 'Last5_FP_Avg', 'Last7_FP_Avg', 'Season_FP_Avg', 'MIN', 'MATCHUP']
         missing_cols = [col for col in required_box_score_cols if col not in df.columns]
         if missing_cols:
             error_msg = f"Missing required columns in box scores data: {missing_cols}"
@@ -131,8 +182,34 @@ def run_supervised_learning():
         # Handle missing clusters with placeholder
         df['CLUSTER'] = df['CLUSTER'].fillna('CLUSTER_NAN')
         
+        # Parse MATCHUP to extract home/away and opponent
+        def parse_matchup(matchup_str):
+            if pd.isna(matchup_str):
+                return 0, 'UNKNOWN'
+            matchup_str = str(matchup_str)
+            if ' @ ' in matchup_str:
+                # Away game: "TOR @ NYK"
+                teams = matchup_str.split(' @ ')
+                return 0, teams[1] if len(teams) > 1 else 'UNKNOWN'
+            elif ' vs. ' in matchup_str:
+                # Home game: "TOR vs. PHX" 
+                teams = matchup_str.split(' vs. ')
+                return 1, teams[1] if len(teams) > 1 else 'UNKNOWN'
+            else:
+                return 0, 'UNKNOWN'
+        
+        # Apply parsing
+        matchup_parsed = df['MATCHUP'].apply(parse_matchup)
+        df['IS_HOME'] = matchup_parsed.apply(lambda x: x[0])
+        df['OPPONENT'] = matchup_parsed.apply(lambda x: x[1])
+        
+        logger.info(f"Parsed MATCHUP: {(df['IS_HOME'] == 1).sum()} home games, {(df['IS_HOME'] == 0).sum()} away games")
+        
+        # Calculate rest days for each player
+        df = calculate_rest_days(df)
+        
         # Define features and target
-        feature_names = ['Last3_FP_Avg', 'Last5_FP_Avg', 'Last7_FP_Avg', 'Season_FP_Avg', 'CLUSTER', 'MIN']
+        feature_names = ['Last3_FP_Avg', 'Last5_FP_Avg', 'Last7_FP_Avg', 'Season_FP_Avg', 'CLUSTER', 'MIN', 'IS_HOME', 'OPPONENT', 'REST_DAYS']
         label_name = 'FP'
         
         # Validate feature columns exist
@@ -160,9 +237,9 @@ def run_supervised_learning():
         
         logger.info(f"Feature validation passed: {len(df_features)} records with {len(feature_names)} features")
         
-        # One-hot encode clusters
-        logger.info("One-hot encoding cluster features")
-        df_features = pd.get_dummies(df_features, columns=['CLUSTER'], drop_first=False)
+        # One-hot encode categorical features
+        logger.info("One-hot encoding categorical features")
+        df_features = pd.get_dummies(df_features, columns=['CLUSTER', 'OPPONENT'], drop_first=False)
         
         # Convert to numpy arrays
         features = np.array(df_features)
@@ -194,7 +271,7 @@ def run_supervised_learning():
         
         # Store additional data for test results
         players = df['PLAYER']
-        game_dates = df['GAME DATE']
+        game_dates = df['GAME_DATE']
         
         # Train-test split
         logger.info("Splitting data for training and testing")
@@ -211,12 +288,37 @@ def run_supervised_learning():
         # Train RandomForest model
         logger.info("Training RandomForest model")
         logger.info(f"Training set size: {len(train)}, Test set size: {len(test)}")
+        logger.info(f"Training data shape: {train.shape}")
+        logger.info(f"Training labels shape: {train_labels.shape}")
+        logger.info(f"Feature count: {train.shape[1]}")
+        logger.info(f"Total records being sent to RandomForest: {train.shape[0]}")
         
-        # Validate training data
-        if np.isnan(train).any():
-            logger.warning("Training data contains NaN values")
-        if np.isinf(train).any():
-            logger.warning("Training data contains infinite values")
+        # Validate training data (handle mixed dtypes safely)
+        try:
+            # Check for NaN values in numeric columns only
+            numeric_mask = np.issubdtype(train.dtype, np.number) if train.dtype != object else False
+            if numeric_mask and np.isnan(train).any():
+                logger.warning("Training data contains NaN values")
+        except (TypeError, ValueError):
+            # For mixed dtypes, check each column separately
+            for i in range(train.shape[1]):
+                col = train[:, i]
+                if np.issubdtype(col.dtype, np.floating):
+                    if np.isnan(col).any():
+                        logger.warning(f"Training data column {i} contains NaN values")
+                        break
+        
+        try:
+            if np.isinf(train).any():
+                logger.warning("Training data contains infinite values")
+        except (TypeError, ValueError):
+            # For mixed dtypes, check each column separately  
+            for i in range(train.shape[1]):
+                col = train[:, i]
+                if np.issubdtype(col.dtype, np.floating):
+                    if np.isinf(col).any():
+                        logger.warning(f"Training data column {i} contains infinite values")
+                        break
         
         rf = RandomForestRegressor(random_state=4)
         rf.fit(train, train_labels.ravel())
@@ -232,14 +334,16 @@ def run_supervised_learning():
         # Create results dataframe
         logger.info("Creating test results dataframe")
         
-        # Get cluster columns for reverse mapping
+        # Get categorical columns for reverse mapping
         cluster_columns = [col for col in df_features.columns if col.startswith('CLUSTER_')]
+        opponent_columns = [col for col in df_features.columns if col.startswith('OPPONENT_')]
         
         # Create test results dataframe
         test_df = pd.DataFrame(test, columns=df_features.columns)
         
-        # Map back to original cluster numbers
+        # Map back to original cluster and opponent values
         test_df['CLUSTER'] = test_df[cluster_columns].idxmax(axis=1)
+        test_df['OPPONENT'] = test_df[opponent_columns].idxmax(axis=1) if opponent_columns else 'UNKNOWN'
         
         def safe_cluster_map(value):
             if isinstance(value, str) and value.startswith('CLUSTER_'):
@@ -250,10 +354,16 @@ def run_supervised_learning():
                     return np.nan
             return np.nan
         
+        def safe_opponent_map(value):
+            if isinstance(value, str) and value.startswith('OPPONENT_'):
+                return value.split('_', 1)[-1]  # Get everything after first underscore
+            return 'UNKNOWN'
+        
         test_df['CLUSTER'] = test_df['CLUSTER'].map(safe_cluster_map)
+        test_df['OPPONENT'] = test_df['OPPONENT'].map(safe_opponent_map)
         
         # Drop one-hot encoded columns
-        test_df = test_df.drop(columns=cluster_columns)
+        test_df = test_df.drop(columns=cluster_columns + opponent_columns)
         
         # Add metadata and predictions
         test_df['PLAYER'] = test_players

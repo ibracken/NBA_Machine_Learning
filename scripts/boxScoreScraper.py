@@ -5,156 +5,244 @@ import sys
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(project_root)
 
-from selenium import webdriver
-from selenium.webdriver.support.ui import Select
-from selenium.webdriver.common.by import By
-from selenium.webdriver.chrome.options import Options
-from bs4 import BeautifulSoup, NavigableString, Tag
 import pandas as pd
-import time
+import requests
+import logging
+from datetime import datetime
 from aws.s3_utils import save_dataframe_to_s3, load_dataframe_from_s3
 from unidecode import unidecode
-import logging
 
-
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 def normalize_name(name):
+    """Normalize player name for matching"""
     return unidecode(name.strip().lower())
 
 def safe_float(value):
+    """Convert value to float safely"""
     try:
         return float(value)
     except (ValueError, TypeError):
         return None
 
-def scrapeBoxScores():
-    logger.info("Starting box score scraper")
+def fetch_box_scores_from_api():
+    """Fetch box scores from NBA API"""
+    logger.info("Starting NBA API box score fetch")
+    
+    url = "https://stats.nba.com/stats/leaguegamelog"
+    
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Referer': 'https://www.nba.com/stats/players/advanced',
+        'Origin': 'https://www.nba.com',
+        'Host': 'stats.nba.com',
+        'Connection': 'keep-alive',
+        'Sec-Fetch-Dest': 'empty',
+        'Sec-Fetch-Mode': 'cors',
+        'Sec-Fetch-Site': 'same-site',
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache'
+    }
+    
+    params = {
+        'Counter': '1000',
+        'DateFrom': '',
+        'DateTo': '',
+        'Direction': 'DESC',
+        'ISTRound': '',
+        'LeagueID': '00',
+        'PlayerOrTeam': 'P',
+        'Season': '2024-25',
+        'SeasonType': 'Regular Season',
+        'Sorter': 'DATE'
+    }
+    
+    # Use proxy for NBA API requests (NBA blocks some IPs)
+    proxy_url = "http://smart-b0ibmkjy90uq_area-US_state-Northcarolina_life-15_session-0Ve35bhsUr:sU8CQmV8LDmh2mXj@proxy.smartproxy.net:3120"
+    proxies = {
+        'http': proxy_url,
+        'https': proxy_url
+    }
     
     try:
-        # Initialize Chrome WebDriver with headless options
-        chrome_options = Options()
-        chrome_options.add_argument("--headless")
-        chrome_options.add_argument("--no-sandbox")
-        chrome_options.add_argument("--disable-dev-shm-usage")
-        chrome_options.add_argument('--ignore-certificate-errors')
-        chrome_options.add_argument('--allow-running-insecure-content')
-        chrome_options.add_argument("--window-size=1920x1080")  # Wider viewport
-        chrome_options.add_argument("--force-device-scale-factor=0.75")  # Zoom out
-        chrome_options.add_argument("--start-maximized")  # Start maximized
-        chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        logger.info("Making request to NBA API...")
+        response = requests.get(url, headers=headers, params=params, proxies=proxies, timeout=60, verify=False)
         
-        driver = webdriver.Chrome(options=chrome_options)
-        # Add timeout settings
-        driver.set_page_load_timeout(300)  # 5 minutes for page load
-        driver.implicitly_wait(30)  # 30 seconds for finding elements
-        url_advanced = r"https://www.nba.com/stats/players/boxscores"
-        driver.get(url_advanced)
-        time.sleep(5)
-
-        try:
-            cookies = driver.find_element(By.XPATH, r"/html/body/div[2]/div[2]/div/div[1]/div/div[2]/div/button[1]")
-            cookies.click()
-        except Exception as e:
-            logger.warning(f"Could not find or click cookies button: {e}")
-        
-        time.sleep(2)
-
-        try:
-            # Select Regular Season first with retry logic
-            max_retries = 3
-            for attempt in range(max_retries):
-                try:
-                    select = Select(driver.find_element(By.XPATH, r"/html/body/div[1]/div[2]/div[2]/div[3]/section[1]/div/div/div[2]/label/div/select"))
-                    select.select_by_index(1)
-                    time.sleep(3)
-                    break
-                except Exception as e:
-                    if attempt == max_retries - 1:
-                        logger.error(f"Failed to select Regular Season dropdown after {max_retries} attempts: {e}")
-                        driver.quit()
-                        return
-                    logger.warning(f"Attempt {attempt + 1} failed, retrying...")
-                    time.sleep(3)
+        if response.status_code == 200:
+            data = response.json()
             
-            # Then select All players with retry logic
-            for attempt in range(max_retries):
-                try:
-                    select = Select(driver.find_element(By.XPATH, r"/html/body/div[1]/div[2]/div[2]/div[3]/section[2]/div/div[2]/div[2]/div[1]/div[3]/div/label/div/select"))
-                    select.select_by_index(0)
-                    time.sleep(3)
-                    break
-                except Exception as e:
-                    if attempt == max_retries - 1:
-                        logger.error(f"Failed to select All players dropdown after {max_retries} attempts: {e}")
-                        driver.quit()
-                        return
-                    logger.warning(f"Attempt {attempt + 1} failed, retrying...")
-                    time.sleep(3)
-        except Exception as e:
-            logger.error(f"Failed to select dropdown: {e}")
-            driver.quit()
-            return
-
-        time.sleep(15)
-
-        # Parse the page content
-        src = driver.page_source 
-        parser = BeautifulSoup(src, 'lxml')
-        table = parser.find("div", attrs={"class": "Crom_container__C45Ti crom-container"})
-        
-        if not table or isinstance(table, NavigableString) or not isinstance(table, Tag):
-            logger.error("Could not find valid table")
-            driver.quit()
-            return
+            if 'resultSets' in data and len(data['resultSets']) > 0:
+                result_set = data['resultSets'][0]
+                headers_list = result_set['headers']
+                rows = result_set['rowSet']
+                
+                logger.info(f"Successfully fetched {len(rows)} box score records")
+                
+                # Create DataFrame
+                df = pd.DataFrame(rows, columns=headers_list)
+                return df
+            else:
+                logger.error("No resultSets found in NBA API response")
+                return None
+        else:
+            logger.error(f"NBA API request failed with status {response.status_code}: {response.text}")
+            return None
             
-        # Extract headers and data
-        headers = table.findAll('th')
-        headerlist = [h.text.strip() for h in headers]
-        headerlist1 = [a for a in headerlist if not 'RANK' in a]
+    except Exception as e:
+        logger.error(f"Error fetching from NBA API: {str(e)}")
+        return None
 
-        rows = table.findAll('tr')[1:]
-        player_box_scores = [[td.getText().strip() for td in rows[i].findAll('td')] for i in range(len(rows))]
-        df = pd.DataFrame(data=player_box_scores, columns=headerlist1)
-        print(df.head())
-
-        # Data preprocessing
-        df['PLAYER'] = df['PLAYER'].apply(normalize_name)
+def process_box_scores(df):
+    """Process and enrich box score data"""
+    logger.info("Processing box score data")
+    
+    try:
+        # Rename columns first to match existing structure
+        df = df.rename(columns={'FANTASY_PTS': 'FP', 'TEAM_NAME': 'PLAYER TEAM'})
+        
+        # Data preprocessing - normalize player names and drop original
+        df['PLAYER'] = df['PLAYER_NAME'].apply(normalize_name)
+        df = df.drop(columns=['PLAYER_NAME'])  # Remove duplicate column
+        
+        # Convert data types
         df['FP'] = pd.to_numeric(df['FP'], errors='coerce')
-        df['GAME DATE'] = pd.to_datetime(df['GAME DATE'], format='%m/%d/%Y')
-        df = df.sort_values(by=['PLAYER', 'GAME DATE'], ascending=[True, True])
+        df['GAME_DATE'] = pd.to_datetime(df['GAME_DATE'], format='%Y-%m-%d')
+        
+        # Sort by player and game date
+        df = df.sort_values(by=['PLAYER', 'GAME_DATE'], ascending=[True, True])
+        
+        logger.info(f"Processed {len(df)} records")
+        return df
+        
+    except Exception as e:
+        logger.error(f"Error processing box scores: {str(e)}")
+        return None
 
+def enrich_with_clusters(df):
+    """Add cluster information to box score data"""
+    logger.info("Adding cluster information")
+    
+    try:
         # Get cluster data from S3
         cluster_df = load_dataframe_from_s3('data/clustered_players/current.parquet')
-        clusterDict = cluster_df.set_index('PLAYER')['CLUSTER'].to_dict()
-        df['CLUSTER'] = df['PLAYER'].map(clusterDict)
+        
+        # Create cluster mapping dictionary
+        cluster_df['PLAYER'] = cluster_df['PLAYER'].apply(normalize_name)
+        cluster_dict = cluster_df.set_index('PLAYER')['CLUSTER'].to_dict()
+        
+        # Add cluster information
+        df['CLUSTER'] = df['PLAYER'].map(cluster_dict)
+        
+        # Log cluster matching stats
+        matched_players = df['CLUSTER'].notna().sum()
+        total_players = len(df['PLAYER'].unique())
+        logger.info(f"Matched clusters for {matched_players}/{len(df)} records from {total_players} unique players")
+        
+        return df
+        
+    except Exception as e:
+        logger.error(f"Error adding cluster information: {str(e)}")
+        # Continue without clusters if cluster data unavailable
+        df['CLUSTER'] = None
+        return df
 
-        # Calculate rolling averages
+def calculate_rolling_averages(df):
+    """Calculate rolling averages for fantasy points"""
+    logger.info("Calculating rolling averages")
+    
+    try:
+        # Calculate rolling averages for different windows
         windows = [3, 5, 7]
         for window in windows:
-            df[f'Last{window}_FP_Avg'] = df.groupby('PLAYER')['FP'].transform(lambda x: x.rolling(window, min_periods=1).mean())
+            df[f'Last{window}_FP_Avg'] = df.groupby('PLAYER')['FP'].transform(
+                lambda x: x.rolling(window, min_periods=1).mean()
+            )
+        
+        # Calculate season average FP
+        df['Season_FP_Avg'] = df.groupby('PLAYER')['FP'].transform(
+            lambda x: x.expanding(min_periods=1).mean()
+        )
+        
+        logger.info("Successfully calculated rolling averages")
+        return df
+        
+    except Exception as e:
+        logger.error(f"Error calculating rolling averages: {str(e)}")
+        return df
 
-        # Calculate Season Average FP
-        df['Season_FP_Avg'] = df.groupby('PLAYER')['FP'].transform(lambda x: x.expanding(min_periods=1).mean())
-
+def scrapeBoxScores():
+    """Main function to scrape box scores using NBA API (replaces web scraping)"""
+    logger.info("Starting API-based box score scraper")
+    
+    try:
+        # Fetch data from NBA API
+        df = fetch_box_scores_from_api()
+        if df is None:
+            logger.error("Failed to fetch data from NBA API")
+            return
+        
+        # Process the data
+        df = process_box_scores(df)
+        if df is None:
+            logger.error("Failed to process box score data")
+            return
+        
+        # Add cluster information
+        df = enrich_with_clusters(df)
+        
+        # Calculate rolling averages
+        df = calculate_rolling_averages(df)
+        
         # Save to S3
         save_dataframe_to_s3(df, 'data/box_scores/current.parquet')
-        logger.info(f"Successfully saved {len(df)} box score records to S3")
+        logger.info(f"Saved columns: {list(df.columns)}")
+        logger.info(f"Column count: {len(df.columns)}")
         
-        driver.quit()
+        # Calculate summary statistics
+        total_records = len(df)
+        unique_players = len(df['PLAYER'].unique())
+        date_range = f"{df['GAME_DATE'].min().strftime('%Y-%m-%d')} to {df['GAME_DATE'].max().strftime('%Y-%m-%d')}"
+        
+        logger.info("Box score scraping completed successfully")
+        logger.info(f"Total records: {total_records}")
+        logger.info(f"Unique players: {unique_players}")
+        logger.info(f"Date range: {date_range}")
+        
+        return {
+            'success': True,
+            'total_records': total_records,
+            'unique_players': unique_players,
+            'date_range': date_range
+        }
         
     except Exception as e:
         logger.error(f"Error in box score scraper: {str(e)}")
-        if 'driver' in locals():
-            driver.quit()
-        raise
+        return {
+            'success': False,
+            'error': str(e)
+        }
 
 def run_scrape_box_scores():
     """
-    Scrapes box scores and saves to S3.
+    Scrapes box scores using NBA API and saves to S3.
     """
     logger.info("Starting box score scraping process")
-    scrapeBoxScores()
+    result = scrapeBoxScores()
+    
+    if result and result.get('success'):
+        logger.info("Box score scraping completed successfully")
+    else:
+        logger.error("Box score scraping failed")
+        if result and 'error' in result:
+            logger.error(f"Error: {result['error']}")
 
 if __name__ == "__main__":
     run_scrape_box_scores()
