@@ -45,6 +45,10 @@ def run_clustering_analysis():
         # Load latest player stats from S3
         logger.info("Loading player stats from S3")
         df = load_dataframe_from_s3('data/advanced_player_stats/current.parquet')
+        df2 = load_dataframe_from_s3('data/advanced_player_stats/2024-2025.parquet')
+        df3 = load_dataframe_from_s3('data/advanced_player_stats/2023-2024.parquet')
+        df4 = load_dataframe_from_s3('data/advanced_player_stats/2022-2023.parquet')
+        df = pd.concat([df, df2, df3, df4], ignore_index = True)
         logger.info(f"Loaded {len(df)} player records")
         
         # Set player as index and filter for meaningful playing time

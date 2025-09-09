@@ -98,10 +98,14 @@ def run_supervised_learning():
     logger.info("Starting supervised learning model training")
     
     try:
-        # Load box scores data
-        logger.info("Loading box scores data from S3")
+        # Load box scores data from multiple seasons
+        logger.info("Loading box scores data from S3 (multiple seasons)")
         df = load_dataframe_from_s3('data/box_scores/current.parquet')
-        logger.info(f"Loaded {len(df)} box score records")
+        df2 = load_dataframe_from_s3('data/box_scores/2024-2025.parquet')
+        df3 = load_dataframe_from_s3('data/box_scores/2023-2024.parquet')
+        df4 = load_dataframe_from_s3('data/box_scores/2022-2023.parquet')
+        df = pd.concat([df, df2, df3, df4])
+        logger.info(f"Loaded {len(df)} box score records from multiple seasons")
         
         # Validate box scores data structure
         required_box_score_cols = ['PLAYER', 'GAME_DATE', 'FP', 'Last3_FP_Avg', 'Last5_FP_Avg', 'Last7_FP_Avg', 'Season_FP_Avg', 'MIN', 'MATCHUP']
@@ -130,10 +134,13 @@ def run_supervised_learning():
             df = df[df['MIN'] != 0]
             logger.info(f"Filtered from {original_count} to {len(df)} records (MIN != 0)")
         
-        # Load player stats and cluster assignments
-        logger.info("Loading player stats and cluster data")
+        # Load player stats and cluster assignments from multiple seasons
+        logger.info("Loading player stats and cluster data from multiple seasons")
         players_df = load_dataframe_from_s3('data/advanced_player_stats/current.parquet')
-        clustered_players_df = load_dataframe_from_s3('data/clustered_players/current.parquet')
+        players_df2 = load_dataframe_from_s3('data/box_scores/2024-2025.parquet')
+        players_df3 = load_dataframe_from_s3('data/box_scores/2023-2024.parquet')
+        players_df4 = load_dataframe_from_s3('data/box_scores/2022-2023.parquet')
+        players_df = pd.concat([players_df, players_df2, players_df3, players_df4])
         
         # Validate player stats data
         if len(players_df) == 0:
@@ -146,37 +153,13 @@ def run_supervised_learning():
             logger.error(error_msg)
             return {'success': False, 'error': error_msg}
         
-        # Validate clustered players data
-        if len(clustered_players_df) == 0:
-            logger.warning("Clustered players data is empty - proceeding without clusters")
-        elif 'PLAYER' not in clustered_players_df.columns or 'CLUSTER' not in clustered_players_df.columns:
-            error_msg = "Clustered players data missing required columns (PLAYER, CLUSTER)"
-            logger.error(error_msg)
-            return {'success': False, 'error': error_msg}
-        
-        logger.info(f"Player data validation passed: {len(players_df)} player stats, {len(clustered_players_df)} clustered players")
-        
-        # Merge cluster assignments with player stats
-        dataset_clusters = pd.merge(
-            players_df, 
-            clustered_players_df[['PLAYER', 'CLUSTER']], 
-            on='PLAYER', 
-            how='left'
-        )
-        
-        # Create cluster mapping dictionary
-        clusterDict = dataset_clusters.set_index('PLAYER')['CLUSTER'].to_dict()
-        
-        # Map clusters to box score data
-        df['CLUSTER'] = df['PLAYER'].map(clusterDict)
-        logger.info(f"Mapped clusters to {(~df['CLUSTER'].isna()).sum()} players")
         
         # Sort by game date (most recent first)
         df = df.sort_values(by=['GAME_DATE'], ascending=[False])
         
         # Data preprocessing for MIN column (convert to numeric and add noise as in notebook)
         df['MIN'] = pd.to_numeric(df['MIN'], errors='coerce')
-        df['MIN'] = df['MIN'] + np.random.uniform(-3, 3, size=len(df))
+        df['MIN'] = df['MIN'] + np.random.uniform(-5, 5, size=len(df))
         df['MIN'] = df['MIN'].clip(lower=0)
         
         # Handle missing clusters with placeholder

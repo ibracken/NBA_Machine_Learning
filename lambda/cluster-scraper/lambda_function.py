@@ -97,6 +97,16 @@ api_to_cluster_mapping = {
     'DEF_WS': 'DEFWS',
 }
 
+def get_current_nba_season():
+    """Calculate current NBA season based on date"""
+    now = datetime.now()
+    year = now.year
+    # NBA season runs Oct-June, so if before July, use previous year
+    if now.month <= 6:  # Jan-June = current season started previous Oct
+        return f"{year-1}-{str(year)[2:]}"
+    else:  # July-Dec = new season starting in Oct
+        return f"{year}-{str(year+1)[2:]}"
+
 def safe_float(value):
     """Convert value to float safely"""
     try:
@@ -193,7 +203,7 @@ def scrape_single_api_endpoint(session, measure_type, stat_type):
         'PlayerPosition': '',
         'PlusMinus': 'N',
         'Rank': 'N',
-        'Season': '2024-25',
+        'Season': get_current_nba_season(),
         'SeasonSegment': '',
         'SeasonType': 'Regular Season',
         'ShotClockRange': '',
@@ -386,3 +396,7 @@ def lambda_handler(event, context):
                 'error': str(e)
             })
         }
+    
+if __name__ == "__main__":
+    result = scrape_nba_api()
+    print(f"Box score scraper result: {result}")

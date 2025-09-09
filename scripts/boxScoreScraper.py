@@ -19,6 +19,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+def get_current_nba_season():
+    """Calculate current NBA season based on date"""
+    now = datetime.now()
+    year = now.year
+    # NBA season runs Oct-June, so if before July, use previous year
+    if now.month <= 6:  # Jan-June = current season started previous Oct
+        return f"{year-1}-{str(year)[2:]}"
+    else:  # July-Dec = new season starting in Oct
+        return f"{year}-{str(year+1)[2:]}"
+
 def normalize_name(name):
     """Normalize player name for matching"""
     return unidecode(name.strip().lower())
@@ -60,7 +70,8 @@ def fetch_box_scores_from_api():
         'ISTRound': '',
         'LeagueID': '00',
         'PlayerOrTeam': 'P',
-        'Season': '2024-25',
+        'Season': get_current_nba_season(),
+        # 'Season' : '2022-23',
         'SeasonType': 'Regular Season',
         'Sorter': 'DATE'
     }

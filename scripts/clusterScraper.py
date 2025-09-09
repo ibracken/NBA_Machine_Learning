@@ -89,6 +89,16 @@ numeric_columns_list = [
     'OPP_PTS_OFFTO', 'OPP_PTS_2ND_CHANCE', 'OPP_PTS_FB', 'OPP_PTS_PAINT', 'DEFWS'
 ]
 
+def get_current_nba_season():
+    """Calculate current NBA season based on date"""
+    now = datetime.now()
+    year = now.year
+    # NBA season runs Oct-June, so if before July, use previous year
+    if now.month <= 6:  # Jan-June = current season started previous Oct
+        return f"{year-1}-{str(year)[2:]}"
+    else:  # July-Dec = new season starting in Oct
+        return f"{year}-{str(year+1)[2:]}"
+
 def safe_float(value):
     """Convert value to float safely"""
     try:
@@ -171,7 +181,8 @@ def scrape_single_api_endpoint(session, measure_type, stat_type):
         'PlayerPosition': '',
         'PlusMinus': 'N',
         'Rank': 'N',
-        'Season': '2024-25',
+        'Season': get_current_nba_season(),
+        # 'Season' : '2022-23',
         'SeasonSegment': '',
         'SeasonType': 'Regular Season',
         'ShotClockRange': '',
@@ -337,9 +348,6 @@ def run_cluster_scraper():
     logger.info("Starting API-based cluster scraper")
     
     try:
-        # Load existing data from S3 (if any)
-        existing_df = load_dataframe_from_s3('data/advanced_player_stats/current.parquet')
-        logger.info(f"Loaded existing data: {len(existing_df)} records")
         
         # Scrape using NBA API
         result = scrape_nba_api()

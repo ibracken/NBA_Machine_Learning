@@ -6,15 +6,31 @@ def inspect_s3_data():
     print("\nInspecting NBA Stats Data...")
     
     try:
-        # Load advanced stats
+        # Load 2023-2024 advanced stats first
+        print("\nLoading 2023-2024 Advanced Stats...")
+        stats_2023_df = load_dataframe_from_s3('data/advanced_player_stats/2023-2024.parquet')
+        if not stats_2023_df.empty:
+            print("\n2023-2024 Advanced Stats:")
+            print(f"- {len(stats_2023_df)} players, {len(stats_2023_df.columns)} stats")
+            print("\nSample 2023-2024 Stats:")
+            print(stats_2023_df.head().to_string())
+            if 'SCRAPED_DATE' in stats_2023_df.columns:
+                print(f"Last Updated: {stats_2023_df['SCRAPED_DATE'].max()}")
+        else:
+            print("No 2023-2024 data found")
+        
+        # Load current advanced stats
+        print("\nLoading Current Advanced Stats...")
         stats_df = load_dataframe_from_s3('data/advanced_player_stats/current.parquet')
         if not stats_df.empty:
-            print("\nAdvanced Stats:")
+            print("\nCurrent Advanced Stats:")
             print(f"- {len(stats_df)} players, {len(stats_df.columns)} stats")
-            print("\nSample Stats:")
-            display_cols = ['PLAYER', 'PLAYER TEAM', 'MIN', 'OFFRTG', 'DEFRTG']
+            print("\nSample Current Stats:")
             print(stats_df.head().to_string())
-            print(f"Last Updated: {stats_df['SCRAPED_DATE'].max()}")
+            if 'SCRAPED_DATE' in stats_df.columns:
+                print(f"Last Updated: {stats_df['SCRAPED_DATE'].max()}")
+        else:
+            print("No current data found")
         
         # Load box score data
         print("\nLoading Box Score Data...")
