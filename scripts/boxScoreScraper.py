@@ -71,7 +71,7 @@ def fetch_box_scores_from_api():
         'LeagueID': '00',
         'PlayerOrTeam': 'P',
         'Season': get_current_nba_season(),
-        # 'Season' : '2022-23',
+        # 'Season' : '2024-25',
         'SeasonType': 'Regular Season',
         'Sorter': 'DATE'
     }
@@ -174,12 +174,12 @@ def calculate_rolling_averages(df):
         windows = [3, 5, 7]
         for window in windows:
             df[f'Last{window}_FP_Avg'] = df.groupby('PLAYER')['FP'].transform(
-                lambda x: x.rolling(window, min_periods=1).mean()
+                lambda x: x.shift(1).rolling(window, min_periods=1).mean()
             )
         
         # Calculate season average FP
         df['Season_FP_Avg'] = df.groupby('PLAYER')['FP'].transform(
-            lambda x: x.expanding(min_periods=1).mean()
+            lambda x: x.shift(1).expanding(min_periods=1).mean()
         )
         
         logger.info("Successfully calculated rolling averages")
@@ -220,7 +220,12 @@ def scrapeBoxScores():
         # Calculate summary statistics
         total_records = len(df)
         unique_players = len(df['PLAYER'].unique())
-        date_range = f"{df['GAME_DATE'].min().strftime('%Y-%m-%d')} to {df['GAME_DATE'].max().strftime('%Y-%m-%d')}"
+        
+        # Handle empty DataFrame case
+        if total_records > 0:
+            date_range = f"{df['GAME_DATE'].min().strftime('%Y-%m-%d')} to {df['GAME_DATE'].max().strftime('%Y-%m-%d')}"
+        else:
+            date_range = "No data available"
         
         logger.info("Box score scraping completed successfully")
         logger.info(f"Total records: {total_records}")
