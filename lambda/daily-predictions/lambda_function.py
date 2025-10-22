@@ -23,6 +23,13 @@ logger.setLevel(logging.INFO)
 s3 = boto3.client('s3')
 BUCKET_NAME = 'nba-prediction-ibracken'
 
+# Use proxy for NBA API requests (NBA blocks some IPs)
+proxy_url = "http://smart-b0ibmkjy90uq_area-US_state-Northcarolina:sU8CQmV8LDmh2mXj@proxy.smartproxy.net:3120"
+proxies = {
+    'http': proxy_url,
+    'https': proxy_url
+}
+
 # S3 utility functions
 def save_dataframe_to_s3(df, key):
     """Save DataFrame as Parquet to S3"""
@@ -61,28 +68,38 @@ def normalize_name(name):
 
 def get_chrome_driver():
     """Create Chrome driver with Lambda-specific configuration"""
+    import os
+
     chrome_options = Options()
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument('--ignore-certificate-errors')
     chrome_options.add_argument('--allow-running-insecure-content')
     chrome_options.add_argument("--window-size=1920x1080")
     chrome_options.add_argument("--force-device-scale-factor=0.75")
-    chrome_options.add_argument("--start-maximized")
     chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-    chrome_options.add_argument("--single-process")
     chrome_options.add_argument("--disable-extensions")
-    chrome_options.add_argument("--no-first-run")
-    
-    # Lambda-specific Chrome binary path
-    chrome_options.binary_location = "/opt/chrome/chrome"
-    
-    return webdriver.Chrome(
-        service=webdriver.chrome.service.Service("/opt/chromedriver"),
-        options=chrome_options
-    )
+
+    # Check if running in Lambda environment
+    is_lambda = os.environ.get('AWS_LAMBDA_FUNCTION_NAME') is not None
+
+    if is_lambda:
+        # Lambda-specific arguments
+        chrome_options.add_argument("--disable-gpu")
+        chrome_options.add_argument("--no-first-run")
+
+        # Configure proxy for Lambda
+        chrome_options.add_argument(f"--proxy-server={proxy_url}")
+
+        chrome_options.binary_location = "/opt/chrome/chrome"
+        return webdriver.Chrome(
+            service=webdriver.chrome.service.Service("/opt/chromedriver"),
+            options=chrome_options
+        )
+    else:
+        # Local environment - let Selenium automatically manage ChromeDriver
+        return webdriver.Chrome(options=chrome_options)
 
 def scrape_minutes_projection():
     """Scrape projected minutes from FanDuel"""

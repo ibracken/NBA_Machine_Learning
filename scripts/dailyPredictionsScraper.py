@@ -12,6 +12,13 @@ import datetime
 from aws.s3_utils import load_dataframe_from_s3, save_dataframe_to_s3, load_model_from_s3
 from unidecode import unidecode
 
+# Use proxy for NBA API requests (NBA blocks some IPs)
+proxy_url = "http://smart-b0ibmkjy90uq_area-US_state-Northcarolina:sU8CQmV8LDmh2mXj@proxy.smartproxy.net:3120"
+proxies = {
+    'http': proxy_url,
+    'https': proxy_url
+}
+
 def safe_float(value):
     try:
         return float(value)

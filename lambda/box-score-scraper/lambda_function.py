@@ -83,7 +83,7 @@ def fetch_box_scores_from_api():
     }
     
     # Use proxy for NBA API requests (NBA blocks AWS IPs)
-    proxy_url = "http://smart-b0ibmkjy90uq_area-US_state-Northcarolina_life-15_session-0Ve35bhsUr:sU8CQmV8LDmh2mXj@proxy.smartproxy.net:3120"
+    proxy_url = "http://smart-b0ibmkjy90uq_area-US_state-Northcarolina:sU8CQmV8LDmh2mXj@proxy.smartproxy.net:3120"
     proxies = {
         'http': proxy_url,
         'https': proxy_url

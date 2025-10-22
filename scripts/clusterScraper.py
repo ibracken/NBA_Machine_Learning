@@ -266,7 +266,7 @@ def scrape_nba_api():
     logger.info("Starting comprehensive NBA API scraper")
     
     # Setup session with proxy
-    proxy_url = "http://smart-b0ibmkjy90uq_area-US_state-Northcarolina_life-15_session-0Ve35bhsUr:sU8CQmV8LDmh2mXj@proxy.smartproxy.net:3120"
+    proxy_url = "http://smart-b0ibmkjy90uq_area-US_state-Northcarolina:sU8CQmV8LDmh2mXj@proxy.smartproxy.net:3120"
     proxies = {
         'http': proxy_url,
         'https': proxy_url
