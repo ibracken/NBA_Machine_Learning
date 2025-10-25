@@ -11,6 +11,7 @@ import time
 import datetime
 import boto3
 import json
+import requests
 from io import BytesIO
 from unidecode import unidecode
 import logging
@@ -69,28 +70,28 @@ def normalize_name(name):
 def get_chrome_driver():
     """Create Chrome driver with Lambda-specific configuration"""
     import os
-
-    chrome_options = Options()
-    chrome_options.add_argument("--headless")
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument('--ignore-certificate-errors')
-    chrome_options.add_argument('--allow-running-insecure-content')
-    chrome_options.add_argument("--window-size=1920x1080")
-    chrome_options.add_argument("--force-device-scale-factor=0.75")
-    chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-    chrome_options.add_argument("--disable-extensions")
+    from tempfile import mkdtemp
 
     # Check if running in Lambda environment
     is_lambda = os.environ.get('AWS_LAMBDA_FUNCTION_NAME') is not None
 
     if is_lambda:
-        # Lambda-specific arguments
-        chrome_options.add_argument("--disable-gpu")
-        chrome_options.add_argument("--no-first-run")
+        chrome_options = Options()
+        chrome_options.add_argument("--headless")
+        chrome_options.add_argument("--no-sandbox")
+        chrome_options.add_argument("--disable-dev-shm-usage")
+        chrome_options.add_argument('--ignore-certificate-errors')
+        chrome_options.add_argument('--allow-running-insecure-content')
+        chrome_options.add_argument("--window-size=1920x1080")
+        chrome_options.add_argument("--force-device-scale-factor=0.75")
+        chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        chrome_options.add_argument("--disable-extensions")
 
-        # Configure proxy for Lambda
-        chrome_options.add_argument(f"--proxy-server={proxy_url}")
+        # Lambda-specific arguments - use /tmp for all writable directories
+        chrome_options.add_argument(f"--user-data-dir={mkdtemp()}")
+        chrome_options.add_argument(f"--data-path={mkdtemp()}")
+        chrome_options.add_argument(f"--disk-cache-dir={mkdtemp()}")
+        chrome_options.add_argument("--no-first-run")
 
         chrome_options.binary_location = "/opt/chrome/chrome"
         return webdriver.Chrome(
@@ -98,92 +99,112 @@ def get_chrome_driver():
             options=chrome_options
         )
     else:
-        # Local environment - let Selenium automatically manage ChromeDriver
-        return webdriver.Chrome(options=chrome_options)
+        # Local environment - let Selenium automatically manage ChromeDriver (no options, like script)
+        return webdriver.Chrome()
+
+def normalize_team_abbrev(team_abbrev):
+    """
+    Normalize SportsLine team abbreviations to NBA official abbreviations
+    SportsLine uses different abbreviations for some teams
+    """
+    # Mapping from SportsLine abbreviations to NBA official abbreviations
+    # Keep adding to this
+    sportsline_to_nba = {
+        'SA': 'SAS',    # San Antonio Spurs
+        'NO': 'NOP',    # New Orleans Pelicans
+        'NY': 'NYK',    # New York Knicks
+        'GS': 'GSW',    # Golden State Warriors
+        'PHO': 'PHX',   # Phoenix Suns
+    }
+
+    team_abbrev = str(team_abbrev).strip().upper()
+    return sportsline_to_nba.get(team_abbrev, team_abbrev)
+
+def parse_matchup(matchup_str, player_team_abbrev):
+    """
+    Parse matchup string like 'UTA@SAC' or 'ATL@ORL'
+    Returns: (is_home, opponent)
+    player_team_abbrev is needed to determine if player's team is home or away
+    """
+    if pd.isna(matchup_str) or not matchup_str:
+        return 0, 'UNKNOWN'
+
+    matchup_str = str(matchup_str).strip()
+
+    if '@' in matchup_str:
+        # Away @ Home format
+        parts = matchup_str.split('@')
+        if len(parts) == 2:
+            away_team = normalize_team_abbrev(parts[0].strip())
+            home_team = normalize_team_abbrev(parts[1].strip())
+
+            # Normalize player's team abbreviation too
+            player_team_abbrev_normalized = normalize_team_abbrev(player_team_abbrev)
+
+            # Determine if player's team is home or away
+            if player_team_abbrev_normalized == home_team:
+                return 1, away_team  # Player is on home team, opponent is away team
+            elif player_team_abbrev_normalized == away_team:
+                return 0, home_team  # Player is on away team, opponent is home team
+
+    return 0, 'UNKNOWN'
 
 def scrape_minutes_projection():
-    """Scrape projected minutes from FanDuel"""
-    logger.info("Starting FanDuel minutes projection scraping")
-    
-    driver = get_chrome_driver()
-    
-    try:
-        url = "https://www.fanduel.com/research/nba/fantasy/dfs-projections"
-        driver.get(url)
-        logger.info(f"Navigated to FanDuel: {url}")
+    """Scrape minutes projections and matchup data from SportsLine"""
+    logger.info("Starting SportsLine minutes projection scraping")
 
-        # Wait for the scrollable container
-        try:
-            scrollable_container = WebDriverWait(driver, 15).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, 'div[data-testid="virtuoso-scroller"]'))
-            )
-            logger.info("Found scrollable container")
-        except Exception as e:
-            logger.error(f"Could not find scrollable container: {e}")
-            return {}
+    url = "https://www.sportsline.com/nba/expert-projections/simulation/"
+
+    try:
+        response = requests.get(url, timeout=30, proxies=proxies)
+        response.raise_for_status()
+
+        # Parse with BeautifulSoup
+        soup = BeautifulSoup(response.content, 'lxml')
+
+        # Find the table using the xpath structure
+        # XPath: /html/body/div[1]/div[5]/div/section[1]/div/main/div/section/section/section/table/tbody
+        table = soup.find('table')
+
+        if not table:
+            logger.error("Could not find table on SportsLine page")
+            return {}, {}
+
+        tbody = table.find('tbody')
+        if not tbody:
+            logger.error("Could not find tbody in table")
+            return {}, {}
+
+        rows = tbody.find_all('tr')
+        logger.info(f"Found {len(rows)} rows in SportsLine table")
 
         player_minutes = {}
-        seen_rows = set()
-        scroll_pause_time = 1
-        max_scrolls = 50  # Prevent infinite loops in Lambda
+        player_matchups = {}
+        for row in rows:
+            cells = row.find_all('td')
 
-        scroll_count = 0
-        while scroll_count < max_scrolls:
-            # Get currently visible HTML
-            html = driver.execute_script("return document.documentElement.outerHTML;")
-            parser = BeautifulSoup(html, 'lxml')
-            tbody = parser.find('tbody', class_='tableStyles_vtbody__Tj_Pq')
+            # td[1] has player name, td[4] has matchup, td[10] has minutes
+            if len(cells) >= 10:
+                player_name = cells[0].get_text(strip=True)  # td[1] is cells[0] (0-indexed)
+                matchup = cells[3].get_text(strip=True)      # td[4] is cells[3] (0-indexed)
+                minutes = cells[9].get_text(strip=True)      # td[10] is cells[9] (0-indexed)
 
-            if not tbody:
-                logger.warning("No table body found")
-                break
+                if player_name and minutes:
+                    # Normalize the player name to match the format used elsewhere
+                    normalized_name = normalize_name(player_name)
+                    player_minutes[normalized_name] = str(minutes)
+                    player_matchups[normalized_name] = matchup
+                    logger.debug(f"Found player: {normalized_name} - Minutes: {minutes} - Matchup: {matchup}")
 
-            rows = tbody.find_all('tr')
-            new_rows_found = False
+        logger.info(f"Successfully scraped minutes for {len(player_minutes)} players from SportsLine")
+        return player_minutes, player_matchups
 
-            for row in rows:
-                # Skip spacer rows
-                if 'height' in row.get('style', ''):
-                    continue
-
-                row_id = str(row)  # Unique identifier
-                if row_id in seen_rows:
-                    continue
-
-                seen_rows.add(row_id)
-                new_rows_found = True
-
-                td_elements = row.find_all('td', class_="tableStyles_vtd__HAZr4")
-                if len(td_elements) >= 5:
-                    try:
-                        name_td = td_elements[0]
-                        player_name = name_td.find('a', class_='link_link__fHWk6').find('div', class_='PlayerCell_nameLinkText__P3INe').text.strip()
-                        player_name = normalize_name(player_name)
-                        minutes = td_elements[4].text.strip()
-                        player_minutes[player_name] = minutes
-                        logger.debug(f"Found player: {player_name} - Minutes: {minutes}")
-                    except (AttributeError, IndexError) as e:
-                        logger.debug(f"Error processing row: {e}")
-                        continue
-
-            # Scroll down to load more rows
-            driver.execute_script("arguments[0].scrollBy(0, 500);", scrollable_container)
-            time.sleep(scroll_pause_time)
-            scroll_count += 1
-
-            # Break if no new rows found
-            if not new_rows_found:
-                logger.info("No new rows found, stopping scroll")
-                break
-
-        logger.info(f"Scraped minutes for {len(player_minutes)} players from FanDuel")
-        return player_minutes
-
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Failed to fetch data from SportsLine: {e}")
+        return {}, {}
     except Exception as e:
-        logger.error(f"Error scraping FanDuel minutes: {e}")
-        return {}
-    finally:
-        driver.quit()
+        logger.error(f"Failed to parse SportsLine page: {e}")
+        return {}, {}
 
 def scrape_projections_data():
     """Scrape fantasy projections from DailyFantasyFuel and merge with minutes"""
@@ -216,29 +237,40 @@ def scrape_projections_data():
             tbody = table.find('tbody')
             if tbody:
                 rows = tbody.find_all('tr')
+                logger.info(f"Found {len(rows)} rows in DailyFantasyFuel table")
 
                 for row in rows:
                     data_name = row.get('data-name')
                     data_name = normalize_name(data_name)
                     data_ppg_proj = row.get('data-ppg_proj')
+                    data_salary = row.get('data-salary')
+                    data_pos = row.get('data-pos')
 
                     if data_name and data_ppg_proj and data_ppg_proj != "0.0":
-                        player_data[data_name] = data_ppg_proj
-                        
-                logger.info(f"Scraped projections for {len(player_data)} players")
+                        player_data[data_name] = {
+                            'ppg_proj': data_ppg_proj,
+                            'salary': data_salary,
+                            'position': data_pos
+                        }
+
+                logger.info(f"Extracted {len(player_data)} players with valid projections from DailyFantasyFuel")
             else:
                 logger.warning("No tbody found in table")
         else:
             logger.warning("No table found")
 
         # Create DataFrame with projections
-        df = pd.DataFrame(list(player_data.items()), columns=['Player', 'PPG Projection'])
-        
-        # Get minutes projections
-        minutes_dict = scrape_minutes_projection()
-        
-        # Merge minutes data
+        df = pd.DataFrame([
+            {'Player': player, 'PPG Projection': data['ppg_proj'], 'SALARY': safe_float(data['salary']), 'POSITION': data.get('position')}
+            for player, data in player_data.items()
+        ])
+
+        # Get minutes projections and matchups
+        minutes_dict, matchup_dict = scrape_minutes_projection()
+
+        # Merge minutes and matchup data
         df['MIN'] = df['Player'].map(minutes_dict)
+        df['MATCHUP'] = df['Player'].map(matchup_dict)
         df = df.dropna(subset=['MIN'])
         
         logger.info(f"Final dataset: {len(df)} players with both projections and minutes")
@@ -246,7 +278,7 @@ def scrape_projections_data():
 
     except Exception as e:
         logger.error(f"Error scraping projections: {e}")
-        return pd.DataFrame(columns=['Player', 'PPG Projection', 'MIN'])
+        return pd.DataFrame(columns=['Player', 'PPG Projection', 'MIN', 'MATCHUP', 'SALARY', 'POSITION'])
     finally:
         driver.quit()
 
@@ -264,20 +296,20 @@ def run_model_predictions(df):
         dataset = load_dataframe_from_s3('data/box_scores/current.parquet')
         
         # Validate required columns
-        required_cols = {'MIN', 'W/L', 'FP', 'PLAYER', 'GAME_DATE'}
+        required_cols = {'MIN', 'WL', 'FP', 'PLAYER', 'GAME_DATE', 'TEAM_ABBREVIATION'}
         missing_cols = required_cols - set(dataset.columns)
         if missing_cols:
             logger.error(f"Missing required columns {missing_cols} in box scores data")
             return
-        
+
         # Data preprocessing
         dataset = dataset[dataset['MIN'] != 0]
-        dataset = dataset.dropna(subset=['W/L'])
+        dataset = dataset.dropna(subset=['WL'])
         dataset['GAME_DATE'] = pd.to_datetime(dataset['GAME_DATE'])
         
-        # Sort by player and game date
+        # Sort by PLAYER and GAME_DATE in ascending order
         dataset_sorted = dataset.sort_values(by=['PLAYER', 'GAME_DATE'], ascending=[True, True])
-        
+
         # Calculate rolling averages
         logger.info("Calculating rolling averages")
         windows = [3, 5, 7]
@@ -286,84 +318,213 @@ def run_model_predictions(df):
                 dataset_sorted.groupby('PLAYER')['FP']
                 .transform(lambda x: x.rolling(window, min_periods=1).mean())
             )
-        
-        # Calculate season average
+        # Recalculate the season average FP for each player
         dataset_sorted['Season_FP_Avg'] = (
             dataset_sorted.groupby('PLAYER')['FP']
             .transform(lambda x: x.expanding(min_periods=1).mean())
         )
-        
-        # One-hot encode clusters
-        dataset_sorted = pd.get_dummies(dataset_sorted, columns=['CLUSTER'], drop_first=False)
-        all_cluster_columns = [col for col in dataset_sorted.columns if col.startswith('CLUSTER_')]
-        
-        # Get most recent games for each player
-        most_recent_games = dataset_sorted.groupby('PLAYER').tail(1)
-        
-        # Filter to players in scraped dataset
-        refined_most_recent_games = most_recent_games[most_recent_games['PLAYER'].isin(df['Player'].unique())]
-        refined_most_recent_games = refined_most_recent_games.merge(
-            df.rename(columns={'Player': 'PLAYER', 'MIN': 'PRED_MIN'}), 
-            on='PLAYER', 
-            how='left'
+
+        # Get most recent games before one-hot encoding CLUSTER
+        most_recent_games = dataset_sorted.groupby('PLAYER').tail(1).copy()
+
+        # Calculate REST_DAYS for predictions (from most recent game to today)
+        today = pd.Timestamp(datetime.date.today())
+        most_recent_games['REST_DAYS_FROM_TODAY'] = (today - most_recent_games['GAME_DATE']).dt.days
+        most_recent_games['REST_DAYS_FROM_TODAY'] = most_recent_games['REST_DAYS_FROM_TODAY'].clip(0, 30)
+
+        # Merge with scraped data to get MATCHUP
+        refined_most_recent_games = most_recent_games[most_recent_games['PLAYER'].isin(df['Player'].unique())].copy()
+
+        # Drop the historical MIN column since we'll use today's predicted minutes
+        if 'MIN' in refined_most_recent_games.columns:
+            refined_most_recent_games = refined_most_recent_games.drop(columns=['MIN'])
+
+        # Rename columns in df before merge (keep MIN as MIN, keep POSITION as POSITION)
+        df_renamed = df.rename(columns={'Player': 'PLAYER', 'MATCHUP': 'MATCHUP_TODAY'})
+
+        # Convert MIN to numeric (it's scraped as string)
+        df_renamed['MIN'] = pd.to_numeric(df_renamed['MIN'], errors='coerce')
+
+        # SALARY is already numeric from safe_float, but ensure it's float
+        df_renamed['SALARY'] = pd.to_numeric(df_renamed['SALARY'], errors='coerce')
+
+        # Keep POSITION as string (e.g., 'PG', 'SG/SF', 'C', etc.)
+
+        refined_most_recent_games = refined_most_recent_games.merge(df_renamed, on='PLAYER', how='left')
+
+        # Parse MATCHUP_TODAY to get IS_HOME and OPPONENT
+        matchup_parsed = refined_most_recent_games.apply(
+            lambda row: parse_matchup(row['MATCHUP_TODAY'], row['TEAM_ABBREVIATION']), axis=1
         )
+        refined_most_recent_games['IS_HOME'] = matchup_parsed.apply(lambda x: x[0])
+        refined_most_recent_games['OPPONENT'] = matchup_parsed.apply(lambda x: x[1])
+
+        # Use REST_DAYS_FROM_TODAY for predictions
+        refined_most_recent_games['REST_DAYS'] = refined_most_recent_games['REST_DAYS_FROM_TODAY']
+        refined_most_recent_games = refined_most_recent_games.drop(columns=['REST_DAYS_FROM_TODAY'])
+
+        # Fill missing CLUSTER with placeholder before one-hot encoding
+        refined_most_recent_games['CLUSTER'] = refined_most_recent_games['CLUSTER'].fillna('CLUSTER_NAN')
+
+        # Before one-hot encoding, ensure we have all possible opponent values
+        # These are all 30 NBA teams
+        all_nba_teams = [
+            'ATL', 'BOS', 'BKN', 'CHA', 'CHI', 'CLE', 'DAL', 'DEN', 'DET', 'GSW',
+            'HOU', 'IND', 'LAC', 'LAL', 'MEM', 'MIA', 'MIL', 'MIN', 'NOP', 'NYK',
+            'OKC', 'ORL', 'PHI', 'PHX', 'POR', 'SAC', 'SAS', 'TOR', 'UTA', 'WAS'
+        ]
+
+        # One-hot encode CLUSTER and OPPONENT
+        refined_most_recent_games = pd.get_dummies(refined_most_recent_games, columns=['CLUSTER', 'OPPONENT'], drop_first=False)
+
+        # Add missing opponent columns (teams not playing today)
+        for team in all_nba_teams:
+            opponent_col = f'OPPONENT_{team}'
+            if opponent_col not in refined_most_recent_games.columns:
+                refined_most_recent_games[opponent_col] = 0
+
+        # Add missing cluster columns if needed (0-14 based on the training notebook)
+        for cluster_num in range(15):
+            cluster_col = f'CLUSTER_{float(cluster_num)}'
+            if cluster_col not in refined_most_recent_games.columns:
+                refined_most_recent_games[cluster_col] = 0
+
+        # Also add CLUSTER_NAN if it doesn't exist
+        if 'CLUSTER_CLUSTER_NAN' not in refined_most_recent_games.columns:
+            refined_most_recent_games['CLUSTER_CLUSTER_NAN'] = 0
+
+        # Get sorted column lists after adding all missing ones
+        all_cluster_columns = sorted([col for col in refined_most_recent_games.columns if col.startswith('CLUSTER_')])
+        all_opponent_columns_raw = sorted([col for col in refined_most_recent_games.columns if col.startswith('OPPONENT_')])
+
+        # Only keep valid NBA team opponent columns (remove UNKNOWN, invalid abbreviations, etc.)
+        valid_opponent_columns = [f'OPPONENT_{team}' for team in all_nba_teams]
+        invalid_opponent_cols = [col for col in all_opponent_columns_raw if col not in valid_opponent_columns]
+
+        if invalid_opponent_cols:
+            logger.info(f"Removing {len(invalid_opponent_cols)} invalid opponent columns: {invalid_opponent_cols}")
+            refined_most_recent_games = refined_most_recent_games.drop(columns=invalid_opponent_cols)
+
+        # Re-get the cleaned opponent columns
+        all_opponent_columns = sorted([col for col in refined_most_recent_games.columns if col.startswith('OPPONENT_')])
+
+        logger.info(f"After cleanup: {len(all_cluster_columns)} cluster columns and {len(all_opponent_columns)} opponent columns")
+        if len(all_opponent_columns) != 30:
+            logger.warning(f"Expected 30 opponent columns, got {len(all_opponent_columns)}")
+            logger.warning(f"Missing opponents: {set(valid_opponent_columns) - set(all_opponent_columns)}")
+
+        # Get expected feature names from the model
+        expected_features = rf.feature_names_in_ if hasattr(rf, 'feature_names_in_') else None
+
+        if expected_features is not None:
+            logger.info(f"Model expects {len(expected_features)} features")
+
+            # Count how many expected features are missing
+            missing_features = [col for col in expected_features if col not in refined_most_recent_games.columns]
+            logger.info(f"Missing {len(missing_features)} features. Adding them as 0...")
+
+            # Show some missing features for debugging
+            missing_opponents = [f for f in missing_features if f.startswith('OPPONENT_')]
+            missing_clusters = [f for f in missing_features if f.startswith('CLUSTER_')]
+            logger.info(f"  Missing opponents: {len(missing_opponents)} (e.g., {missing_opponents[:5]})")
+            logger.info(f"  Missing clusters: {len(missing_clusters)} (e.g., {missing_clusters[:5]})")
+
+            # Ensure all expected columns exist (add missing ones as 0)
+            for col in expected_features:
+                if col not in refined_most_recent_games.columns:
+                    refined_most_recent_games[col] = 0
+
+            # Select only the expected features in the correct order
+            refined_most_recent_games_model = refined_most_recent_games[expected_features]
+        else:
+            # Fallback: Model doesn't have feature_names_in_ (older sklearn version)
+            # Create features in the exact order as training: base features + sorted cluster + sorted opponent
+            logger.info("Model doesn't have feature_names_in_, reconstructing feature order...")
+
+            # Base features in order (must match training exactly)
+            base_features = ['Last3_FP_Avg', 'Last5_FP_Avg', 'Last7_FP_Avg', 'Season_FP_Avg', 'MIN', 'IS_HOME', 'REST_DAYS']
+
+            # Sort cluster and opponent columns alphabetically (as pd.get_dummies does)
+            all_cluster_columns_sorted = sorted(all_cluster_columns)
+            all_opponent_columns_sorted = sorted(all_opponent_columns)
+
+            # Combine in order
+            feature_columns = base_features + all_cluster_columns_sorted + all_opponent_columns_sorted
+
+            logger.info(f"Constructed {len(feature_columns)} features:")
+            logger.info(f"  Base: {len(base_features)}")
+            logger.info(f"  Clusters: {len(all_cluster_columns_sorted)}")
+            logger.info(f"  Opponents: {len(all_opponent_columns_sorted)}")
+            logger.info(f"  First few features: {feature_columns[:10]}")
+
+            refined_most_recent_games_model = refined_most_recent_games[feature_columns]
         
-        # Ensure all cluster columns exist
-        for col in all_cluster_columns:
-            if col not in refined_most_recent_games.columns:
-                refined_most_recent_games[col] = False
-        
-        # Prepare features for model
-        feature_columns = ['Last3_FP_Avg', 'Last5_FP_Avg', 'Last7_FP_Avg', 'Season_FP_Avg', 'PRED_MIN'] + all_cluster_columns
-        refined_most_recent_games_model = refined_most_recent_games[feature_columns]
-        
+        # Defensive check: if no data to predict, return early
         if refined_most_recent_games_model.empty:
-            logger.warning("No data available for prediction")
+            logger.warning("No data available for prediction. Skipping model prediction.")
             return
-        
-        # Make predictions
-        logger.info(f"Making predictions for {len(refined_most_recent_games_model)} players")
+
+        logger.info(f"Making predictions for {len(refined_most_recent_games_model)} players with {len(refined_most_recent_games_model.columns)} features")
+
+        # Predict
         features = refined_most_recent_games_model.to_numpy()
         predictions = rf.predict(features)
-        
-        # Add predictions to DataFrame
+        # Add predictions to the DataFrame
         refined_most_recent_games['My Model Predicted FP'] = predictions
-        
-        # Prepare final results
-        final_columns = ['PLAYER', 'PPG Projection', 'My Model Predicted FP', 'GAME_DATE']
+        # Retain the Player, PPG Projection, Position, and other relevant columns
+        final_columns = ['PLAYER', 'PPG Projection', 'My Model Predicted FP', 'GAME_DATE', 'SALARY', 'POSITION']
         refined_most_recent_games = refined_most_recent_games[final_columns]
-        
-        # Set current date for predictions
         current_date = datetime.date.today()
         refined_most_recent_games['GAME_DATE'] = current_date
-        
-        # Load existing daily predictions
+        # Load DailyPlayerPredictions from S3
         try:
             df_fp = load_dataframe_from_s3('data/daily_predictions/current.parquet')
         except:
             logger.info("No existing daily predictions found, creating new DataFrame")
-            df_fp = pd.DataFrame(columns=['PLAYER', 'GAME_DATE', 'PPG_PROJECTION', 'MY_MODEL_PREDICTED_FP', 'ACTUAL_FP', 'MY_MODEL_CLOSER_PREDICTION'])
-        
-        # Update predictions
+            df_fp = pd.DataFrame(columns=['PLAYER', 'GAME_DATE', 'PPG_PROJECTION', 'MY_MODEL_PREDICTED_FP', 'ACTUAL_FP', 'MY_MODEL_CLOSER_PREDICTION', 'SALARY', 'POSITION'])
+
+        # Defensive check: if df_fp is empty, create it with proper columns
+        if df_fp.empty:
+            df_fp = pd.DataFrame(columns=['PLAYER', 'GAME_DATE', 'PPG_PROJECTION', 'MY_MODEL_PREDICTED_FP', 'ACTUAL_FP', 'MY_MODEL_CLOSER_PREDICTION', 'SALARY', 'POSITION'])
+            logger.info("No daily player predictions found. Creating empty DataFrame.")
+
+        # Collect new records to add in batch
+        new_records = []
+
+        # Merge or update predictions
         logger.info("Updating daily predictions")
         for _, row in refined_most_recent_games.iterrows():
             mask = (df_fp['PLAYER'] == row['PLAYER']) & (df_fp['GAME_DATE'] == row['GAME_DATE'])
             if mask.any():
                 df_fp.loc[mask, 'PPG_PROJECTION'] = safe_float(row['PPG Projection'])
                 df_fp.loc[mask, 'MY_MODEL_PREDICTED_FP'] = safe_float(row['My Model Predicted FP'])
+                df_fp.loc[mask, 'SALARY'] = safe_float(row['SALARY'])
+                df_fp.loc[mask, 'POSITION'] = row['POSITION']
+                if 'ACTUAL_FP' in row and pd.notna(row['ACTUAL_FP']):
+                    df_fp.loc[mask, 'ACTUAL_FP'] = safe_float(row['ACTUAL_FP'])
+                if 'MY_MODEL_CLOSER_PREDICTION' in row and pd.notna(row['MY_MODEL_CLOSER_PREDICTION']):
+                    df_fp.loc[mask, 'MY_MODEL_CLOSER_PREDICTION'] = row['MY_MODEL_CLOSER_PREDICTION']
             else:
-                new_record = {
+                new_record_data = {
                     "PLAYER": row['PLAYER'],
                     "GAME_DATE": row['GAME_DATE'],
                     "PPG_PROJECTION": safe_float(row['PPG Projection']),
                     "MY_MODEL_PREDICTED_FP": safe_float(row['My Model Predicted FP']),
+                    "SALARY": safe_float(row['SALARY']),
+                    "POSITION": row['POSITION'],
                 }
-                df_fp = pd.concat([df_fp, pd.DataFrame([new_record])], ignore_index=True)
-        
-        # Save updated predictions
+                if 'ACTUAL_FP' in row and pd.notna(row['ACTUAL_FP']):
+                    new_record_data["ACTUAL_FP"] = safe_float(row['ACTUAL_FP'])
+                if 'MY_MODEL_CLOSER_PREDICTION' in row and pd.notna(row['MY_MODEL_CLOSER_PREDICTION']):
+                    new_record_data["MY_MODEL_CLOSER_PREDICTION"] = row['MY_MODEL_CLOSER_PREDICTION']
+                new_records.append(new_record_data)
+
+        # Add all new records at once if there are any
+        if new_records:
+            df_fp = pd.concat([df_fp, pd.DataFrame(new_records)], ignore_index=True)
         save_dataframe_to_s3(df_fp, 'data/daily_predictions/current.parquet')
         logger.info("Model predictions completed and saved")
-        
+
         return len(refined_most_recent_games)
 
     except Exception as e:
@@ -391,6 +552,12 @@ def check_scores_for_accuracy():
         
         # Merge actual scores
         df_box = df_box[['PLAYER', 'GAME_DATE', 'FP']].rename(columns={'FP': 'ACTUAL_FP'})
+
+        # Ensure GAME_DATE is the same type in both dataframes
+        df_box['GAME_DATE'] = pd.to_datetime(df_box['GAME_DATE']).dt.date
+        df_fp['GAME_DATE'] = pd.to_datetime(df_fp['GAME_DATE']).dt.date
+
+        # Drop and merge 'ACTUAL_FP' to avoid conflict
         df_fp = df_fp.drop(columns=['ACTUAL_FP'], errors='ignore')
         df_fp = df_fp.merge(df_box, on=['PLAYER', 'GAME_DATE'], how='left')
         

@@ -49,7 +49,7 @@ def test_s3_data():
                     print(f"Shape: {df.shape}")
                     print(f"Columns: {list(df.columns)}")
                     print(f"\nFirst 5 rows:")
-                    print(df.head())
+                    print(df.tail())
                     
                     # Show some basic stats
                     print(f"\nBasic info:")

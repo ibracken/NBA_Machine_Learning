@@ -32,6 +32,10 @@ def lambda_handler(event, context):
         logger.info("No games today")
         return {'statusCode': 200, 'body': 'No games scheduled'}
 
+    # === FIND THE EARLIEST GAME ===
+    earliest_game = min(games, key=lambda g: datetime.fromisoformat(g['gameTimeUTC'].replace('Z', '+00:00')))
+    logger.info(f"Earliest game: {earliest_game['awayTeam']['teamName']} vs {earliest_game['homeTeam']['teamName']} at {earliest_game['gameTimeUTC']}")
+
     # === LAMBDA FUNCTION PIPELINE (sequential execution with 2-minute delays) ===
     lambda_pipeline = [
         ('cluster-scraper', 0),      # Start at game time - 30 min
@@ -41,8 +45,9 @@ def lambda_handler(event, context):
         ('daily-predictions', 8)      # +8 minutes
     ]
 
-    # === CREATE RULES FOR EACH GAME ===
-    for game in games:
+    # === CREATE RULES FOR THE EARLIEST GAME ===
+    game = earliest_game
+    if True:
         try:
             # Parse game time
             game_time_utc = game['gameTimeUTC']  # e.g., "2025-10-07T23:00:00Z"
@@ -114,12 +119,17 @@ def lambda_handler(event, context):
 
         except Exception as e:
             logger.error(f"Error processing game {game.get('gameId')}: {e}")
-            continue
+            return {
+                'statusCode': 500,
+                'body': json.dumps({
+                    'message': f'Failed to schedule earliest game: {str(e)}'
+                })
+            }
 
     return {
         'statusCode': 200,
         'body': json.dumps({
-            'message': f'Scheduled {len(games)} games with {len(lambda_pipeline)} Lambda functions each'
+            'message': f'Scheduled earliest game with {len(lambda_pipeline)} Lambda functions'
         })
     }
 
