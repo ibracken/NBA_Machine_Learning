@@ -134,26 +134,6 @@ def run_supervised_learning():
             df = df[df['MIN'] != 0]
             logger.info(f"Filtered from {original_count} to {len(df)} records (MIN != 0)")
         
-        # Load player stats and cluster assignments from multiple seasons
-        logger.info("Loading player stats and cluster data from multiple seasons")
-        players_df = load_dataframe_from_s3('data/advanced_player_stats/current.parquet')
-        players_df2 = load_dataframe_from_s3('data/box_scores/2024-2025.parquet')
-        players_df3 = load_dataframe_from_s3('data/box_scores/2023-2024.parquet')
-        players_df4 = load_dataframe_from_s3('data/box_scores/2022-2023.parquet')
-        players_df = pd.concat([players_df, players_df2, players_df3, players_df4])
-        
-        # Validate player stats data
-        if len(players_df) == 0:
-            error_msg = "Player stats data is empty"
-            logger.error(error_msg)
-            return {'success': False, 'error': error_msg}
-        
-        if 'PLAYER' not in players_df.columns:
-            error_msg = "Player stats data missing PLAYER column"
-            logger.error(error_msg)
-            return {'success': False, 'error': error_msg}
-        
-        
         # Sort by game date (most recent first)
         df = df.sort_values(by=['GAME_DATE'], ascending=[False])
         
@@ -190,7 +170,25 @@ def run_supervised_learning():
         
         # Calculate rest days for each player
         df = calculate_rest_days(df)
-        
+
+        # Handle NaN values in rolling averages (from first games of season)
+        logger.info("Handling NaN values in rolling averages")
+
+        # Fill missing rolling averages with season average as fallback
+        df['Last3_FP_Avg'] = df['Last3_FP_Avg'].fillna(df['Season_FP_Avg'])
+        df['Last5_FP_Avg'] = df['Last5_FP_Avg'].fillna(df['Season_FP_Avg'])
+        df['Last7_FP_Avg'] = df['Last7_FP_Avg'].fillna(df['Season_FP_Avg'])
+
+        # For first games with no season average, use 0 (model will learn this represents unknown)
+        df['Last3_FP_Avg'] = df['Last3_FP_Avg'].fillna(0)
+        df['Last5_FP_Avg'] = df['Last5_FP_Avg'].fillna(0)
+        df['Last7_FP_Avg'] = df['Last7_FP_Avg'].fillna(0)
+        df['Season_FP_Avg'] = df['Season_FP_Avg'].fillna(0)
+
+        # Log NaN handling results
+        logger.info(f"After NaN handling - Last3_FP_Avg nulls: {df['Last3_FP_Avg'].isna().sum()}")
+        logger.info(f"After NaN handling - Season_FP_Avg nulls: {df['Season_FP_Avg'].isna().sum()}")
+
         # Define features and target
         feature_names = ['Last3_FP_Avg', 'Last5_FP_Avg', 'Last7_FP_Avg', 'Season_FP_Avg', 'CLUSTER', 'MIN', 'IS_HOME', 'OPPONENT', 'REST_DAYS']
         label_name = 'FP'
@@ -275,34 +273,18 @@ def run_supervised_learning():
         logger.info(f"Training labels shape: {train_labels.shape}")
         logger.info(f"Feature count: {train.shape[1]}")
         logger.info(f"Total records being sent to RandomForest: {train.shape[0]}")
-        
-        # Validate training data (handle mixed dtypes safely)
+
+        # Final validation check for any remaining NaN/Inf values
         try:
-            # Check for NaN values in numeric columns only
-            numeric_mask = np.issubdtype(train.dtype, np.number) if train.dtype != object else False
-            if numeric_mask and np.isnan(train).any():
-                logger.warning("Training data contains NaN values")
-        except (TypeError, ValueError):
-            # For mixed dtypes, check each column separately
-            for i in range(train.shape[1]):
-                col = train[:, i]
-                if np.issubdtype(col.dtype, np.floating):
-                    if np.isnan(col).any():
-                        logger.warning(f"Training data column {i} contains NaN values")
-                        break
-        
-        try:
-            if np.isinf(train).any():
-                logger.warning("Training data contains infinite values")
-        except (TypeError, ValueError):
-            # For mixed dtypes, check each column separately  
-            for i in range(train.shape[1]):
-                col = train[:, i]
-                if np.issubdtype(col.dtype, np.floating):
-                    if np.isinf(col).any():
-                        logger.warning(f"Training data column {i} contains infinite values")
-                        break
-        
+            # Convert to float to check for NaN/Inf (handles mixed types)
+            train_float = train.astype(float)
+            if np.isnan(train_float).any() or np.isinf(train_float).any():
+                error_msg = "Training data still contains NaN or Inf values after preprocessing"
+                logger.error(error_msg)
+                return {'success': False, 'error': error_msg}
+        except (ValueError, TypeError) as e:
+            logger.warning(f"Could not validate NaN/Inf due to data types: {e}")
+
         rf = RandomForestRegressor(random_state=4)
         rf.fit(train, train_labels.ravel())
         

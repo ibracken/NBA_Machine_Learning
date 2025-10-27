@@ -77,15 +77,21 @@ def get_chrome_driver():
 
     if is_lambda:
         chrome_options = Options()
+        # Essential Lambda options based on AWS best practices
         chrome_options.add_argument("--headless")
         chrome_options.add_argument("--no-sandbox")
         chrome_options.add_argument("--disable-dev-shm-usage")
+        chrome_options.add_argument("--disable-gpu")
+        chrome_options.add_argument("--single-process")
         chrome_options.add_argument('--ignore-certificate-errors')
         chrome_options.add_argument('--allow-running-insecure-content')
         chrome_options.add_argument("--window-size=1920x1080")
         chrome_options.add_argument("--force-device-scale-factor=0.75")
         chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
         chrome_options.add_argument("--disable-extensions")
+
+        # Page load strategy - prevent hanging on slow resources
+        chrome_options.page_load_strategy = 'eager'  # Don't wait for all resources
 
         # Lambda-specific arguments - use /tmp for all writable directories
         chrome_options.add_argument(f"--user-data-dir={mkdtemp()}")
@@ -94,10 +100,14 @@ def get_chrome_driver():
         chrome_options.add_argument("--no-first-run")
 
         chrome_options.binary_location = "/opt/chrome/chrome"
-        return webdriver.Chrome(
+        driver = webdriver.Chrome(
             service=webdriver.chrome.service.Service("/opt/chromedriver"),
             options=chrome_options
         )
+        # Set page load and script timeouts
+        driver.set_page_load_timeout(30)  # 30 second page load timeout
+        driver.set_script_timeout(30)      # 30 second script timeout
+        return driver
     else:
         # Local environment - let Selenium automatically manage ChromeDriver (no options, like script)
         return webdriver.Chrome()
