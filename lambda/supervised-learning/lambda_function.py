@@ -108,7 +108,7 @@ def run_supervised_learning():
         logger.info(f"Loaded {len(df)} box score records from multiple seasons")
         
         # Validate box scores data structure
-        required_box_score_cols = ['PLAYER', 'GAME_DATE', 'FP', 'Last3_FP_Avg', 'Last5_FP_Avg', 'Last7_FP_Avg', 'Season_FP_Avg', 'MIN', 'MATCHUP']
+        required_box_score_cols = ['PLAYER', 'GAME_DATE', 'FP', 'Last3_FP_Avg', 'Last7_FP_Avg', 'Season_FP_Avg', 'Career_FP_Avg', 'Games_Played_Career', 'MIN', 'MATCHUP']
         missing_cols = [col for col in required_box_score_cols if col not in df.columns]
         if missing_cols:
             error_msg = f"Missing required columns in box scores data: {missing_cols}"
@@ -171,26 +171,55 @@ def run_supervised_learning():
         # Calculate rest days for each player
         df = calculate_rest_days(df)
 
+        # Career features (Career_FP_Avg, Games_Played_Career) are now pre-calculated in box score scraper
+        logger.info(f"Using pre-calculated career features - Career_FP_Avg mean: {df['Career_FP_Avg'].mean():.2f}, "
+                   f"Max games played: {df['Games_Played_Career'].max()}")
+
         # Handle NaN values in rolling averages (from first games of season)
         logger.info("Handling NaN values in rolling averages")
 
         # Fill missing rolling averages with season average as fallback
         df['Last3_FP_Avg'] = df['Last3_FP_Avg'].fillna(df['Season_FP_Avg'])
-        df['Last5_FP_Avg'] = df['Last5_FP_Avg'].fillna(df['Season_FP_Avg'])
         df['Last7_FP_Avg'] = df['Last7_FP_Avg'].fillna(df['Season_FP_Avg'])
 
         # For first games with no season average, use 0 (model will learn this represents unknown)
         df['Last3_FP_Avg'] = df['Last3_FP_Avg'].fillna(0)
-        df['Last5_FP_Avg'] = df['Last5_FP_Avg'].fillna(0)
         df['Last7_FP_Avg'] = df['Last7_FP_Avg'].fillna(0)
         df['Season_FP_Avg'] = df['Season_FP_Avg'].fillna(0)
+
+        # For first career game, Career_FP_Avg will be NaN - fill with 0
+        df['Career_FP_Avg'] = df['Career_FP_Avg'].fillna(0)
+
+        # Games_Played_Career should never be NaN (it's a cumcount), but handle just in case
+        df['Games_Played_Career'] = df['Games_Played_Career'].fillna(0)
+
+        # Replace any Inf values with 0
+        df['Career_FP_Avg'] = df['Career_FP_Avg'].replace([np.inf, -np.inf], 0)
+        df['Games_Played_Career'] = df['Games_Played_Career'].replace([np.inf, -np.inf], 0)
+
+        # Handle NaN/Inf in REST_DAYS (should be handled by calculate_rest_days, but double-check)
+        df['REST_DAYS'] = df['REST_DAYS'].fillna(3)  # Default rest days
+        df['REST_DAYS'] = df['REST_DAYS'].replace([np.inf, -np.inf], 3)
+
+        # Handle NaN/Inf in MIN (could have issues from noise addition)
+        df['MIN'] = df['MIN'].fillna(0)
+        df['MIN'] = df['MIN'].replace([np.inf, -np.inf], 0)
+
+        # Handle NaN/Inf in all rolling averages too
+        df['Last3_FP_Avg'] = df['Last3_FP_Avg'].replace([np.inf, -np.inf], 0)
+        df['Last7_FP_Avg'] = df['Last7_FP_Avg'].replace([np.inf, -np.inf], 0)
+        df['Season_FP_Avg'] = df['Season_FP_Avg'].replace([np.inf, -np.inf], 0)
 
         # Log NaN handling results
         logger.info(f"After NaN handling - Last3_FP_Avg nulls: {df['Last3_FP_Avg'].isna().sum()}")
         logger.info(f"After NaN handling - Season_FP_Avg nulls: {df['Season_FP_Avg'].isna().sum()}")
+        logger.info(f"After NaN handling - Career_FP_Avg nulls: {df['Career_FP_Avg'].isna().sum()}")
+        logger.info(f"After NaN handling - Games_Played_Career nulls: {df['Games_Played_Career'].isna().sum()}")
 
         # Define features and target
-        feature_names = ['Last3_FP_Avg', 'Last5_FP_Avg', 'Last7_FP_Avg', 'Season_FP_Avg', 'CLUSTER', 'MIN', 'IS_HOME', 'OPPONENT', 'REST_DAYS']
+        feature_names = ['Last3_FP_Avg', 'Last7_FP_Avg', 'Season_FP_Avg',
+                        'Career_FP_Avg', 'Games_Played_Career', 'CLUSTER', 'MIN',
+                        'IS_HOME', 'OPPONENT', 'REST_DAYS']
         label_name = 'FP'
         
         # Validate feature columns exist
@@ -205,12 +234,18 @@ def run_supervised_learning():
         df_labels = df[label_name].copy()
         
         # Validate feature data quality
-        numeric_features = ['Last3_FP_Avg', 'Last5_FP_Avg', 'Last7_FP_Avg', 'Season_FP_Avg', 'MIN']
+        numeric_features = ['Last3_FP_Avg', 'Last7_FP_Avg', 'Season_FP_Avg', 'Career_FP_Avg', 'Games_Played_Career', 'MIN']
         for feature in numeric_features:
             if df_features[feature].isna().all():
                 error_msg = f"All values in feature '{feature}' are null"
                 logger.error(error_msg)
                 return {'success': False, 'error': error_msg}
+
+            # Log any remaining NaN or Inf values in numeric features
+            nan_count = df_features[feature].isna().sum()
+            inf_count = np.isinf(df_features[feature]).sum() if df_features[feature].dtype in ['float64', 'int64'] else 0
+            if nan_count > 0 or inf_count > 0:
+                logger.warning(f"Feature '{feature}' has {nan_count} NaN and {inf_count} Inf values")
         
         # Check for reasonable data ranges
         if (df_features['MIN'] < 0).any():
@@ -278,10 +313,23 @@ def run_supervised_learning():
         try:
             # Convert to float to check for NaN/Inf (handles mixed types)
             train_float = train.astype(float)
-            if np.isnan(train_float).any() or np.isinf(train_float).any():
-                error_msg = "Training data still contains NaN or Inf values after preprocessing"
+
+            # Check for NaN values
+            if np.isnan(train_float).any():
+                nan_cols = np.where(np.isnan(train_float).any(axis=0))[0]
+                nan_col_names = [df_features.columns[i] for i in nan_cols]
+                error_msg = f"Training data contains NaN values in columns: {nan_col_names[:10]}"
                 logger.error(error_msg)
                 return {'success': False, 'error': error_msg}
+
+            # Check for Inf values
+            if np.isinf(train_float).any():
+                inf_cols = np.where(np.isinf(train_float).any(axis=0))[0]
+                inf_col_names = [df_features.columns[i] for i in inf_cols]
+                error_msg = f"Training data contains Inf values in columns: {inf_col_names[:10]}"
+                logger.error(error_msg)
+                return {'success': False, 'error': error_msg}
+
         except (ValueError, TypeError) as e:
             logger.warning(f"Could not validate NaN/Inf due to data types: {e}")
 
@@ -349,12 +397,18 @@ def run_supervised_learning():
         
         # Calculate feature importance
         feature_importance = dict(zip(df_features.columns, rf.feature_importances_))
-        top_features = sorted(feature_importance.items(), key=lambda x: x[1], reverse=True)[:5]
-        
+        all_features_sorted = sorted(feature_importance.items(), key=lambda x: x[1], reverse=True)
+        top_features = all_features_sorted[:5]
+
         logger.info("Supervised learning model training completed successfully")
         logger.info(f"Training error (MAE): {train_error:.3f}")
         logger.info(f"Test error (MAE): {test_error:.3f}")
-        
+
+        # Log all feature importances for analysis
+        logger.info("All feature importances:")
+        for feat, imp in all_features_sorted:
+            logger.info(f"  {feat}: {imp:.6f}")
+
         return {
             'success': True,
             'total_records': len(df),
@@ -364,6 +418,7 @@ def run_supervised_learning():
             'test_error_mae': float(test_error),
             'feature_count': len(df_features.columns),
             'top_features': [(feat, float(imp)) for feat, imp in top_features],
+            'all_features': [(feat, float(imp)) for feat, imp in all_features_sorted],
             'players_with_clusters': int((~df['CLUSTER'].str.contains('NAN', na=False)).sum()),
             'players_without_clusters': int((df['CLUSTER'].str.contains('NAN', na=False)).sum())
         }

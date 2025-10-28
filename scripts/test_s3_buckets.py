@@ -17,8 +17,9 @@ def test_s3_data():
     # List of all S3 keys to test
     s3_keys = [
         'data/box_scores/current.parquet',
-        'data/daily_predictions/current.parquet', 
+        'data/daily_predictions/current.parquet',
         'data/advanced_player_stats/current.parquet',
+        'data/daily_lineups/current.parquet',
         'models/RFCluster.sav'
     ]
     
@@ -48,8 +49,8 @@ def test_s3_data():
                     print(f"✅ DataFrame loaded successfully!")
                     print(f"Shape: {df.shape}")
                     print(f"Columns: {list(df.columns)}")
-                    print(f"\nFirst 5 rows:")
-                    print(df.tail())
+                    print(f"\nLast 20 rows:")
+                    print(df.tail(20))
                     
                     # Show some basic stats
                     print(f"\nBasic info:")

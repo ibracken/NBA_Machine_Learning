@@ -47,12 +47,15 @@ def normalize_name(name):
     """Normalize player name for matching"""
     return unidecode(name.strip().lower())
 
-def fetch_box_scores_from_api():
-    """Fetch box scores from NBA API"""
-    logger.info("Starting NBA API box score fetch")
-    
+def fetch_box_scores_from_api(season=None):
+    """Fetch box scores from NBA API for a specific season"""
+    if season is None:
+        season = get_current_nba_season()
+
+    logger.info(f"Starting NBA API box score fetch for season {season}")
+
     url = "https://stats.nba.com/stats/leaguegamelog"
-    
+
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'application/json, text/plain, */*',
@@ -68,7 +71,7 @@ def fetch_box_scores_from_api():
         'Cache-Control': 'no-cache',
         'Pragma': 'no-cache'
     }
-    
+
     params = {
         'Counter': '1000',
         'DateFrom': '',
@@ -77,44 +80,44 @@ def fetch_box_scores_from_api():
         'ISTRound': '',
         'LeagueID': '00',
         'PlayerOrTeam': 'P',
-        'Season': get_current_nba_season(),
+        'Season': season,
         'SeasonType': 'Regular Season',
         'Sorter': 'DATE'
     }
-    
+
     # Use proxy for NBA API requests (NBA blocks AWS IPs)
     proxy_url = "http://smart-b0ibmkjy90uq_area-US_state-Northcarolina:sU8CQmV8LDmh2mXj@proxy.smartproxy.net:3120"
     proxies = {
         'http': proxy_url,
         'https': proxy_url
     }
-    
+
     try:
-        logger.info("Making request to NBA API...")
+        logger.info(f"Making request to NBA API for season {season}...")
         response = requests.get(url, headers=headers, params=params, proxies=proxies, timeout=60, verify=False)
-        
+
         if response.status_code == 200:
             data = response.json()
-            
+
             if 'resultSets' in data and len(data['resultSets']) > 0:
                 result_set = data['resultSets'][0]
                 headers_list = result_set['headers']
                 rows = result_set['rowSet']
-                
-                logger.info(f"Successfully fetched {len(rows)} box score records")
-                
+
+                logger.info(f"Successfully fetched {len(rows)} box score records for season {season}")
+
                 # Create DataFrame
                 df = pd.DataFrame(rows, columns=headers_list)
                 return df
             else:
-                logger.error("No resultSets found in NBA API response")
+                logger.error(f"No resultSets found in NBA API response for season {season}")
                 return None
         else:
             logger.error(f"NBA API request failed with status {response.status_code}: {response.text}")
             return None
-            
+
     except Exception as e:
-        logger.error(f"Error fetching from NBA API: {str(e)}")
+        logger.error(f"Error fetching from NBA API for season {season}: {str(e)}")
         return None
 
 def process_box_scores(df):
@@ -173,24 +176,32 @@ def enrich_with_clusters(df):
 
 def calculate_rolling_averages(df):
     """Calculate rolling averages for fantasy points"""
-    logger.info("Calculating rolling averages")
-    
+    logger.info("Calculating rolling averages and career features")
+
     try:
         # Calculate rolling averages for different windows
-        windows = [3, 5, 7]
+        windows = [3, 7]
         for window in windows:
             df[f'Last{window}_FP_Avg'] = df.groupby('PLAYER')['FP'].transform(
                 lambda x: x.shift(1).rolling(window, min_periods=1).mean()
             )
-        
+
         # Calculate season average FP
         df['Season_FP_Avg'] = df.groupby('PLAYER')['FP'].transform(
             lambda x: x.shift(1).expanding(min_periods=1).mean()
         )
-        
-        logger.info("Successfully calculated rolling averages")
+
+        # Calculate career average FP across all historical games
+        df['Career_FP_Avg'] = df.groupby('PLAYER')['FP'].transform(
+            lambda x: x.shift(1).expanding(min_periods=1).mean()
+        )
+
+        # Track cumulative games played for each player
+        df['Games_Played_Career'] = df.groupby('PLAYER').cumcount()
+
+        logger.info("Successfully calculated rolling averages and career features")
         return df
-        
+
     except Exception as e:
         logger.error(f"Error calculating rolling averages: {str(e)}")
         return df
@@ -198,55 +209,98 @@ def calculate_rolling_averages(df):
 def run_box_score_scraper():
     """Main function to run the box score scraping process"""
     logger.info("Starting NBA box score API scraper")
-    
+
     try:
-        # Fetch data from NBA API
-        df = fetch_box_scores_from_api()
-        if df is None:
+        # Define seasons to fetch (past 3 years)
+        seasons = ['2022-23', '2023-24', '2024-25']
+        season_dataframes = {}
+
+        # Fetch data for each season
+        for season in seasons:
+            logger.info(f"Fetching data for season {season}")
+            df = fetch_box_scores_from_api(season)
+            if df is None:
+                logger.warning(f"Failed to fetch data for season {season}, skipping")
+                continue
+
+            # Process the data
+            df = process_box_scores(df)
+            if df is None:
+                logger.warning(f"Failed to process data for season {season}, skipping")
+                continue
+
+            # Store season data with season identifier
+            df['SEASON'] = season
+            season_dataframes[season] = df
+            logger.info(f"Successfully fetched {len(df)} records for season {season}")
+
+        # Check if we have any data
+        if not season_dataframes:
             return {
                 'success': False,
-                'error': 'Failed to fetch data from NBA API'
+                'error': 'Failed to fetch data for any season'
             }
-        
-        # Process the data
-        df = process_box_scores(df)
-        if df is None:
-            return {
-                'success': False,
-                'error': 'Failed to process box score data'
-            }
-        
-        # Add cluster information
-        df = enrich_with_clusters(df)
-        
-        # Calculate rolling averages
-        df = calculate_rolling_averages(df)
-        
-        # Save to S3
-        save_dataframe_to_s3(df, 'data/box_scores/current.parquet')
-        
-        # Calculate summary statistics
-        total_records = len(df)
-        unique_players = len(df['PLAYER'].unique())
-        
-        # Handle empty DataFrame case
-        if total_records > 0:
-            date_range = f"{df['GAME_DATE'].min().strftime('%Y-%m-%d')} to {df['GAME_DATE'].max().strftime('%Y-%m-%d')}"
-        else:
-            date_range = "No data available"
-        
+
+        # Combine all seasons for feature calculation
+        logger.info("Combining all seasons for career feature calculation")
+        combined_df = pd.concat(season_dataframes.values(), ignore_index=True)
+
+        # Sort by player and game date (critical for career features)
+        combined_df = combined_df.sort_values(by=['PLAYER', 'GAME_DATE'], ascending=[True, True])
+        logger.info(f"Combined dataset has {len(combined_df)} records from {len(combined_df['PLAYER'].unique())} unique players")
+
+        # Add cluster information to combined dataset
+        combined_df = enrich_with_clusters(combined_df)
+
+        # Calculate rolling averages and career features on combined dataset
+        # This ensures Career_FP_Avg and Games_Played_Career span across all seasons
+        combined_df = calculate_rolling_averages(combined_df)
+
+        # Split back into individual seasons and save
+        results = {}
+        for season in seasons:
+            season_df = combined_df[combined_df['SEASON'] == season].copy()
+
+            if len(season_df) > 0:
+                # Drop the SEASON column before saving
+                season_df = season_df.drop(columns=['SEASON'])
+
+                # Determine S3 key
+                if season == seasons[-1]:  # Latest season is "current"
+                    s3_key = 'data/box_scores/current.parquet'
+                else:
+                    s3_key = f'data/box_scores/{season}.parquet'
+
+                # Save to S3
+                save_dataframe_to_s3(season_df, s3_key)
+
+                # Store results
+                results[season] = {
+                    'records': len(season_df),
+                    'unique_players': len(season_df['PLAYER'].unique()),
+                    'date_range': f"{season_df['GAME_DATE'].min().strftime('%Y-%m-%d')} to {season_df['GAME_DATE'].max().strftime('%Y-%m-%d')}"
+                }
+
+                logger.info(f"Saved {len(season_df)} records for season {season} to {s3_key}")
+
+        # Calculate overall summary statistics
+        total_records = len(combined_df)
+        unique_players = len(combined_df['PLAYER'].unique())
+        date_range = f"{combined_df['GAME_DATE'].min().strftime('%Y-%m-%d')} to {combined_df['GAME_DATE'].max().strftime('%Y-%m-%d')}"
+
         logger.info("Box score scraping completed successfully")
-        logger.info(f"Total records: {total_records}")
+        logger.info(f"Total records across all seasons: {total_records}")
         logger.info(f"Unique players: {unique_players}")
         logger.info(f"Date range: {date_range}")
-        
+
         return {
             'success': True,
             'total_records': total_records,
             'unique_players': unique_players,
-            'date_range': date_range
+            'date_range': date_range,
+            'season_details': results
         }
-        
+
     except Exception as e:
         logger.error(f"Error in box score scraper: {str(e)}")
         return {
@@ -257,10 +311,10 @@ def run_box_score_scraper():
 def lambda_handler(event, context):
     """AWS Lambda handler function"""
     logger.info("Box score scraper Lambda function started")
-    
+
     try:
         result = run_box_score_scraper()
-        
+
         if result['success']:
             return {
                 'statusCode': 200,
@@ -268,7 +322,8 @@ def lambda_handler(event, context):
                     'message': 'Box score scraping completed successfully',
                     'total_records': result['total_records'],
                     'unique_players': result['unique_players'],
-                    'date_range': result['date_range']
+                    'date_range': result['date_range'],
+                    'season_details': result.get('season_details', {})
                 })
             }
         else:
@@ -279,7 +334,7 @@ def lambda_handler(event, context):
                     'error': result['error']
                 })
             }
-            
+
     except Exception as e:
         logger.error(f"Lambda handler error: {str(e)}")
         return {

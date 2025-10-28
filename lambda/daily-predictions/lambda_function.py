@@ -216,12 +216,54 @@ def scrape_minutes_projection():
         logger.error(f"Failed to parse SportsLine page: {e}")
         return {}, {}
 
+def scrape_starting_lineup(driver):
+    """
+    Scrape starting lineup indicators from DailyFantasyFuel
+    Returns a set of normalized player names who are listed as starters
+    """
+    try:
+        src = driver.page_source
+        parser = BeautifulSoup(src, 'lxml')
+
+        table = parser.find('table', class_="col-pad-lg-left-5 col-pad-lg-right-5 col-pad-md-left-3 col-pad-md-right-3 text-black row-pad-lg-top-2 row-pad-md-top-2 row-pad-sm-top-2 col-12 row-pad-5 row-pad-xs-1")
+
+        starters = set()
+
+        if table:
+            tbody = table.find('tbody')
+            if tbody:
+                rows = tbody.find_all('tr')
+
+                for row in rows:
+                    cells = row.find_all('td')
+
+                    # td[5] (cells[4] in 0-indexed) contains starting indicator
+                    # If there's any text/content in that cell, they're likely starting
+                    if len(cells) >= 5:
+                        starting_indicator = cells[4].get_text(strip=True)
+
+                        # If there's any text in the starting column
+                        if starting_indicator:
+                            # Get player name from data-name attribute
+                            data_name = row.get('data-name')
+                            if data_name:
+                                normalized_name = normalize_name(data_name)
+                                starters.add(normalized_name)
+                                logger.info(f"Detected starter: {normalized_name} (indicator: '{starting_indicator}')")
+
+        logger.info(f"Total starters detected: {len(starters)}")
+        return starters
+
+    except Exception as e:
+        logger.error(f"Failed to scrape starting lineup: {e}")
+        return set()
+
 def scrape_projections_data():
     """Scrape fantasy projections from DailyFantasyFuel and merge with minutes"""
     logger.info("Starting DailyFantasyFuel projections scraping")
-    
+
     driver = get_chrome_driver()
-    
+
     try:
         url = "https://www.dailyfantasyfuel.com/nba/projections/draftkings"
         driver.get(url)
@@ -235,14 +277,17 @@ def scrape_projections_data():
         except Exception as e:
             logger.warning(f"Could not find or click span element: {e}")
 
+        # Scrape starting lineup before parsing main table
+        starters = scrape_starting_lineup(driver)
+
         # Parse the page
-        src = driver.page_source 
+        src = driver.page_source
         parser = BeautifulSoup(src, 'lxml')
 
         table = parser.find('table', class_="col-pad-lg-left-5 col-pad-lg-right-5 col-pad-md-left-3 col-pad-md-right-3 text-black row-pad-lg-top-2 row-pad-md-top-2 row-pad-sm-top-2 col-12 row-pad-5 row-pad-xs-1")
 
         player_data = {}
-        
+
         if table:
             tbody = table.find('tbody')
             if tbody:
@@ -281,8 +326,22 @@ def scrape_projections_data():
         # Merge minutes and matchup data
         df['MIN'] = df['Player'].map(minutes_dict)
         df['MATCHUP'] = df['Player'].map(matchup_dict)
+
+        # Apply baseline minutes for starters with low projected minutes
+        STARTER_BASELINE_MINUTES = 24
+
+        for idx, row in df.iterrows():
+            player_name = row['Player']
+            current_minutes = pd.to_numeric(row['MIN'], errors='coerce')
+
+            # If player is a starter and their projected minutes are below baseline
+            if player_name in starters:
+                if pd.isna(current_minutes) or current_minutes < STARTER_BASELINE_MINUTES:
+                    logger.info(f"Applying baseline {STARTER_BASELINE_MINUTES} min for starter: {player_name} (was: {current_minutes})")
+                    df.at[idx, 'MIN'] = str(STARTER_BASELINE_MINUTES)
+
         df = df.dropna(subset=['MIN'])
-        
+
         logger.info(f"Final dataset: {len(df)} players with both projections and minutes")
         return df
 
@@ -316,23 +375,12 @@ def run_model_predictions(df):
         dataset = dataset[dataset['MIN'] != 0]
         dataset = dataset.dropna(subset=['WL'])
         dataset['GAME_DATE'] = pd.to_datetime(dataset['GAME_DATE'])
-        
+
         # Sort by PLAYER and GAME_DATE in ascending order
         dataset_sorted = dataset.sort_values(by=['PLAYER', 'GAME_DATE'], ascending=[True, True])
 
-        # Calculate rolling averages
-        logger.info("Calculating rolling averages")
-        windows = [3, 5, 7]
-        for window in windows:
-            dataset_sorted[f'Last{window}_FP_Avg'] = (
-                dataset_sorted.groupby('PLAYER')['FP']
-                .transform(lambda x: x.rolling(window, min_periods=1).mean())
-            )
-        # Recalculate the season average FP for each player
-        dataset_sorted['Season_FP_Avg'] = (
-            dataset_sorted.groupby('PLAYER')['FP']
-            .transform(lambda x: x.expanding(min_periods=1).mean())
-        )
+        # Rolling averages and career features are already pre-calculated in box score data
+        logger.info("Using pre-calculated rolling averages and career features from box score data")
 
         # Get most recent games before one-hot encoding CLUSTER
         most_recent_games = dataset_sorted.groupby('PLAYER').tail(1).copy()
@@ -452,7 +500,7 @@ def run_model_predictions(df):
             logger.info("Model doesn't have feature_names_in_, reconstructing feature order...")
 
             # Base features in order (must match training exactly)
-            base_features = ['Last3_FP_Avg', 'Last5_FP_Avg', 'Last7_FP_Avg', 'Season_FP_Avg', 'MIN', 'IS_HOME', 'REST_DAYS']
+            base_features = ['Last3_FP_Avg', 'Last7_FP_Avg', 'Season_FP_Avg', 'Career_FP_Avg', 'Games_Played_Career', 'MIN', 'IS_HOME', 'REST_DAYS']
 
             # Sort cluster and opponent columns alphabetically (as pd.get_dummies does)
             all_cluster_columns_sorted = sorted(all_cluster_columns)

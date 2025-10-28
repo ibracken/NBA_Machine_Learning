@@ -1,4 +1,5 @@
 import requests
+# Doesn't work on eduroam
 proxyip = "http://smart-b0ibmkjy90uq_area-US_state-Northcarolina:sU8CQmV8LDmh2mXj@proxy.smartproxy.net:3120"
 url = "https://api.ip.cc"
 proxies={

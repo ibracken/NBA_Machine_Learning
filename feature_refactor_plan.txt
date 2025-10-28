@@ -1,0 +1,91 @@
+NBA PREDICTION MODEL - CAREER FEATURE REFACTORING PLAN
+========================================================
+
+PROBLEM:
+--------
+- Career_FP_Avg and Games_Played_Career are calculated in supervised-learning script
+- These features are NOT in the box score parquet files
+- Daily predictions script doesn't have these features → causing 52 vs 54 feature mismatch
+- Duplicated calculation logic between training and inference
+
+SOLUTION:
+---------
+Move the career feature calculations from supervised-learning into box-score-scraper
+so they are pre-calculated and saved in the parquet files.
+
+IMPLEMENTATION STEPS:
+--------------------
+
+1. UPDATE BOX SCORE SCRAPER (lambda/box-score-scraper/lambda_function.py)
+
+   After calculating rolling averages (Last3_FP_Avg, Last7_FP_Avg, Season_FP_Avg):
+
+   Add:
+   - Calculate Career_FP_Avg using expanding window across ALL games for each player
+   - Calculate Games_Played_Career using cumcount() for each player
+
+   Code to add (after line ~120 in boxScoreScraper.py):
+   ```python
+   # Calculate career average FP across all historical games
+   dataset_sorted['Career_FP_Avg'] = (
+       dataset_sorted.groupby('PLAYER')['FP']
+       .transform(lambda x: x.shift(1).expanding(min_periods=1).mean())
+   )
+
+   # Track cumulative games played for each player
+   dataset_sorted['Games_Played_Career'] = dataset_sorted.groupby('PLAYER').cumcount()
+   ```
+
+2. REGENERATE ALL HISTORICAL PARQUET FILES
+
+   Run box score scraper to regenerate WITH the new career features:
+   - data/box_scores/current.parquet
+   - data/box_scores/2024-2025.parquet
+   - data/box_scores/2023-2024.parquet
+   - data/box_scores/2022-2023.parquet
+
+
+3. UPDATE SUPERVISED LEARNING (lambda/supervised-learning/lambda_function.py)
+
+   REMOVE these calculations (lines ~182-187):
+   ```python
+   # DELETE THIS - now comes from parquet:
+   df['Career_FP_Avg'] = df.groupby('PLAYER')['FP'].transform(...)
+   df['Games_Played_Career'] = df.groupby('PLAYER').cumcount()
+   ```
+
+   VERIFY these columns exist in loaded data:
+   ```python
+   required_box_score_cols = [
+       'PLAYER', 'GAME_DATE', 'FP',
+       'Last3_FP_Avg', 'Last7_FP_Avg', 'Season_FP_Avg',
+       'Career_FP_Avg', 'Games_Played_Career',  # ← Add these to validation
+       'MIN', 'MATCHUP'
+   ]
+   ```
+
+4. UPDATE DAILY PREDICTIONS (lambda/daily-predictions/lambda_function.py)
+
+
+   Include features from boxscore when running model:
+   ```python
+   dataset = load_dataframe_from_s3('data/box_scores/current.parquet')
+   ```
+
+5. RETRAIN MODEL
+
+   After all parquet files are regenerated:
+   ```bash
+   python lambda/supervised-learning/lambda_function.py
+   ```
+
+   This will save a new model with sklearn 1.5.2 that expects 54 features.
+
+6. TEST DAILY PREDICTIONS
+
+   ```bash
+   python lambda/daily-predictions/lambda_function.py
+   ```
+
+   Should now have 54 features matching the model AND see starting lineup detection.
+
