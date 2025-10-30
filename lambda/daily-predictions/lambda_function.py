@@ -20,6 +20,14 @@ import logging
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
+# Add console handler for local testing
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    handler.setLevel(logging.INFO)
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+
 # S3 client
 s3 = boto3.client('s3')
 BUCKET_NAME = 'nba-prediction-ibracken'
@@ -211,9 +219,13 @@ def scrape_minutes_projection():
 
     except requests.exceptions.RequestException as e:
         logger.error(f"Failed to fetch data from SportsLine: {e}")
+        import traceback
+        logger.error(f"Full traceback: {traceback.format_exc()}")
         return {}, {}
     except Exception as e:
         logger.error(f"Failed to parse SportsLine page: {e}")
+        import traceback
+        logger.error(f"Full traceback: {traceback.format_exc()}")
         return {}, {}
 
 def scrape_starting_lineup(driver):
@@ -347,6 +359,8 @@ def scrape_projections_data():
 
     except Exception as e:
         logger.error(f"Error scraping projections: {e}")
+        import traceback
+        logger.error(f"Full traceback: {traceback.format_exc()}")
         return pd.DataFrame(columns=['Player', 'PPG Projection', 'MIN', 'MATCHUP', 'SALARY', 'POSITION'])
     finally:
         driver.quit()
@@ -529,9 +543,11 @@ def run_model_predictions(df):
         predictions = rf.predict(features)
         # Add predictions to the DataFrame
         refined_most_recent_games['My Model Predicted FP'] = predictions
-        # Retain the Player, PPG Projection, Position, and other relevant columns
-        final_columns = ['PLAYER', 'PPG Projection', 'My Model Predicted FP', 'GAME_DATE', 'SALARY', 'POSITION']
+        # Retain the Player, PPG Projection, Position, and other relevant columns (including MIN for validation)
+        final_columns = ['PLAYER', 'PPG Projection', 'My Model Predicted FP', 'GAME_DATE', 'SALARY', 'POSITION', 'MIN']
         refined_most_recent_games = refined_most_recent_games[final_columns]
+        # Rename MIN to PROJECTED_MIN for clarity
+        refined_most_recent_games = refined_most_recent_games.rename(columns={'MIN': 'PROJECTED_MIN'})
         current_date = datetime.date.today()
         refined_most_recent_games['GAME_DATE'] = current_date
         # Load DailyPlayerPredictions from S3
@@ -539,11 +555,11 @@ def run_model_predictions(df):
             df_fp = load_dataframe_from_s3('data/daily_predictions/current.parquet')
         except:
             logger.info("No existing daily predictions found, creating new DataFrame")
-            df_fp = pd.DataFrame(columns=['PLAYER', 'GAME_DATE', 'PPG_PROJECTION', 'MY_MODEL_PREDICTED_FP', 'ACTUAL_FP', 'MY_MODEL_CLOSER_PREDICTION', 'SALARY', 'POSITION'])
+            df_fp = pd.DataFrame(columns=['PLAYER', 'GAME_DATE', 'PPG_PROJECTION', 'MY_MODEL_PREDICTED_FP', 'PROJECTED_MIN', 'ACTUAL_MIN', 'ACTUAL_FP', 'MY_MODEL_CLOSER_PREDICTION', 'SALARY', 'POSITION'])
 
         # Defensive check: if df_fp is empty, create it with proper columns
         if df_fp.empty:
-            df_fp = pd.DataFrame(columns=['PLAYER', 'GAME_DATE', 'PPG_PROJECTION', 'MY_MODEL_PREDICTED_FP', 'ACTUAL_FP', 'MY_MODEL_CLOSER_PREDICTION', 'SALARY', 'POSITION'])
+            df_fp = pd.DataFrame(columns=['PLAYER', 'GAME_DATE', 'PPG_PROJECTION', 'MY_MODEL_PREDICTED_FP', 'PROJECTED_MIN', 'ACTUAL_MIN', 'ACTUAL_FP', 'MY_MODEL_CLOSER_PREDICTION', 'SALARY', 'POSITION'])
             logger.info("No daily player predictions found. Creating empty DataFrame.")
 
         # Collect new records to add in batch
@@ -556,10 +572,13 @@ def run_model_predictions(df):
             if mask.any():
                 df_fp.loc[mask, 'PPG_PROJECTION'] = safe_float(row['PPG Projection'])
                 df_fp.loc[mask, 'MY_MODEL_PREDICTED_FP'] = safe_float(row['My Model Predicted FP'])
+                df_fp.loc[mask, 'PROJECTED_MIN'] = safe_float(row['PROJECTED_MIN'])
                 df_fp.loc[mask, 'SALARY'] = safe_float(row['SALARY'])
                 df_fp.loc[mask, 'POSITION'] = row['POSITION']
                 if 'ACTUAL_FP' in row and pd.notna(row['ACTUAL_FP']):
                     df_fp.loc[mask, 'ACTUAL_FP'] = safe_float(row['ACTUAL_FP'])
+                if 'ACTUAL_MIN' in row and pd.notna(row['ACTUAL_MIN']):
+                    df_fp.loc[mask, 'ACTUAL_MIN'] = safe_float(row['ACTUAL_MIN'])
                 if 'MY_MODEL_CLOSER_PREDICTION' in row and pd.notna(row['MY_MODEL_CLOSER_PREDICTION']):
                     df_fp.loc[mask, 'MY_MODEL_CLOSER_PREDICTION'] = row['MY_MODEL_CLOSER_PREDICTION']
             else:
@@ -568,11 +587,14 @@ def run_model_predictions(df):
                     "GAME_DATE": row['GAME_DATE'],
                     "PPG_PROJECTION": safe_float(row['PPG Projection']),
                     "MY_MODEL_PREDICTED_FP": safe_float(row['My Model Predicted FP']),
+                    "PROJECTED_MIN": safe_float(row['PROJECTED_MIN']),
                     "SALARY": safe_float(row['SALARY']),
                     "POSITION": row['POSITION'],
                 }
                 if 'ACTUAL_FP' in row and pd.notna(row['ACTUAL_FP']):
                     new_record_data["ACTUAL_FP"] = safe_float(row['ACTUAL_FP'])
+                if 'ACTUAL_MIN' in row and pd.notna(row['ACTUAL_MIN']):
+                    new_record_data["ACTUAL_MIN"] = safe_float(row['ACTUAL_MIN'])
                 if 'MY_MODEL_CLOSER_PREDICTION' in row and pd.notna(row['MY_MODEL_CLOSER_PREDICTION']):
                     new_record_data["MY_MODEL_CLOSER_PREDICTION"] = row['MY_MODEL_CLOSER_PREDICTION']
                 new_records.append(new_record_data)
@@ -598,40 +620,45 @@ def check_scores_for_accuracy():
         df_fp = load_dataframe_from_s3('data/daily_predictions/current.parquet')
         
         # Validate required columns
-        required_box_cols = {'PLAYER', 'GAME_DATE', 'FP'}
+        required_box_cols = {'PLAYER', 'GAME_DATE', 'FP', 'MIN'}
         missing_box_cols = required_box_cols - set(df_box.columns)
         if missing_box_cols:
             logger.error(f"Missing required columns {missing_box_cols} in box scores")
             return
-        
+
         if df_fp.empty:
             logger.warning("No daily predictions found")
             return
-        
-        # Merge actual scores
-        df_box = df_box[['PLAYER', 'GAME_DATE', 'FP']].rename(columns={'FP': 'ACTUAL_FP'})
+
+        # Merge actual scores and actual minutes
+        df_box = df_box[['PLAYER', 'GAME_DATE', 'FP', 'MIN']].rename(columns={'FP': 'ACTUAL_FP', 'MIN': 'ACTUAL_MIN'})
 
         # Ensure GAME_DATE is the same type in both dataframes
         df_box['GAME_DATE'] = pd.to_datetime(df_box['GAME_DATE']).dt.date
         df_fp['GAME_DATE'] = pd.to_datetime(df_fp['GAME_DATE']).dt.date
 
-        # Drop and merge 'ACTUAL_FP' to avoid conflict
-        df_fp = df_fp.drop(columns=['ACTUAL_FP'], errors='ignore')
+        # Drop and merge 'ACTUAL_FP' and 'ACTUAL_MIN' to avoid conflict
+        df_fp = df_fp.drop(columns=['ACTUAL_FP', 'ACTUAL_MIN'], errors='ignore')
         df_fp = df_fp.merge(df_box, on=['PLAYER', 'GAME_DATE'], how='left')
         
         if 'MY_MODEL_CLOSER_PREDICTION' not in df_fp.columns:
             df_fp['MY_MODEL_CLOSER_PREDICTION'] = pd.Series(dtype=bool)
-        
-        # Calculate accuracy
+
+        # Calculate accuracy only for games after Oct 30, 2025 (when we fixed the stale data issue)
+        import datetime as dt
+        accuracy_cutoff_date = dt.date(2025, 10, 30)
+
         false_count = 0
         true_count = 0
-        
+
         for index, row in df_fp.iterrows():
             actual_fp = safe_float(row['ACTUAL_FP'])
             ppg_projection = safe_float(row['PPG_PROJECTION'])
             model_predicted_fp = safe_float(row['MY_MODEL_PREDICTED_FP'])
-            
-            if not pd.isnull(actual_fp):
+            game_date = row['GAME_DATE']
+
+            # Only count accuracy for games after cutoff date
+            if not pd.isnull(actual_fp) and game_date >= accuracy_cutoff_date:
                 ppg_diff = abs(ppg_projection - actual_fp) if not pd.isnull(ppg_projection) else float('inf')
                 model_diff = abs(model_predicted_fp - actual_fp) if not pd.isnull(model_predicted_fp) else float('inf')
                 
@@ -644,12 +671,17 @@ def check_scores_for_accuracy():
         
         # Save updated predictions with accuracy
         save_dataframe_to_s3(df_fp, 'data/daily_predictions/current.parquet')
-        
+
         # Calculate accuracy ratio
         total_predictions = true_count + false_count
+        total_with_actual = df_fp['ACTUAL_FP'].notna().sum()
+        filtered_out = total_with_actual - total_predictions
         accuracy_ratio = true_count / total_predictions if total_predictions > 0 else 0
-        
-        logger.info(f"Accuracy check completed: {true_count}/{total_predictions} = {accuracy_ratio:.3f}")
+
+        logger.info(f"Accuracy check: {total_with_actual} predictions with actual results")
+        logger.info(f"Filtered out {filtered_out} predictions before {accuracy_cutoff_date} (stale data)")
+        logger.info(f"Counted accuracy for {total_predictions} predictions after {accuracy_cutoff_date}")
+        logger.info(f"Accuracy: {true_count}/{total_predictions} = {accuracy_ratio:.3f}")
         return accuracy_ratio
 
     except Exception as e:

@@ -211,8 +211,15 @@ def run_box_score_scraper():
     logger.info("Starting NBA box score API scraper")
 
     try:
-        # Define seasons to fetch (past 3 years)
-        seasons = ['2022-23', '2023-24', '2024-25']
+        # Define seasons to fetch (past 3 years + current season)
+        current_season = get_current_nba_season()
+        seasons = ['2022-23', '2023-24', '2024-25', current_season]
+        # Remove duplicates in case current_season is already in the list
+        seasons = list(dict.fromkeys(seasons))
+
+        logger.info(f"Current NBA season: {current_season}")
+        logger.info(f"Will fetch seasons: {seasons}")
+
         season_dataframes = {}
 
         # Fetch data for each season

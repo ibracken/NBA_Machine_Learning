@@ -9,6 +9,7 @@ from tempfile import mkdtemp
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
+import pytz
 
 # Configure logging
 logger = logging.getLogger()
@@ -94,8 +95,10 @@ def scrape_main_slate_time():
                     hour = 0
 
                 # Get today's date and find the next occurrence of this day
+                # Use pytz for proper timezone handling (handles DST automatically)
+                et_tz = pytz.timezone('America/New_York')
                 now_utc = datetime.now(timezone.utc)
-                now_et = now_utc.astimezone(timezone(timedelta(hours=-5)))  # ET is UTC-5
+                now_et = now_utc.astimezone(et_tz)
 
                 # Map day abbreviations to weekday numbers
                 day_map = {'MON': 0, 'TUE': 1, 'WED': 2, 'THU': 3, 'FRI': 4, 'SAT': 5, 'SUN': 6}
@@ -109,16 +112,16 @@ def scrape_main_slate_time():
                     # If it's today but the time has passed, assume it's today
                     target_date = now_et.date() + timedelta(days=days_ahead)
 
-                    # Create datetime in ET timezone
-                    slate_time_et = datetime(
+                    # Create datetime in ET timezone (pytz handles DST)
+                    slate_time_et = et_tz.localize(datetime(
                         target_date.year, target_date.month, target_date.day,
                         hour, minute, 0
-                    )
+                    ))
 
-                    # Convert to UTC
-                    slate_time_utc = slate_time_et + timedelta(hours=5)  # ET to UTC
-                    slate_time_utc = slate_time_utc.replace(tzinfo=timezone.utc)
+                    # Convert to UTC (pytz handles DST offset automatically)
+                    slate_time_utc = slate_time_et.astimezone(pytz.utc)
 
+                    logger.info(f"Main slate time (ET): {slate_time_et}")
                     logger.info(f"Main slate time (UTC): {slate_time_utc}")
                     return slate_time_utc
 

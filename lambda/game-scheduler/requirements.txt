@@ -1,3 +1,4 @@
 boto3
 selenium==4.15.0
 lxml==4.9.3
+pytz==2024.1
