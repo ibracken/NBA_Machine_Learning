@@ -179,27 +179,41 @@ def calculate_rolling_averages(df):
     logger.info("Calculating rolling averages and career features")
 
     try:
-        # Calculate rolling averages for different windows
+        # Calculate rolling averages for different windows (RESET EACH SEASON)
+        # This prevents contamination from previous season when player changes teams/roles
         windows = [3, 7]
         for window in windows:
-            df[f'Last{window}_FP_Avg'] = df.groupby('PLAYER')['FP'].transform(
+            df[f'Last{window}_FP_Avg'] = df.groupby(['PLAYER', 'SEASON'])['FP'].transform(
                 lambda x: x.shift(1).rolling(window, min_periods=1).mean()
             )
 
-        # Calculate season average FP
-        df['Season_FP_Avg'] = df.groupby('PLAYER')['FP'].transform(
+        # Calculate season average FP (WITHIN CURRENT SEASON ONLY)
+        # Previously this was grouping by PLAYER only, causing Season = Career bug
+        df['Season_FP_Avg'] = df.groupby(['PLAYER', 'SEASON'])['FP'].transform(
             lambda x: x.shift(1).expanding(min_periods=1).mean()
         )
 
-        # Calculate career average FP across all historical games
+        # Calculate career average FP across ALL seasons (all historical games)
+        # This provides the long-term baseline across different teams/roles
         df['Career_FP_Avg'] = df.groupby('PLAYER')['FP'].transform(
             lambda x: x.shift(1).expanding(min_periods=1).mean()
         )
 
-        # Track cumulative games played for each player
+        # Track cumulative games played for each player (across all seasons)
         df['Games_Played_Career'] = df.groupby('PLAYER').cumcount()
 
         logger.info("Successfully calculated rolling averages and career features")
+
+        # Log sample values to verify Season != Career
+        sample_players = df['PLAYER'].unique()[:3]
+        for player in sample_players:
+            player_latest = df[df['PLAYER'] == player].tail(1)
+            if not player_latest.empty:
+                season_avg = player_latest['Season_FP_Avg'].values[0]
+                career_avg = player_latest['Career_FP_Avg'].values[0]
+                season = player_latest['SEASON'].values[0] if 'SEASON' in player_latest.columns else 'N/A'
+                logger.info(f"Verification - {player} ({season}): Season_FP_Avg={season_avg:.2f}, Career_FP_Avg={career_avg:.2f}")
+
         return df
 
     except Exception as e:
@@ -269,8 +283,8 @@ def run_box_score_scraper():
             season_df = combined_df[combined_df['SEASON'] == season].copy()
 
             if len(season_df) > 0:
-                # Drop the SEASON column before saving
-                season_df = season_df.drop(columns=['SEASON'])
+                # Keep the SEASON column in saved files (needed for Season_FP_Avg calculation)
+                # season_df = season_df.drop(columns=['SEASON'])  # REMOVED - keep SEASON column
 
                 # Determine S3 key
                 if season == seasons[-1]:  # Latest season is "current"

@@ -101,9 +101,9 @@ def run_supervised_learning():
         # Load box scores data from multiple seasons
         logger.info("Loading box scores data from S3 (multiple seasons)")
         df = load_dataframe_from_s3('data/box_scores/current.parquet')
-        df2 = load_dataframe_from_s3('data/box_scores/2024-2025.parquet')
-        df3 = load_dataframe_from_s3('data/box_scores/2023-2024.parquet')
-        df4 = load_dataframe_from_s3('data/box_scores/2022-2023.parquet')
+        df2 = load_dataframe_from_s3('data/box_scores/2024-25.parquet')
+        df3 = load_dataframe_from_s3('data/box_scores/2023-24.parquet')
+        df4 = load_dataframe_from_s3('data/box_scores/2022-23.parquet')
         df = pd.concat([df, df2, df3, df4])
         logger.info(f"Loaded {len(df)} box score records from multiple seasons")
         

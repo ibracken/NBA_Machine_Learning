@@ -255,7 +255,7 @@ def scrape_starting_lineup(driver):
                         starting_indicator = cells[4].get_text(strip=True)
 
                         # If there's any text in the starting column
-                        if starting_indicator:
+                        if starting_indicator == "YES":
                             # Get player name from data-name attribute
                             data_name = row.get('data-name')
                             if data_name:

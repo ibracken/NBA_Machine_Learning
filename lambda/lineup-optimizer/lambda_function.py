@@ -122,6 +122,7 @@ def optimize_lineup(df):
     logger.info(f"Optimizing lineup from {len(df)} available players")
 
     # Filter out players with missing critical data
+    # Am I filtering out by Date?!?!
     df = df.dropna(subset=['PLAYER', 'POSITION', 'SALARY', 'MY_MODEL_PREDICTED_FP'])
     df = df[df['SALARY'] > 0]  # Remove players with invalid salary
 
