@@ -15,6 +15,14 @@ from datetime import datetime
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
+# Add console handler for local testing (Lambda provides its own handlers)
+if not logger.handlers:
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+
 # S3 client
 s3 = boto3.client('s3')
 BUCKET_NAME = 'nba-prediction-ibracken'
@@ -45,12 +53,16 @@ def run_clustering_analysis():
         # Load latest player stats from S3
         logger.info("Loading player stats from S3")
         df = load_dataframe_from_s3('data/advanced_player_stats/current.parquet')
+        df['SEASON'] = 'current'
         df2 = load_dataframe_from_s3('data/advanced_player_stats/2024-2025.parquet')
+        df2['SEASON'] = '2024-25'
         df3 = load_dataframe_from_s3('data/advanced_player_stats/2023-2024.parquet')
+        df3['SEASON'] = '2023-24'
         df4 = load_dataframe_from_s3('data/advanced_player_stats/2022-2023.parquet')
+        df4['SEASON'] = '2022-23'
         df = pd.concat([df, df2, df3, df4], ignore_index = True)
-        logger.info(f"Loaded {len(df)} player records")
-        
+        logger.info(f"Loaded {len(df)} player records from {len(df['SEASON'].unique())} seasons")
+
         # Set player as index and filter for meaningful playing time
         df.set_index('PLAYER', inplace=True)
         original_count = len(df)
@@ -58,10 +70,15 @@ def run_clustering_analysis():
         df = df[df['MIN'] >= 12]
         filtered_count = len(df)
         logger.info(f"Filtered from {original_count} to {filtered_count} players (GP>=10, MIN>=15)")
-        
-        # Drop columns we don't want to use for clustering (updated for new data structure)
-        columns_to_drop = ['TEAM', 'W', 'L', 'GP', 'DREB', 'STL', 'BLK', 'STAT_TYPE', 'SCRAPED_DATE', 
-                          'PLAYER_ID', 'SOURCE', 'id']
+
+        # Preserve SEASON column before dropping it (we'll need it for output)
+        seasons_filtered = df['SEASON'].copy()
+
+        # Drop columns we don't want to use for clustering
+        # (DREB STL BLK shouldn't be here anyways but still good defensive check)
+        # Note: SEASON is kept out of clustering features but preserved for output
+        columns_to_drop = ['TEAM', 'W', 'L', 'GP', 'DREB', 'STL', 'BLK', 'STAT_TYPE', 'SCRAPED_DATE',
+                          'PLAYER_ID', 'SOURCE', 'id', 'SEASON']
         df = df.drop(columns=columns_to_drop, errors='ignore')
         logger.info(f"Using {len(df.columns)} features for clustering")
         
@@ -110,13 +127,23 @@ def run_clustering_analysis():
         silhouette = silhouette_score(x_pca, cluster_labels)
         logger.info(f"Silhouette score: {silhouette:.3f}")
         
-        # Create cluster assignments DataFrame
+        # Create cluster assignments DataFrame with season information
         df_cluster = pd.DataFrame({
             'PLAYER': dfPlayerCol['PLAYER'],
             'CLUSTER': cluster_labels,
             'TIMESTAMP': pd.Timestamp.now()
         })
-        
+
+        # Add SEASON from the preserved seasons_filtered (aligned by row position)
+        # Both dfPlayerCol and seasons_filtered have the same row order after filtering
+        df_cluster['SEASON'] = seasons_filtered.values
+
+        # Log sample to verify season tracking
+        logger.info("Sample cluster assignments with seasons:")
+        sample = df_cluster.groupby('SEASON').head(2)
+        for _, row in sample.iterrows():
+            logger.info(f"  {row['PLAYER']} ({row['SEASON']}): Cluster {row['CLUSTER']}")
+
         # Save cluster assignments to S3
         save_dataframe_to_s3(df_cluster, 'data/clustered_players/current.parquet')
         

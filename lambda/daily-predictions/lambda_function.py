@@ -15,6 +15,7 @@ import requests
 from io import BytesIO
 from unidecode import unidecode
 import logging
+import pytz
 
 # Configure logging
 logger = logging.getLogger()
@@ -365,209 +366,193 @@ def scrape_projections_data():
     finally:
         driver.quit()
 
-def run_model_predictions(df):
-    """Run ML model predictions using scraped data"""
+def run_model_predictions(todays_scraped_projections):
+    """
+    Generate ML model predictions for today's playing players.
+
+    This function:
+    1. Loads each player's most recent historical game to extract features
+    2. Merges with today's scraped data (minutes, matchup, salary, position)
+    3. Encodes features and generates predictions
+    4. Saves predictions to S3
+
+    Args:
+        todays_scraped_projections: DataFrame with today's players
+                                   (columns: Player, PPG Projection, MIN, MATCHUP, SALARY, POSITION)
+
+    Returns:
+        Number of predictions generated
+    """
     logger.info("Starting model predictions")
-    
+
     try:
-        # Load the trained Random Forest model from S3
+        # Load trained model
         logger.info("Loading trained model from S3")
-        rf = load_model_from_s3('models/RFCluster.sav')
-        
-        # Load box scores from S3
-        logger.info("Loading box scores data")
-        dataset = load_dataframe_from_s3('data/box_scores/current.parquet')
-        
+        model = load_model_from_s3('models/RFCluster.sav')
+
+        # Load historical box scores (to extract features from each player's last game)
+        logger.info("Loading historical box scores data")
+        historical_box_scores = load_dataframe_from_s3('data/box_scores/current.parquet')
+
         # Validate required columns
         required_cols = {'MIN', 'WL', 'FP', 'PLAYER', 'GAME_DATE', 'TEAM_ABBREVIATION'}
-        missing_cols = required_cols - set(dataset.columns)
+        missing_cols = required_cols - set(historical_box_scores.columns)
         if missing_cols:
             logger.error(f"Missing required columns {missing_cols} in box scores data")
-            return
+            return None
 
-        # Data preprocessing
-        dataset = dataset[dataset['MIN'] != 0]
-        dataset = dataset.dropna(subset=['WL'])
-        dataset['GAME_DATE'] = pd.to_datetime(dataset['GAME_DATE'])
+        # Clean historical data
+        historical_box_scores = historical_box_scores[historical_box_scores['MIN'] != 0]
+        historical_box_scores = historical_box_scores.dropna(subset=['WL'])
+        historical_box_scores['GAME_DATE'] = pd.to_datetime(historical_box_scores['GAME_DATE'])
+        historical_box_scores = historical_box_scores.sort_values(by=['PLAYER', 'GAME_DATE'], ascending=[True, True])
 
-        # Sort by PLAYER and GAME_DATE in ascending order
-        dataset_sorted = dataset.sort_values(by=['PLAYER', 'GAME_DATE'], ascending=[True, True])
-
-        # Rolling averages and career features are already pre-calculated in box score data
+        # Get each player's most recent game (for feature extraction like Last3_FP_Avg, Career_FP_Avg, etc.)
         logger.info("Using pre-calculated rolling averages and career features from box score data")
+        player_last_games = historical_box_scores.groupby('PLAYER').tail(1).copy()
 
-        # Get most recent games before one-hot encoding CLUSTER
-        most_recent_games = dataset_sorted.groupby('PLAYER').tail(1).copy()
-
-        # Calculate REST_DAYS for predictions (from most recent game to today)
+        # Calculate rest days from last game to today
         today = pd.Timestamp(datetime.date.today())
-        most_recent_games['REST_DAYS_FROM_TODAY'] = (today - most_recent_games['GAME_DATE']).dt.days
-        most_recent_games['REST_DAYS_FROM_TODAY'] = most_recent_games['REST_DAYS_FROM_TODAY'].clip(0, 30)
+        player_last_games['REST_DAYS'] = (today - player_last_games['GAME_DATE']).dt.days
+        player_last_games['REST_DAYS'] = player_last_games['REST_DAYS'].clip(0, 30)
 
-        # Merge with scraped data to get MATCHUP
-        refined_most_recent_games = most_recent_games[most_recent_games['PLAYER'].isin(df['Player'].unique())].copy()
+        # Filter to only players playing today
+        todays_players = todays_scraped_projections['Player'].unique()
+        todays_player_features = player_last_games[player_last_games['PLAYER'].isin(todays_players)].copy()
 
-        # Drop the historical MIN column since we'll use today's predicted minutes
-        if 'MIN' in refined_most_recent_games.columns:
-            refined_most_recent_games = refined_most_recent_games.drop(columns=['MIN'])
+        # Save historical MIN as PREV_MIN_HIST before dropping (we'll use today's projected MIN instead)
+        if 'MIN' in todays_player_features.columns:
+            todays_player_features['PREV_MIN_HIST'] = todays_player_features['MIN']
 
-        # Rename columns in df before merge (keep MIN as MIN, keep POSITION as POSITION)
-        df_renamed = df.rename(columns={'Player': 'PLAYER', 'MATCHUP': 'MATCHUP_TODAY'})
+        todays_player_features = todays_player_features.drop(columns=['MIN'], errors='ignore')
 
-        # Convert MIN to numeric (it's scraped as string)
-        df_renamed['MIN'] = pd.to_numeric(df_renamed['MIN'], errors='coerce')
+        # Merge today's scraped data (projected minutes, matchup, salary, position)
+        todays_projections_cleaned = todays_scraped_projections.rename(columns={
+            'Player': 'PLAYER',
+            'MATCHUP': 'MATCHUP_TODAY'
+        })
+        todays_projections_cleaned['MIN'] = pd.to_numeric(todays_projections_cleaned['MIN'], errors='coerce')
+        todays_projections_cleaned['SALARY'] = pd.to_numeric(todays_projections_cleaned['SALARY'], errors='coerce')
 
-        # SALARY is already numeric from safe_float, but ensure it's float
-        df_renamed['SALARY'] = pd.to_numeric(df_renamed['SALARY'], errors='coerce')
+        todays_player_features = todays_player_features.merge(todays_projections_cleaned, on='PLAYER', how='left')
 
-        # Keep POSITION as string (e.g., 'PG', 'SG/SF', 'C', etc.)
-
-        refined_most_recent_games = refined_most_recent_games.merge(df_renamed, on='PLAYER', how='left')
-
-        # Parse MATCHUP_TODAY to get IS_HOME and OPPONENT
-        matchup_parsed = refined_most_recent_games.apply(
+        # Parse matchup to extract home/away and opponent team
+        matchup_parsed = todays_player_features.apply(
             lambda row: parse_matchup(row['MATCHUP_TODAY'], row['TEAM_ABBREVIATION']), axis=1
         )
-        refined_most_recent_games['IS_HOME'] = matchup_parsed.apply(lambda x: x[0])
-        refined_most_recent_games['OPPONENT'] = matchup_parsed.apply(lambda x: x[1])
+        todays_player_features['IS_HOME'] = matchup_parsed.apply(lambda x: x[0])
+        todays_player_features['OPPONENT'] = matchup_parsed.apply(lambda x: x[1])
 
-        # Use REST_DAYS_FROM_TODAY for predictions
-        refined_most_recent_games['REST_DAYS'] = refined_most_recent_games['REST_DAYS_FROM_TODAY']
-        refined_most_recent_games = refined_most_recent_games.drop(columns=['REST_DAYS_FROM_TODAY'])
+        # Fill missing clusters with placeholder
+        todays_player_features['CLUSTER'] = todays_player_features['CLUSTER'].fillna('CLUSTER_NAN')
 
-        # Fill missing CLUSTER with placeholder before one-hot encoding
-        refined_most_recent_games['CLUSTER'] = refined_most_recent_games['CLUSTER'].fillna('CLUSTER_NAN')
-
-        # Before one-hot encoding, ensure we have all possible opponent values
-        # These are all 30 NBA teams
-        all_nba_teams = [
+        # One-hot encode CLUSTER and OPPONENT
+        # All 30 NBA teams for opponent encoding
+        ALL_NBA_TEAMS = [
             'ATL', 'BOS', 'BKN', 'CHA', 'CHI', 'CLE', 'DAL', 'DEN', 'DET', 'GSW',
             'HOU', 'IND', 'LAC', 'LAL', 'MEM', 'MIA', 'MIL', 'MIN', 'NOP', 'NYK',
             'OKC', 'ORL', 'PHI', 'PHX', 'POR', 'SAC', 'SAS', 'TOR', 'UTA', 'WAS'
         ]
 
-        # One-hot encode CLUSTER and OPPONENT
-        refined_most_recent_games = pd.get_dummies(refined_most_recent_games, columns=['CLUSTER', 'OPPONENT'], drop_first=False)
+        todays_player_features = pd.get_dummies(todays_player_features, columns=['CLUSTER', 'OPPONENT'], drop_first=False)
 
         # Add missing opponent columns (teams not playing today)
-        for team in all_nba_teams:
+        for team in ALL_NBA_TEAMS:
             opponent_col = f'OPPONENT_{team}'
-            if opponent_col not in refined_most_recent_games.columns:
-                refined_most_recent_games[opponent_col] = 0
+            if opponent_col not in todays_player_features.columns:
+                todays_player_features[opponent_col] = 0
 
-        # Add missing cluster columns if needed (0-14 based on the training notebook)
+        # Add missing cluster columns (0-14 plus NAN)
         for cluster_num in range(15):
             cluster_col = f'CLUSTER_{float(cluster_num)}'
-            if cluster_col not in refined_most_recent_games.columns:
-                refined_most_recent_games[cluster_col] = 0
+            if cluster_col not in todays_player_features.columns:
+                todays_player_features[cluster_col] = 0
 
-        # Also add CLUSTER_NAN if it doesn't exist
-        if 'CLUSTER_CLUSTER_NAN' not in refined_most_recent_games.columns:
-            refined_most_recent_games['CLUSTER_CLUSTER_NAN'] = 0
+        if 'CLUSTER_CLUSTER_NAN' not in todays_player_features.columns:
+            todays_player_features['CLUSTER_CLUSTER_NAN'] = 0
 
-        # Get sorted column lists after adding all missing ones
-        all_cluster_columns = sorted([col for col in refined_most_recent_games.columns if col.startswith('CLUSTER_')])
-        all_opponent_columns_raw = sorted([col for col in refined_most_recent_games.columns if col.startswith('OPPONENT_')])
-
-        # Only keep valid NBA team opponent columns (remove UNKNOWN, invalid abbreviations, etc.)
-        valid_opponent_columns = [f'OPPONENT_{team}' for team in all_nba_teams]
-        invalid_opponent_cols = [col for col in all_opponent_columns_raw if col not in valid_opponent_columns]
+        # Remove invalid opponent columns (e.g., OPPONENT_UNKNOWN)
+        valid_opponent_columns = [f'OPPONENT_{team}' for team in ALL_NBA_TEAMS]
+        invalid_opponent_cols = [col for col in todays_player_features.columns
+                                if col.startswith('OPPONENT_') and col not in valid_opponent_columns]
 
         if invalid_opponent_cols:
             logger.info(f"Removing {len(invalid_opponent_cols)} invalid opponent columns: {invalid_opponent_cols}")
-            refined_most_recent_games = refined_most_recent_games.drop(columns=invalid_opponent_cols)
+            todays_player_features = todays_player_features.drop(columns=invalid_opponent_cols)
 
-        # Re-get the cleaned opponent columns
-        all_opponent_columns = sorted([col for col in refined_most_recent_games.columns if col.startswith('OPPONENT_')])
-
-        logger.info(f"After cleanup: {len(all_cluster_columns)} cluster columns and {len(all_opponent_columns)} opponent columns")
-        if len(all_opponent_columns) != 30:
-            logger.warning(f"Expected 30 opponent columns, got {len(all_opponent_columns)}")
-            logger.warning(f"Missing opponents: {set(valid_opponent_columns) - set(all_opponent_columns)}")
-
-        # Get expected feature names from the model
-        expected_features = rf.feature_names_in_ if hasattr(rf, 'feature_names_in_') else None
-
-        if expected_features is not None:
+        # Get expected features from model
+        if hasattr(model, 'feature_names_in_'):
+            expected_features = model.feature_names_in_
             logger.info(f"Model expects {len(expected_features)} features")
 
-            # Count how many expected features are missing
-            missing_features = [col for col in expected_features if col not in refined_most_recent_games.columns]
-            logger.info(f"Missing {len(missing_features)} features. Adding them as 0...")
+            # Add any missing features as 0
+            missing_features = [col for col in expected_features if col not in todays_player_features.columns]
+            if missing_features:
+                logger.info(f"Adding {len(missing_features)} missing features as 0")
+                for col in missing_features:
+                    todays_player_features[col] = 0
 
-            # Show some missing features for debugging
-            missing_opponents = [f for f in missing_features if f.startswith('OPPONENT_')]
-            missing_clusters = [f for f in missing_features if f.startswith('CLUSTER_')]
-            logger.info(f"  Missing opponents: {len(missing_opponents)} (e.g., {missing_opponents[:5]})")
-            logger.info(f"  Missing clusters: {len(missing_clusters)} (e.g., {missing_clusters[:5]})")
-
-            # Ensure all expected columns exist (add missing ones as 0)
-            for col in expected_features:
-                if col not in refined_most_recent_games.columns:
-                    refined_most_recent_games[col] = 0
-
-            # Select only the expected features in the correct order
-            refined_most_recent_games_model = refined_most_recent_games[expected_features]
+            # Select features in exact order expected by model
+            model_input_features = todays_player_features[expected_features]
         else:
-            # Fallback: Model doesn't have feature_names_in_ (older sklearn version)
-            # Create features in the exact order as training: base features + sorted cluster + sorted opponent
+            # Fallback for older sklearn without feature_names_in_
             logger.info("Model doesn't have feature_names_in_, reconstructing feature order...")
 
-            # Base features in order (must match training exactly)
-            base_features = ['Last3_FP_Avg', 'Last7_FP_Avg', 'Season_FP_Avg', 'Career_FP_Avg', 'Games_Played_Career', 'MIN', 'IS_HOME', 'REST_DAYS']
+            base_features = ['Last3_FP_Avg', 'Last7_FP_Avg', 'Season_FP_Avg',
+                           'Career_FP_Avg', 'Games_Played_Career', 'MIN',
+                           'Last7_MIN_Avg', 'Season_MIN_Avg', 'Career_MIN_Avg',
+                           'IS_HOME', 'REST_DAYS']
 
-            # Sort cluster and opponent columns alphabetically (as pd.get_dummies does)
-            all_cluster_columns_sorted = sorted(all_cluster_columns)
-            all_opponent_columns_sorted = sorted(all_opponent_columns)
+            cluster_columns = sorted([col for col in todays_player_features.columns if col.startswith('CLUSTER_')])
+            opponent_columns = sorted([col for col in todays_player_features.columns if col.startswith('OPPONENT_')])
 
-            # Combine in order
-            feature_columns = base_features + all_cluster_columns_sorted + all_opponent_columns_sorted
+            feature_order = base_features + cluster_columns + opponent_columns
+            logger.info(f"Reconstructed {len(feature_order)} features (Base: {len(base_features)}, "
+                       f"Clusters: {len(cluster_columns)}, Opponents: {len(opponent_columns)})")
 
-            logger.info(f"Constructed {len(feature_columns)} features:")
-            logger.info(f"  Base: {len(base_features)}")
-            logger.info(f"  Clusters: {len(all_cluster_columns_sorted)}")
-            logger.info(f"  Opponents: {len(all_opponent_columns_sorted)}")
-            logger.info(f"  First few features: {feature_columns[:10]}")
+            model_input_features = todays_player_features[feature_order]
 
-            refined_most_recent_games_model = refined_most_recent_games[feature_columns]
-        
-        # Defensive check: if no data to predict, return early
-        if refined_most_recent_games_model.empty:
+        # Check if we have data to predict
+        if model_input_features.empty:
             logger.warning("No data available for prediction. Skipping model prediction.")
-            return
+            return None
 
-        logger.info(f"Making predictions for {len(refined_most_recent_games_model)} players with {len(refined_most_recent_games_model.columns)} features")
+        # Generate predictions
+        logger.info(f"Making predictions for {len(model_input_features)} players with {len(model_input_features.columns)} features")
+        predictions = model.predict(model_input_features.to_numpy())
 
-        # Predict
-        features = refined_most_recent_games_model.to_numpy()
-        predictions = rf.predict(features)
-        # Add predictions to the DataFrame
-        refined_most_recent_games['My Model Predicted FP'] = predictions
-        # Retain the Player, PPG Projection, Position, and other relevant columns (including MIN for validation)
-        final_columns = ['PLAYER', 'PPG Projection', 'My Model Predicted FP', 'GAME_DATE', 'SALARY', 'POSITION', 'MIN']
-        refined_most_recent_games = refined_most_recent_games[final_columns]
-        # Rename MIN to PROJECTED_MIN for clarity
-        refined_most_recent_games = refined_most_recent_games.rename(columns={'MIN': 'PROJECTED_MIN'})
-        current_date = datetime.date.today()
-        refined_most_recent_games['GAME_DATE'] = current_date
-        # Load DailyPlayerPredictions from S3
+        # Format results
+        todays_player_features['My Model Predicted FP'] = predictions
+        final_columns = ['PLAYER', 'PPG Projection', 'My Model Predicted FP', 'GAME_DATE', 'SALARY', 'POSITION', 'MIN', 'FP', 'PREV_MIN_HIST', 'Season_FP_Avg', 'Season_MIN_Avg']
+        prediction_results = todays_player_features[final_columns].copy()
+        prediction_results = prediction_results.rename(columns={
+            'MIN': 'PROJECTED_MIN',
+            'FP': 'PREV_FP',
+            'PREV_MIN_HIST': 'PREV_MIN',
+            'Season_FP_Avg': 'SEASON_AVG_FP',
+            'Season_MIN_Avg': 'SEASON_AVG_MIN'
+        })
+
+        # Set today's date in ET timezone (Lambda runs in UTC)
+        et_tz = pytz.timezone('America/New_York')
+        current_date = datetime.datetime.now(et_tz).date()
+        prediction_results['GAME_DATE'] = current_date
+
+        # Load existing daily predictions from S3
         try:
             df_fp = load_dataframe_from_s3('data/daily_predictions/current.parquet')
         except:
             logger.info("No existing daily predictions found, creating new DataFrame")
             df_fp = pd.DataFrame(columns=['PLAYER', 'GAME_DATE', 'PPG_PROJECTION', 'MY_MODEL_PREDICTED_FP', 'PROJECTED_MIN', 'ACTUAL_MIN', 'ACTUAL_FP', 'MY_MODEL_CLOSER_PREDICTION', 'SALARY', 'POSITION'])
 
-        # Defensive check: if df_fp is empty, create it with proper columns
         if df_fp.empty:
             df_fp = pd.DataFrame(columns=['PLAYER', 'GAME_DATE', 'PPG_PROJECTION', 'MY_MODEL_PREDICTED_FP', 'PROJECTED_MIN', 'ACTUAL_MIN', 'ACTUAL_FP', 'MY_MODEL_CLOSER_PREDICTION', 'SALARY', 'POSITION'])
-            logger.info("No daily player predictions found. Creating empty DataFrame.")
 
-        # Collect new records to add in batch
+        # Update existing predictions or add new ones
+        logger.info("Updating daily predictions")
         new_records = []
 
-        # Merge or update predictions
-        logger.info("Updating daily predictions")
-        for _, row in refined_most_recent_games.iterrows():
+        for _, row in prediction_results.iterrows():
             mask = (df_fp['PLAYER'] == row['PLAYER']) & (df_fp['GAME_DATE'] == row['GAME_DATE'])
             if mask.any():
                 df_fp.loc[mask, 'PPG_PROJECTION'] = safe_float(row['PPG Projection'])
@@ -575,6 +560,10 @@ def run_model_predictions(df):
                 df_fp.loc[mask, 'PROJECTED_MIN'] = safe_float(row['PROJECTED_MIN'])
                 df_fp.loc[mask, 'SALARY'] = safe_float(row['SALARY'])
                 df_fp.loc[mask, 'POSITION'] = row['POSITION']
+                df_fp.loc[mask, 'PREV_FP'] = safe_float(row.get('PREV_FP', 0))
+                df_fp.loc[mask, 'PREV_MIN'] = safe_float(row.get('PREV_MIN', 0))
+                df_fp.loc[mask, 'SEASON_AVG_FP'] = safe_float(row.get('SEASON_AVG_FP', 0))
+                df_fp.loc[mask, 'SEASON_AVG_MIN'] = safe_float(row.get('SEASON_AVG_MIN', 0))
                 if 'ACTUAL_FP' in row and pd.notna(row['ACTUAL_FP']):
                     df_fp.loc[mask, 'ACTUAL_FP'] = safe_float(row['ACTUAL_FP'])
                 if 'ACTUAL_MIN' in row and pd.notna(row['ACTUAL_MIN']):
@@ -590,6 +579,10 @@ def run_model_predictions(df):
                     "PROJECTED_MIN": safe_float(row['PROJECTED_MIN']),
                     "SALARY": safe_float(row['SALARY']),
                     "POSITION": row['POSITION'],
+                    "PREV_FP": safe_float(row.get('PREV_FP', 0)),
+                    "PREV_MIN": safe_float(row.get('PREV_MIN', 0)),
+                    "SEASON_AVG_FP": safe_float(row.get('SEASON_AVG_FP', 0)),
+                    "SEASON_AVG_MIN": safe_float(row.get('SEASON_AVG_MIN', 0)),
                 }
                 if 'ACTUAL_FP' in row and pd.notna(row['ACTUAL_FP']):
                     new_record_data["ACTUAL_FP"] = safe_float(row['ACTUAL_FP'])
@@ -605,7 +598,7 @@ def run_model_predictions(df):
         save_dataframe_to_s3(df_fp, 'data/daily_predictions/current.parquet')
         logger.info("Model predictions completed and saved")
 
-        return len(refined_most_recent_games)
+        return len(prediction_results)
 
     except Exception as e:
         logger.error(f"Error in model predictions: {e}")
@@ -651,6 +644,10 @@ def check_scores_for_accuracy():
         false_count = 0
         true_count = 0
 
+        # Lists to track errors for mean error calculations
+        dff_errors = []
+        model_errors = []
+
         for index, row in df_fp.iterrows():
             actual_fp = safe_float(row['ACTUAL_FP'])
             ppg_projection = safe_float(row['PPG_PROJECTION'])
@@ -661,14 +658,20 @@ def check_scores_for_accuracy():
             if not pd.isnull(actual_fp) and game_date >= accuracy_cutoff_date:
                 ppg_diff = abs(ppg_projection - actual_fp) if not pd.isnull(ppg_projection) else float('inf')
                 model_diff = abs(model_predicted_fp - actual_fp) if not pd.isnull(model_predicted_fp) else float('inf')
-                
+
+                # Track errors for mean calculations
+                if not pd.isnull(ppg_projection):
+                    dff_errors.append(ppg_diff)
+                if not pd.isnull(model_predicted_fp):
+                    model_errors.append(model_diff)
+
                 if ppg_diff < model_diff:
                     df_fp.at[index, 'MY_MODEL_CLOSER_PREDICTION'] = False
                     false_count += 1
                 else:
                     df_fp.at[index, 'MY_MODEL_CLOSER_PREDICTION'] = True
                     true_count += 1
-        
+
         # Save updated predictions with accuracy
         save_dataframe_to_s3(df_fp, 'data/daily_predictions/current.parquet')
 
@@ -678,11 +681,24 @@ def check_scores_for_accuracy():
         filtered_out = total_with_actual - total_predictions
         accuracy_ratio = true_count / total_predictions if total_predictions > 0 else 0
 
+        # Calculate mean absolute errors
+        dff_mae = sum(dff_errors) / len(dff_errors) if dff_errors else 0
+        model_mae = sum(model_errors) / len(model_errors) if model_errors else 0
+
         logger.info(f"Accuracy check: {total_with_actual} predictions with actual results")
         logger.info(f"Filtered out {filtered_out} predictions before {accuracy_cutoff_date} (stale data)")
         logger.info(f"Counted accuracy for {total_predictions} predictions after {accuracy_cutoff_date}")
         logger.info(f"Accuracy: {true_count}/{total_predictions} = {accuracy_ratio:.3f}")
-        return accuracy_ratio
+        logger.info(f"DFF Mean Absolute Error: {dff_mae:.2f} FP ({len(dff_errors)} predictions)")
+        logger.info(f"My Model Mean Absolute Error: {model_mae:.2f} FP ({len(model_errors)} predictions)")
+        logger.info(f"Mean Error Improvement: {dff_mae - model_mae:.2f} FP (negative = model is worse)")
+
+        return {
+            'accuracy_ratio': accuracy_ratio,
+            'dff_mae': dff_mae,
+            'model_mae': model_mae,
+            'total_predictions': total_predictions
+        }
 
     except Exception as e:
         logger.error(f"Error checking accuracy: {e}")
@@ -693,7 +709,7 @@ def run_daily_predictions_scraper():
     logger.info("Starting daily predictions scraper")
     
     try:
-        # Step 1: Scrape projections and minutes
+        # Step 1: Scrape projections and minutes for today
         logger.info("=== STEP 1: SCRAPING PROJECTIONS ===")
         df = scrape_projections_data()
         
@@ -710,16 +726,31 @@ def run_daily_predictions_scraper():
         
         # Step 3: Check accuracy
         logger.info("=== STEP 3: ACCURACY CHECK ===")
-        accuracy_ratio = check_scores_for_accuracy()
-        
+        accuracy_results = check_scores_for_accuracy()
+
         logger.info("Daily predictions scraper completed successfully")
-        
-        return {
-            'success': True,
-            'scraped_players': len(df),
-            'predictions_generated': predictions_count,
-            'accuracy_ratio': accuracy_ratio
-        }
+
+        # Extract results or use defaults if None
+        if accuracy_results:
+            return {
+                'success': True,
+                'scraped_players': len(df),
+                'predictions_generated': predictions_count,
+                'accuracy_ratio': accuracy_results.get('accuracy_ratio'),
+                'dff_mae': accuracy_results.get('dff_mae'),
+                'model_mae': accuracy_results.get('model_mae'),
+                'total_accuracy_predictions': accuracy_results.get('total_predictions')
+            }
+        else:
+            return {
+                'success': True,
+                'scraped_players': len(df),
+                'predictions_generated': predictions_count,
+                'accuracy_ratio': None,
+                'dff_mae': None,
+                'model_mae': None,
+                'total_accuracy_predictions': 0
+            }
         
     except Exception as e:
         logger.error(f"Error in daily predictions scraper: {str(e)}")
@@ -740,9 +771,12 @@ def lambda_handler(event, context):
                 'statusCode': 200,
                 'body': json.dumps({
                     'message': 'Daily predictions completed successfully',
-                    'scraped_players': result['scraped_players'],
-                    'predictions_generated': result['predictions_generated'],
-                    'accuracy_ratio': result['accuracy_ratio']
+                    'scraped_players': result.get('scraped_players'),
+                    'predictions_generated': result.get('predictions_generated'),
+                    'accuracy_ratio': result.get('accuracy_ratio'),
+                    'dff_mae': result.get('dff_mae'),
+                    'model_mae': result.get('model_mae'),
+                    'total_accuracy_predictions': result.get('total_accuracy_predictions')
                 })
             }
         else:

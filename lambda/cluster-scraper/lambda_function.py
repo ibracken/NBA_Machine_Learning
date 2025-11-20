@@ -10,6 +10,14 @@ from io import BytesIO
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
+# Add console handler for local testing (Lambda provides its own handlers)
+if not logger.handlers:
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+
 # S3 client
 s3 = boto3.client('s3')
 BUCKET_NAME = 'nba-prediction-ibracken'
@@ -83,12 +91,8 @@ api_to_cluster_mapping = {
     'PCT_UAST_FGM': 'FGM_UAST_PERCENT',
     
     # Defense stats (will come from Defense endpoint)
-    'DEF_RATING': 'DEF_RTG',  # Different from DEFRTG above - this is the defense-specific rating
-    'DREB': 'DREB',
-    'DREB_PCT': 'DREB_PERCENT_TEAM',  # This will be mapped specifically for defense stats
-    'STL': 'STL',
+    'PCT_DREB': 'DREB_PERCENT_TEAM',  # Team's DREB% (player's DREB% is DREB_PCT above)
     'PCT_STL': 'STL_PERCENT',  # Defense API uses PCT_STL instead of STL_PCT
-    'BLK': 'BLK',
     'PCT_BLK': 'BLK_PERCENT',  # Defense API uses PCT_BLK instead of BLK_PCT
     'OPP_PTS_OFF_TOV': 'OPP_PTS_OFFTO',
     'OPP_PTS_2ND_CHANCE': 'OPP_PTS_2ND_CHANCE',
@@ -123,34 +127,61 @@ def normalize_name(name):
         return str(name).strip().lower()
 
 def transform_api_data_to_cluster_format(df):
-    """Transform API response DataFrame to match original clusterScraper format"""
+    """Transform API response DataFrame to match format expected by nba-clustering"""
     logger.info("Transforming API data to cluster format")
     
     # Create new DataFrame with mapped columns
     cluster_df = pd.DataFrame()
     
-    # Define numeric columns that should be converted to float - matches clusterScraper exactly
+    # Define numeric columns that should be converted to float
     numeric_columns_list = [
-        'AGE', 'GP', 'W', 'L', 'MIN', 'OFFRTG', 'DEFRTG', 'NETRTG', 
-        'AST_PERCENT', 'AST_TO', 'AST_RATIO', 'OREB_PERCENT', 'DREB_PERCENT', 
-        'REB_PERCENT', 'TO_RATIO', 'EFG_PERCENT', 'TS_PERCENT', 'USG_PERCENT', 
+        'AGE', 'GP', 'W', 'L', 'MIN', 'OFFRTG', 'DEFRTG', 'NETRTG',
+        'AST_PERCENT', 'AST_TO', 'AST_RATIO', 'OREB_PERCENT', 'DREB_PERCENT',
+        'REB_PERCENT', 'TO_RATIO', 'EFG_PERCENT', 'TS_PERCENT', 'USG_PERCENT',
         'PACE', 'PIE', 'POSS', 'FGA2P_PERCENT', 'FGA3P_PERCENT', 'PTS2P_PERCENT',
         'PTS2P_MR_PERCENT', 'PTS3P_PERCENT', 'PTSFBPS_PERCENT', 'PTSFT_PERCENT',
         'PTS_OFFTO_PERCENT', 'PTSPITP_PERCENT', 'FG2M_AST_PERCENT', 'FG2M_UAST_PERCENT',
         'FG3M_AST_PERCENT', 'FG3M_UAST_PERCENT', 'FGM_AST_PERCENT', 'FGM_UAST_PERCENT',
-        'DEF_RTG', 'DREB', 'DREB_PERCENT_TEAM', 'STL', 'STL_PERCENT', 'BLK', 'BLK_PERCENT', 
+        'DREB_PERCENT_TEAM', 'STL_PERCENT', 'BLK_PERCENT',
         'OPP_PTS_OFFTO', 'OPP_PTS_2ND_CHANCE', 'OPP_PTS_FB', 'OPP_PTS_PAINT', 'DEFWS'
     ]
     
     # Map columns that exist in both API and cluster format
+    missing_columns = []
+    mapped_columns = []
+    conversion_failures = {}
+
     for api_col, cluster_col in api_to_cluster_mapping.items():
         if api_col in df.columns:
             if cluster_col in numeric_columns_list:
-                # Apply safe_float to numeric columns
+                # Apply safe_float to numeric columns and track failures
+                original_series = df[api_col].copy()
                 cluster_df[cluster_col] = df[api_col].apply(safe_float)
+
+                # Check for conversion failures
+                failed_mask = cluster_df[cluster_col].isna() & original_series.notna()
+                if failed_mask.any():
+                    failed_values = original_series[failed_mask].unique()
+                    conversion_failures[cluster_col] = {
+                        'count': failed_mask.sum(),
+                        'values': list(failed_values)[:5]  # Show first 5 unique failed values
+                    }
+                    logger.warning(f"Column '{cluster_col}': {failed_mask.sum()} numeric conversion failures. Sample values: {list(failed_values)[:5]}")
             else:
                 # Keep as string for PLAYER_ID, PLAYER, TEAM
                 cluster_df[cluster_col] = df[api_col]
+            mapped_columns.append(f"{api_col}->{cluster_col}")
+        else:
+            missing_columns.append(f"{api_col}->{cluster_col}")
+            logger.warning(f"Missing API column: '{api_col}' (expected for '{cluster_col}')")
+
+    # Log summary
+    logger.info(f"Successfully mapped {len(mapped_columns)} columns")
+    if missing_columns:
+        logger.warning(f"Missing {len(missing_columns)} expected columns: {missing_columns}")
+    if conversion_failures:
+        total_failures = sum(f['count'] for f in conversion_failures.values())
+        logger.warning(f"Total numeric conversion failures: {total_failures} across {len(conversion_failures)} columns")
     
     # Normalize player names to match original format
     if 'PLAYER' in cluster_df.columns:
@@ -166,7 +197,7 @@ def transform_api_data_to_cluster_format(df):
     cluster_df['SOURCE'] = 'NBA_API'
     
     logger.info(f"Transformed data shape: {cluster_df.shape}")
-    logger.info(f"Transformed columns: {list(cluster_df.columns)}")
+    # logger.info(f"Transformed columns: {list(cluster_df.columns)}")
     
     return cluster_df
 
@@ -245,7 +276,7 @@ def scrape_single_api_endpoint(session, measure_type, stat_type):
         return pd.DataFrame()
 
 def merge_api_dataframes(advanced_df, scoring_df, defense_df):
-    """Merge all API DataFrames like the original clusterScraper"""
+    """Merge all API DataFrames together"""
     logger.info("Merging API DataFrames")
     
     if advanced_df.empty:

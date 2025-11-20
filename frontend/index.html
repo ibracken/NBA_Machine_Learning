@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NBA DraftKings Lineup Optimizer</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        .header {
+            text-align: center;
+            color: white;
+            margin-bottom: 30px;
+        }
+
+        .header h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            font-size: 1.1rem;
+            opacity: 0.9;
+        }
+
+        .lineup-card {
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+            overflow: hidden;
+        }
+
+        .card-header {
+            background: linear-gradient(135deg, #1e3a8a 0%, #3b82f6 100%);
+            color: white;
+            padding: 20px;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 15px;
+            margin-top: 15px;
+        }
+
+        .stat-item {
+            text-align: center;
+        }
+
+        .stat-label {
+            font-size: 0.75rem;
+            opacity: 0.8;
+            margin-bottom: 5px;
+        }
+
+        .stat-value {
+            font-size: 1.5rem;
+            font-weight: bold;
+        }
+
+        .players-table {
+            width: 100%;
+        }
+
+        .players-table thead {
+            background: #f3f4f6;
+        }
+
+        .players-table th {
+            padding: 15px;
+            text-align: left;
+            font-weight: 600;
+            font-size: 0.85rem;
+            color: #6b7280;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .players-table td {
+            padding: 15px;
+            border-bottom: 1px solid #e5e7eb;
+        }
+
+        .players-table tbody tr:last-child td {
+            border-bottom: none;
+        }
+
+        .players-table tbody tr:hover {
+            background: #f9fafb;
+        }
+
+        .slot-badge {
+            display: inline-block;
+            padding: 4px 10px;
+            background: #3b82f6;
+            color: white;
+            border-radius: 6px;
+            font-weight: 600;
+            font-size: 0.75rem;
+            min-width: 50px;
+            text-align: center;
+        }
+
+        .player-name {
+            font-weight: 600;
+            color: #1f2937;
+        }
+
+        .position {
+            color: #6b7280;
+            font-size: 0.85rem;
+        }
+
+        .salary {
+            font-weight: 600;
+            color: #059669;
+        }
+
+        .fp-value {
+            font-weight: 600;
+            color: #dc2626;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 60px 20px;
+            color: #6b7280;
+        }
+
+        .loading-spinner {
+            width: 50px;
+            height: 50px;
+            border: 4px solid #e5e7eb;
+            border-top-color: #3b82f6;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .error {
+            background: #fee2e2;
+            color: #991b1b;
+            padding: 20px;
+            border-radius: 8px;
+            margin: 20px;
+            text-align: center;
+        }
+
+        .controls {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+
+        .btn {
+            background: white;
+            color: #667eea;
+            border: 2px solid white;
+            padding: 12px 30px;
+            font-size: 1rem;
+            font-weight: 600;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .btn:hover {
+            background: transparent;
+            color: white;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+        }
+
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .game-date {
+            font-size: 0.8rem;
+            color: #6b7280;
+        }
+
+        .last-updated {
+            text-align: center;
+            color: white;
+            opacity: 0.8;
+            margin-top: 20px;
+            font-size: 0.9rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🏀 DraftKings Lineup Optimizer</h1>
+            <p>Optimal NBA lineup based on predicted fantasy points</p>
+        </div>
+
+        <div class="controls">
+            <button class="btn" id="refreshBtn" onclick="loadLineup()">Refresh Lineup</button>
+        </div>
+
+        <div class="lineup-card" id="lineupCard">
+            <div class="loading">
+                <div class="loading-spinner"></div>
+                <p>Loading optimal lineup...</p>
+            </div>
+        </div>
+
+        <div class="last-updated" id="lastUpdated"></div>
+    </div>
+
+    <script>
+        // Configuration - UPDATE THIS WITH YOUR LAMBDA API ENDPOINT
+        const API_ENDPOINT = 'https://hhw9yz6ar2.execute-api.us-east-1.amazonaws.com/lineup';
+        const USE_MOCK_DATA = false; 
+
+        // Mock data for testing
+        const MOCK_DATA = {
+            success: true,
+            lineup_size: 8,
+            total_salary: 48500,
+            remaining_salary: 1500,
+            total_predicted_fp: 312.5,
+            players: [
+                { SLOT: 'PG', PLAYER: 'Luka Doncic', POSITION: 'PG/SG', SALARY: 11200, PREDICTED_FP: 58.3, PROJECTED_MIN: 36, PREV_FP: 62.1, PREV_MIN: 36, SEASON_AVG_FP: 54.2, SEASON_AVG_MIN: 35, GAME_DATE: '2025-11-17' },
+                { SLOT: 'SG', PLAYER: 'Devin Booker', POSITION: 'SG', SALARY: 8900, PREDICTED_FP: 42.1, PROJECTED_MIN: 34, PREV_FP: 38.5, PREV_MIN: 34, SEASON_AVG_FP: 40.8, SEASON_AVG_MIN: 33, GAME_DATE: '2025-11-17' },
+                { SLOT: 'SF', PLAYER: 'Jayson Tatum', POSITION: 'SF/PF', SALARY: 9800, PREDICTED_FP: 48.7, PROJECTED_MIN: 37, PREV_FP: 51.2, PREV_MIN: 37, SEASON_AVG_FP: 46.5, SEASON_AVG_MIN: 36, GAME_DATE: '2025-11-17' },
+                { SLOT: 'PF', PLAYER: 'Giannis Antetokounmpo', POSITION: 'PF/C', SALARY: 11500, PREDICTED_FP: 62.4, PROJECTED_MIN: 35, PREV_FP: 58.9, PREV_MIN: 33, SEASON_AVG_FP: 60.1, SEASON_AVG_MIN: 34, GAME_DATE: '2025-11-17' },
+                { SLOT: 'C', PLAYER: 'Joel Embiid', POSITION: 'C', SALARY: 10800, PREDICTED_FP: 56.8, PROJECTED_MIN: 34, PREV_FP: 53.4, PREV_MIN: 32, SEASON_AVG_FP: 55.7, SEASON_AVG_MIN: 33, GAME_DATE: '2025-11-17' },
+                { SLOT: 'G', PLAYER: 'Damian Lillard', POSITION: 'PG', SALARY: 8700, PREDICTED_FP: 41.2, PROJECTED_MIN: 35, PREV_FP: 44.6, PREV_MIN: 35, SEASON_AVG_FP: 42.3, SEASON_AVG_MIN: 34, GAME_DATE: '2025-11-17' },
+                { SLOT: 'F', PLAYER: 'Kevin Durant', POSITION: 'SF/PF', SALARY: 9600, PREDICTED_FP: 52.3, PROJECTED_MIN: 36, PREV_FP: 49.8, PREV_MIN: 36, SEASON_AVG_FP: 51.5, SEASON_AVG_MIN: 35, GAME_DATE: '2025-11-17' },
+                { SLOT: 'UTIL', PLAYER: 'Anthony Edwards', POSITION: 'SG/SF', SALARY: 8000, PREDICTED_FP: 38.7, PROJECTED_MIN: 35, PREV_FP: 41.2, PREV_MIN: 37, SEASON_AVG_FP: 39.4, SEASON_AVG_MIN: 36, GAME_DATE: '2025-11-17' }
+            ]
+        };
+
+        async function loadLineup() {
+            const lineupCard = document.getElementById('lineupCard');
+            const refreshBtn = document.getElementById('refreshBtn');
+
+            // Show loading state
+            lineupCard.innerHTML = `
+                <div class="loading">
+                    <div class="loading-spinner"></div>
+                    <p>Loading optimal lineup...</p>
+                </div>
+            `;
+            refreshBtn.disabled = true;
+
+            try {
+                let data;
+
+                if (USE_MOCK_DATA) {
+                    // Simulate API delay
+                    await new Promise(resolve => setTimeout(resolve, 800));
+                    data = MOCK_DATA;
+                } else {
+                    // Real API call
+                    const response = await fetch(API_ENDPOINT);
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    const result = await response.json();
+                    // Handle both wrapped and unwrapped responses
+                    if (result.body) {
+                        data = typeof result.body === 'string' ? JSON.parse(result.body) : result.body;
+                    } else {
+                        data = result;
+                    }
+                }
+
+                if (data.success !== false && data.players && data.players.length > 0) {
+                    displayLineup(data);
+                    updateLastUpdated();
+                } else {
+                    throw new Error(data.error || 'No lineup data available');
+                }
+            } catch (error) {
+                lineupCard.innerHTML = `
+                    <div class="error">
+                        <h3>Error Loading Lineup</h3>
+                        <p>${error.message}</p>
+                    </div>
+                `;
+            } finally {
+                refreshBtn.disabled = false;
+            }
+        }
+
+        function displayLineup(data) {
+            const lineupCard = document.getElementById('lineupCard');
+
+            const playersRows = data.players.map(player => `
+                <tr>
+                    <td><span class="slot-badge">${player.SLOT}</span></td>
+                    <td>
+                        <div class="player-name">${player.PLAYER}</div>
+                        <div class="position">${player.POSITION}</div>
+                    </td>
+                    <td class="salary">$${player.SALARY.toLocaleString()}</td>
+                    <td class="fp-value">${player.PREDICTED_FP.toFixed(1)}</td>
+                    <td>${(player.PROJECTED_MIN || 0).toFixed(0)}</td>
+                    <td>${(player.PREV_FP || 0).toFixed(1)}</td>
+                    <td>${(player.PREV_MIN || 0).toFixed(0)}</td>
+                    <td>${(player.SEASON_AVG_FP || 0).toFixed(1)}</td>
+                    <td>${(player.SEASON_AVG_MIN || 0).toFixed(0)}</td>
+                </tr>
+            `).join('');
+
+            lineupCard.innerHTML = `
+                <div class="card-header">
+                    <h2>Optimal Lineup</h2>
+                    <div class="stats-grid">
+                        <div class="stat-item">
+                            <div class="stat-label">Total Salary</div>
+                            <div class="stat-value">$${data.total_salary.toLocaleString()}</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-label">Remaining</div>
+                            <div class="stat-value">$${data.remaining_salary.toLocaleString()}</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-label">Projected FP</div>
+                            <div class="stat-value">${data.total_predicted_fp.toFixed(1)}</div>
+                        </div>
+                    </div>
+                </div>
+                <table class="players-table">
+                    <thead>
+                        <tr>
+                            <th>Slot</th>
+                            <th>Player</th>
+                            <th>Salary</th>
+                            <th>Proj FP</th>
+                            <th>Proj Min</th>
+                            <th>Last FP</th>
+                            <th>Last Min</th>
+                            <th>Avg FP</th>
+                            <th>Avg Min</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${playersRows}
+                    </tbody>
+                </table>
+            `;
+        }
+
+        function updateLastUpdated() {
+            const lastUpdated = document.getElementById('lastUpdated');
+            const now = new Date();
+            lastUpdated.textContent = `Last updated: ${now.toLocaleString()}`;
+        }
+
+        // Load lineup on page load
+        window.addEventListener('DOMContentLoaded', loadLineup);
+    </script>
+</body>
+</html>

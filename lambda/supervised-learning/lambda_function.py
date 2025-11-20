@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-from sklearn.ensemble import RandomForestRegressor
+from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.model_selection import train_test_split
 import boto3
 import json
@@ -13,6 +13,14 @@ import pytz
 # Configure logging
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
+
+# Add console handler for local testing (Lambda provides its own handlers)
+if not logger.handlers:
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
 
 # S3 client
 s3 = boto3.client('s3')
@@ -108,7 +116,9 @@ def run_supervised_learning():
         logger.info(f"Loaded {len(df)} box score records from multiple seasons")
         
         # Validate box scores data structure
-        required_box_score_cols = ['PLAYER', 'GAME_DATE', 'FP', 'Last3_FP_Avg', 'Last7_FP_Avg', 'Season_FP_Avg', 'Career_FP_Avg', 'Games_Played_Career', 'MIN', 'MATCHUP']
+        required_box_score_cols = ['PLAYER', 'GAME_DATE', 'FP', 'Last3_FP_Avg', 'Last7_FP_Avg', 'Season_FP_Avg',
+                                   'Career_FP_Avg', 'Games_Played_Career', 'MIN', 'MATCHUP',
+                                   'Last7_MIN_Avg', 'Season_MIN_Avg', 'Career_MIN_Avg']
         missing_cols = [col for col in required_box_score_cols if col not in df.columns]
         if missing_cols:
             error_msg = f"Missing required columns in box scores data: {missing_cols}"
@@ -137,9 +147,9 @@ def run_supervised_learning():
         # Sort by game date (most recent first)
         df = df.sort_values(by=['GAME_DATE'], ascending=[False])
         
-        # Data preprocessing for MIN column (convert to numeric and add noise as in notebook)
+        # Data preprocessing for MIN column (convert to numeric and add minutes noise)
         df['MIN'] = pd.to_numeric(df['MIN'], errors='coerce')
-        df['MIN'] = df['MIN'] + np.random.uniform(-5, 5, size=len(df))
+        df['MIN'] = df['MIN'] + np.random.uniform(-9, 9, size=len(df))
         df['MIN'] = df['MIN'].clip(lower=0)
         
         # Handle missing clusters with placeholder
@@ -178,7 +188,7 @@ def run_supervised_learning():
         # Handle NaN values in rolling averages (from first games of season)
         logger.info("Handling NaN values in rolling averages")
 
-        # Fill missing rolling averages with season average as fallback
+        # Fill missing FP rolling averages with season average as fallback
         df['Last3_FP_Avg'] = df['Last3_FP_Avg'].fillna(df['Season_FP_Avg'])
         df['Last7_FP_Avg'] = df['Last7_FP_Avg'].fillna(df['Season_FP_Avg'])
 
@@ -193,9 +203,18 @@ def run_supervised_learning():
         # Games_Played_Career should never be NaN (it's a cumcount), but handle just in case
         df['Games_Played_Career'] = df['Games_Played_Career'].fillna(0)
 
+        # Handle minutes rolling averages (same pattern as FP)
+        df['Last7_MIN_Avg'] = df['Last7_MIN_Avg'].fillna(df['Season_MIN_Avg'])
+        df['Last7_MIN_Avg'] = df['Last7_MIN_Avg'].fillna(0)
+        df['Season_MIN_Avg'] = df['Season_MIN_Avg'].fillna(0)
+        df['Career_MIN_Avg'] = df['Career_MIN_Avg'].fillna(0)
+
         # Replace any Inf values with 0
         df['Career_FP_Avg'] = df['Career_FP_Avg'].replace([np.inf, -np.inf], 0)
         df['Games_Played_Career'] = df['Games_Played_Career'].replace([np.inf, -np.inf], 0)
+        df['Last7_MIN_Avg'] = df['Last7_MIN_Avg'].replace([np.inf, -np.inf], 0)
+        df['Season_MIN_Avg'] = df['Season_MIN_Avg'].replace([np.inf, -np.inf], 0)
+        df['Career_MIN_Avg'] = df['Career_MIN_Avg'].replace([np.inf, -np.inf], 0)
 
         # Handle NaN/Inf in REST_DAYS (should be handled by calculate_rest_days, but double-check)
         df['REST_DAYS'] = df['REST_DAYS'].fillna(3)  # Default rest days
@@ -215,10 +234,14 @@ def run_supervised_learning():
         logger.info(f"After NaN handling - Season_FP_Avg nulls: {df['Season_FP_Avg'].isna().sum()}")
         logger.info(f"After NaN handling - Career_FP_Avg nulls: {df['Career_FP_Avg'].isna().sum()}")
         logger.info(f"After NaN handling - Games_Played_Career nulls: {df['Games_Played_Career'].isna().sum()}")
+        logger.info(f"After NaN handling - Last7_MIN_Avg nulls: {df['Last7_MIN_Avg'].isna().sum()}")
+        logger.info(f"After NaN handling - Season_MIN_Avg nulls: {df['Season_MIN_Avg'].isna().sum()}")
+        logger.info(f"After NaN handling - Career_MIN_Avg nulls: {df['Career_MIN_Avg'].isna().sum()}")
 
         # Define features and target
         feature_names = ['Last3_FP_Avg', 'Last7_FP_Avg', 'Season_FP_Avg',
                         'Career_FP_Avg', 'Games_Played_Career', 'CLUSTER', 'MIN',
+                        'Last7_MIN_Avg', 'Season_MIN_Avg', 'Career_MIN_Avg',
                         'IS_HOME', 'OPPONENT', 'REST_DAYS']
         label_name = 'FP'
         
@@ -234,7 +257,8 @@ def run_supervised_learning():
         df_labels = df[label_name].copy()
         
         # Validate feature data quality
-        numeric_features = ['Last3_FP_Avg', 'Last7_FP_Avg', 'Season_FP_Avg', 'Career_FP_Avg', 'Games_Played_Career', 'MIN']
+        numeric_features = ['Last3_FP_Avg', 'Last7_FP_Avg', 'Season_FP_Avg', 'Career_FP_Avg',
+                           'Games_Played_Career', 'MIN', 'Last7_MIN_Avg', 'Season_MIN_Avg', 'Career_MIN_Avg']
         for feature in numeric_features:
             if df_features[feature].isna().all():
                 error_msg = f"All values in feature '{feature}' are null"
@@ -256,7 +280,17 @@ def run_supervised_learning():
         # One-hot encode categorical features
         logger.info("One-hot encoding categorical features")
         df_features = pd.get_dummies(df_features, columns=['CLUSTER', 'OPPONENT'], drop_first=False)
-        
+
+        # Save feature names to S3 for validation/prediction consistency
+        feature_names_list = df_features.columns.tolist()
+        feature_names_json = json.dumps({'features': feature_names_list})
+        s3.put_object(
+            Bucket=BUCKET_NAME,
+            Key='models/RFCluster_feature_names.json',
+            Body=feature_names_json
+        )
+        logger.info(f"Saved {len(feature_names_list)} feature names to S3")
+
         # Convert to numpy arrays
         features = np.array(df_features)
         labels = np.array(df_labels)
@@ -301,13 +335,13 @@ def run_supervised_learning():
         test_players = test_players.reset_index(drop=True)
         test_dates = test_dates.reset_index(drop=True)
         
-        # Train RandomForest model
-        logger.info("Training RandomForest model")
+        # Train GradientBoosting model
+        logger.info("Training GradientBoosting model")
         logger.info(f"Training set size: {len(train)}, Test set size: {len(test)}")
         logger.info(f"Training data shape: {train.shape}")
         logger.info(f"Training labels shape: {train_labels.shape}")
         logger.info(f"Feature count: {train.shape[1]}")
-        logger.info(f"Total records being sent to RandomForest: {train.shape[0]}")
+        logger.info(f"Total records being sent to GradientBoosting: {train.shape[0]}")
 
         # Final validation check for any remaining NaN/Inf values
         try:
@@ -333,16 +367,22 @@ def run_supervised_learning():
         except (ValueError, TypeError) as e:
             logger.warning(f"Could not validate NaN/Inf due to data types: {e}")
 
-        rf = RandomForestRegressor(random_state=4)
-        rf.fit(train, train_labels.ravel())
-        
+        model = GradientBoostingRegressor(
+            n_estimators=200,
+            learning_rate=0.1,
+            max_depth=5,
+            random_state=42,
+            verbose=0
+        )
+        model.fit(train, train_labels.ravel())
+
         # Save trained model to S3
-        save_model_to_s3(rf, "models/RFCluster.sav")
-        
+        save_model_to_s3(model, "models/RFCluster.sav")
+
         # Generate predictions
         logger.info("Generating predictions")
-        train_predictions = rf.predict(train)
-        test_predictions = rf.predict(test)
+        train_predictions = model.predict(train)
+        test_predictions = model.predict(test)
         
         # Create results dataframe
         logger.info("Creating test results dataframe")
@@ -396,7 +436,7 @@ def run_supervised_learning():
         test_error = np.mean(abs(test_predictions - test_labels.ravel()))
         
         # Calculate feature importance
-        feature_importance = dict(zip(df_features.columns, rf.feature_importances_))
+        feature_importance = dict(zip(df_features.columns, model.feature_importances_))
         all_features_sorted = sorted(feature_importance.items(), key=lambda x: x[1], reverse=True)
         top_features = all_features_sorted[:5]
 

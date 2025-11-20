@@ -11,6 +11,15 @@ from unidecode import unidecode
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
+# Add console handler for local testing (Lambda provides its own handlers)
+if not logger.handlers:
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+
+
 # S3 client
 s3 = boto3.client('s3')
 BUCKET_NAME = 'nba-prediction-ibracken'
@@ -149,25 +158,41 @@ def process_box_scores(df):
 def enrich_with_clusters(df):
     """Add cluster information to box score data"""
     logger.info("Adding cluster information")
-    
+
     try:
         # Get cluster data from S3
         cluster_df = load_dataframe_from_s3('data/clustered_players/current.parquet')
-        
-        # Create cluster mapping dictionary
+
+        # Normalize player names for matching
         cluster_df['PLAYER'] = cluster_df['PLAYER'].apply(normalize_name)
-        cluster_dict = cluster_df.set_index('PLAYER')['CLUSTER'].to_dict()
-        
-        # Add cluster information
-        df['CLUSTER'] = df['PLAYER'].map(cluster_dict)
-        
+
+        # Join on (PLAYER, SEASON) to get the correct cluster for each season
+        # This prevents the bug where all seasons got the last season's cluster
+        df = df.merge(
+            cluster_df[['PLAYER', 'SEASON', 'CLUSTER']],
+            on=['PLAYER', 'SEASON'],
+            how='left'
+        )
+
         # Log cluster matching stats
-        matched_players = df['CLUSTER'].notna().sum()
-        total_players = len(df['PLAYER'].unique())
-        logger.info(f"Matched clusters for {matched_players}/{len(df)} records from {total_players} unique players")
-        
+        matched_records = df['CLUSTER'].notna().sum()
+        total_records = len(df)
+        unique_player_seasons = df[['PLAYER', 'SEASON']].drop_duplicates()
+        matched_player_seasons = df[df['CLUSTER'].notna()][['PLAYER', 'SEASON']].drop_duplicates()
+
+        logger.info(f"Matched clusters for {matched_records}/{total_records} records")
+        logger.info(f"Matched {len(matched_player_seasons)}/{len(unique_player_seasons)} unique player-season combinations")
+
+        # Log some examples to verify correct matching
+        logger.info("Sample cluster assignments (verification):")
+        for season in df['SEASON'].unique()[:2]:
+            season_sample = df[df['SEASON'] == season][['PLAYER', 'SEASON', 'CLUSTER']].drop_duplicates().head(3)
+            for _, row in season_sample.iterrows():
+                cluster_val = row['CLUSTER'] if pd.notna(row['CLUSTER']) else 'NO MATCH'
+                logger.info(f"  {row['PLAYER']} ({row['SEASON']}): Cluster {cluster_val}")
+
         return df
-        
+
     except Exception as e:
         logger.error(f"Error adding cluster information: {str(e)}")
         # Continue without clusters if cluster data unavailable
@@ -202,17 +227,35 @@ def calculate_rolling_averages(df):
         # Track cumulative games played for each player (across all seasons)
         df['Games_Played_Career'] = df.groupby('PLAYER').cumcount()
 
-        logger.info("Successfully calculated rolling averages and career features")
+        # Calculate minutes rolling averages (same pattern as FP features)
+        # Last 7 games minutes average (within season)
+        df['Last7_MIN_Avg'] = df.groupby(['PLAYER', 'SEASON'])['MIN'].transform(
+            lambda x: x.shift(1).rolling(7, min_periods=1).mean()
+        )
+
+        # Season average minutes (within current season only)
+        df['Season_MIN_Avg'] = df.groupby(['PLAYER', 'SEASON'])['MIN'].transform(
+            lambda x: x.shift(1).expanding(min_periods=1).mean()
+        )
+
+        # Career average minutes (across all seasons)
+        df['Career_MIN_Avg'] = df.groupby('PLAYER')['MIN'].transform(
+            lambda x: x.shift(1).expanding(min_periods=1).mean()
+        )
+
+        logger.info("Successfully calculated rolling averages and career features (FP + Minutes)")
 
         # Log sample values to verify Season != Career
         sample_players = df['PLAYER'].unique()[:3]
         for player in sample_players:
             player_latest = df[df['PLAYER'] == player].tail(1)
             if not player_latest.empty:
-                season_avg = player_latest['Season_FP_Avg'].values[0]
-                career_avg = player_latest['Career_FP_Avg'].values[0]
+                season_fp = player_latest['Season_FP_Avg'].values[0]
+                career_fp = player_latest['Career_FP_Avg'].values[0]
+                season_min = player_latest['Season_MIN_Avg'].values[0]
+                career_min = player_latest['Career_MIN_Avg'].values[0]
                 season = player_latest['SEASON'].values[0] if 'SEASON' in player_latest.columns else 'N/A'
-                logger.info(f"Verification - {player} ({season}): Season_FP_Avg={season_avg:.2f}, Career_FP_Avg={career_avg:.2f}")
+                logger.info(f"Verification - {player} ({season}): Season_FP={season_fp:.2f}, Career_FP={career_fp:.2f}, Season_MIN={season_min:.1f}, Career_MIN={career_min:.1f}")
 
         return df
 
@@ -283,8 +326,6 @@ def run_box_score_scraper():
             season_df = combined_df[combined_df['SEASON'] == season].copy()
 
             if len(season_df) > 0:
-                # Keep the SEASON column in saved files (needed for Season_FP_Avg calculation)
-                # season_df = season_df.drop(columns=['SEASON'])  # REMOVED - keep SEASON column
 
                 # Determine S3 key
                 if season == seasons[-1]:  # Latest season is "current"

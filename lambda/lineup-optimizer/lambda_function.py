@@ -2,6 +2,7 @@ import boto3
 import pandas as pd
 import json
 import datetime
+import pytz
 import logging
 from io import BytesIO
 from pulp import LpMaximize, LpProblem, LpVariable, lpSum, value, PULP_CBC_CMD
@@ -203,7 +204,12 @@ def optimize_lineup(df):
                 'POSITION': player_row['POSITION'],
                 'SALARY': player_row['SALARY'],
                 'PREDICTED_FP': player_row['MY_MODEL_PREDICTED_FP'],
-                'GAME_DATE': player_row['GAME_DATE']
+                'GAME_DATE': player_row['GAME_DATE'],
+                'PROJECTED_MIN': player_row.get('PROJECTED_MIN', 0),
+                'PREV_FP': player_row.get('PREV_FP', 0),
+                'PREV_MIN': player_row.get('PREV_MIN', 0),
+                'SEASON_AVG_FP': player_row.get('SEASON_AVG_FP', 0),
+                'SEASON_AVG_MIN': player_row.get('SEASON_AVG_MIN', 0)
             })
             total_salary += player_row['SALARY']
             total_fp += player_row['MY_MODEL_PREDICTED_FP']
@@ -219,6 +225,46 @@ def optimize_lineup(df):
 
     return lineup_df
 
+def get_saved_lineup():
+    """Just read the existing lineup from S3 without regenerating"""
+    logger.info("Fetching saved lineup from S3")
+
+    try:
+        lineup_df = load_dataframe_from_s3('data/daily_lineups/current.parquet')
+
+        if lineup_df.empty:
+            logger.warning("No saved lineup found")
+            return {
+                'success': False,
+                'error': 'No lineup available'
+            }
+
+        # Convert date if needed
+        if 'GAME_DATE' in lineup_df.columns:
+            lineup_df['GAME_DATE'] = lineup_df['GAME_DATE'].apply(
+                lambda x: x.isoformat() if isinstance(x, datetime.date) else str(x)
+            )
+
+        total_salary = lineup_df['SALARY'].sum()
+        total_fp = lineup_df['PREDICTED_FP'].sum()
+
+        logger.info(f"Successfully loaded lineup: {len(lineup_df)} players, ${total_salary:.0f} salary")
+
+        return {
+            'success': True,
+            'lineup_size': len(lineup_df),
+            'total_salary': float(total_salary),
+            'remaining_salary': float(50000 - total_salary),
+            'total_predicted_fp': float(total_fp),
+            'players': lineup_df.to_dict('records')
+        }
+    except Exception as e:
+        logger.error(f"Error fetching lineup: {str(e)}")
+        return {
+            'success': False,
+            'error': f'Could not load lineup: {str(e)}'
+        }
+
 def generate_optimal_lineup():
     """Main function to generate optimal DraftKings lineup"""
     logger.info("Starting lineup optimization")
@@ -229,8 +275,9 @@ def generate_optimal_lineup():
 
         logger.info(f"Loaded {len(df_predictions)} total predictions")
 
-        # Filter for today's date only
-        today = datetime.date.today()
+        # Filter for today's date only (using Eastern Time for Lambda)
+        eastern = pytz.timezone('US/Eastern')
+        today = datetime.datetime.now(eastern).date()
         df_predictions['GAME_DATE'] = pd.to_datetime(df_predictions['GAME_DATE']).dt.date
         df_today = df_predictions[df_predictions['GAME_DATE'] == today].copy()
 
@@ -297,15 +344,35 @@ def generate_optimal_lineup():
 def lambda_handler(event, context):
     """AWS Lambda handler function"""
     logger.info("Lineup optimizer Lambda function started")
+    logger.info(f"Event: {json.dumps(event)}")
+
+    # CORS headers for API Gateway
+    headers = {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Headers': 'Content-Type,X-Amz-Date,Authorization,X-Api-Key',
+        'Access-Control-Allow-Methods': 'GET,OPTIONS'
+    }
+
+    # Check if this is an API Gateway request (fetch mode) or EventBridge/manual trigger (generate mode)
+    # API Gateway requests have 'requestContext', EventBridge does not
+    is_api_request = 'requestContext' in event or 'headers' in event
 
     try:
-        result = generate_optimal_lineup()
+        if is_api_request:
+            # API Gateway request - just fetch existing lineup (no email)
+            logger.info("API Gateway request detected - fetching saved lineup")
+            result = get_saved_lineup()
+        else:
+            # EventBridge/manual trigger - generate new lineup and send email
+            logger.info("Scheduled/manual trigger detected - generating new lineup")
+            result = generate_optimal_lineup()
 
         if result['success']:
             return {
                 'statusCode': 200,
+                'headers': headers,
                 'body': json.dumps({
-                    'message': 'Lineup optimization completed successfully',
+                    'message': 'Lineup fetched successfully' if is_api_request else 'Lineup optimization completed successfully',
                     'lineup_size': result['lineup_size'],
                     'total_salary': result['total_salary'],
                     'remaining_salary': result['remaining_salary'],
@@ -316,8 +383,9 @@ def lambda_handler(event, context):
         else:
             return {
                 'statusCode': 500,
+                'headers': headers,
                 'body': json.dumps({
-                    'message': 'Lineup optimization failed',
+                    'message': 'Lineup operation failed',
                     'error': result['error']
                 })
             }
@@ -326,6 +394,7 @@ def lambda_handler(event, context):
         logger.error(f"Lambda handler error: {str(e)}")
         return {
             'statusCode': 500,
+            'headers': headers,
             'body': json.dumps({
                 'message': 'Lambda execution failed',
                 'error': str(e)
