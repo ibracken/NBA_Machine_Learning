@@ -2,6 +2,8 @@ import pandas as pd
 import numpy as np
 from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.model_selection import train_test_split
+from sklearn.metrics import r2_score
+from statsmodels.stats.outliers_influence import variance_inflation_factor
 import boto3
 import json
 import pickle
@@ -149,7 +151,7 @@ def run_supervised_learning():
         
         # Data preprocessing for MIN column (convert to numeric and add minutes noise)
         df['MIN'] = pd.to_numeric(df['MIN'], errors='coerce')
-        df['MIN'] = df['MIN'] + np.random.uniform(-9, 9, size=len(df))
+        df['MIN'] = df['MIN'] + np.random.uniform(-10, 10, size=len(df))
         df['MIN'] = df['MIN'].clip(lower=0)
         
         # Handle missing clusters with placeholder
@@ -276,7 +278,34 @@ def run_supervised_learning():
             logger.warning("Found negative MIN values after preprocessing")
         
         logger.info(f"Feature validation passed: {len(df_features)} records with {len(feature_names)} features")
-        
+
+        # Calculate VIF (Variance Inflation Factor) for multicollinearity detection
+        # Only calculate on numeric features before one-hot encoding
+        logger.info("Calculating VIF for numeric features...")
+        numeric_feature_names = ['Last3_FP_Avg', 'Last7_FP_Avg', 'Season_FP_Avg', 'Career_FP_Avg',
+                                'Games_Played_Career', 'MIN', 'Last7_MIN_Avg', 'Season_MIN_Avg',
+                                'Career_MIN_Avg', 'IS_HOME', 'REST_DAYS']
+
+        try:
+            vif_data = pd.DataFrame()
+            vif_data['Feature'] = numeric_feature_names
+            vif_data['VIF'] = [variance_inflation_factor(df_features[numeric_feature_names].values, i)
+                              for i in range(len(numeric_feature_names))]
+            vif_data = vif_data.sort_values('VIF', ascending=False)
+
+            logger.info("VIF Analysis (High VIF >10 suggests multicollinearity - informational only):")
+            for idx, row in vif_data.iterrows():
+                vif_value = row['VIF']
+                if vif_value > 10:
+                    status = "HIGH"
+                elif vif_value > 5:
+                    status = "MODERATE"
+                else:
+                    status = "OK"
+                logger.info(f"  {row['Feature']:<25} VIF: {vif_value:>8.2f}  ({status})")
+        except Exception as e:
+            logger.warning(f"Could not calculate VIF: {e}")
+
         # One-hot encode categorical features
         logger.info("One-hot encoding categorical features")
         df_features = pd.get_dummies(df_features, columns=['CLUSTER', 'OPPONENT'], drop_first=False)
@@ -370,7 +399,7 @@ def run_supervised_learning():
         model = GradientBoostingRegressor(
             n_estimators=200,
             learning_rate=0.1,
-            max_depth=5,
+            max_depth=3,
             random_state=42,
             verbose=0
         )
@@ -383,7 +412,14 @@ def run_supervised_learning():
         logger.info("Generating predictions")
         train_predictions = model.predict(train)
         test_predictions = model.predict(test)
-        
+
+        # Calculate R² scores
+        train_r2 = r2_score(train_labels.ravel(), train_predictions)
+        test_r2 = r2_score(test_labels.ravel(), test_predictions)
+
+        logger.info(f"Training R²: {train_r2:.4f}")
+        logger.info(f"Test R²: {test_r2:.4f}")
+
         # Create results dataframe
         logger.info("Creating test results dataframe")
         
@@ -456,6 +492,8 @@ def run_supervised_learning():
             'test_records': len(test),
             'train_error_mae': float(train_error),
             'test_error_mae': float(test_error),
+            'train_r2': float(train_r2),
+            'test_r2': float(test_r2),
             'feature_count': len(df_features.columns),
             'top_features': [(feat, float(imp)) for feat, imp in top_features],
             'all_features': [(feat, float(imp)) for feat, imp in all_features_sorted],

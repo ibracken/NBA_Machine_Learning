@@ -342,6 +342,7 @@ def scrape_projections_data():
 
         # Apply baseline minutes for starters with low projected minutes
         STARTER_BASELINE_MINUTES = 24
+        MAX_MINUTES_CAP = 36  # Cap extreme projections (e.g., Sion James at 42 min)
 
         for idx, row in df.iterrows():
             player_name = row['Player']
@@ -352,6 +353,12 @@ def scrape_projections_data():
                 if pd.isna(current_minutes) or current_minutes < STARTER_BASELINE_MINUTES:
                     logger.info(f"Applying baseline {STARTER_BASELINE_MINUTES} min for starter: {player_name} (was: {current_minutes})")
                     df.at[idx, 'MIN'] = str(STARTER_BASELINE_MINUTES)
+
+            # Cap all projections at reasonable maximum
+            current_minutes = pd.to_numeric(df.at[idx, 'MIN'], errors='coerce')
+            if not pd.isna(current_minutes) and current_minutes > MAX_MINUTES_CAP:
+                logger.info(f"Capping minutes for {player_name}: {current_minutes} → {MAX_MINUTES_CAP}")
+                df.at[idx, 'MIN'] = str(MAX_MINUTES_CAP)
 
         df = df.dropna(subset=['MIN'])
 
