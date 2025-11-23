@@ -119,7 +119,7 @@ def run_clustering_analysis():
         
         # Apply KMeans with optimal clusters (determined from analysis: 15 clusters)
         logger.info("Performing KMeans clustering")
-        n_clusters = 15
+        n_clusters = 9
         kmeans = KMeans(n_clusters=n_clusters, random_state=4)
         cluster_labels = kmeans.fit_predict(x_pca)
         

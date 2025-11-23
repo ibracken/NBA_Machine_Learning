@@ -1,407 +1,268 @@
-# Minutes Projection Strategies - Testing Framework
+# Minutes Projection Strategies
 
-## The Problem
-
-**Current State:**
-- SportsLine projections: 4.74 min MAE
-- 20% of predictions have ±8 min error
-- Examples of failures:
-  - Sion James: 42 min projected → 23-25 actual (consistent over-projection)
-  - Paul Reed: 13 min projected → 31 actual (missed opportunity)
-  - Andre Drummond: 13 min projected → 35 actual (injury fill-in)
-
-**Impact on FP Predictions:**
-- MIN feature = 60% importance in model
-- 4.74 min MAE × 60% = **2.85 FP error from minutes alone**
-- Current model MAE: 8.02 FP
-- If we reduce minutes MAE to 3.5 → save ~0.75 FP → **7.27 FP total** (beats DFF's 7.38!)
+## Current Baseline: SportsLine
+- MAE: 4.74 minutes
+- Used as our comparison benchmark
+- Problem: 20% of predictions have ±8 min error
 
 ---
 
-## Strategy Categories
+## Our Approach
 
-### 1. Baseline Formulas (No Injury Data)
+### 1. Formula C (Core Projection)
+```
+projected_min = (0.5 × season_avg_min) + (0.3 × last_7_avg_min) + (0.2 × prev_game_min)
+```
 
-Simple rule-based projections using only historical player stats.
+**Why this formula:**
+- Balanced approach between season stability and recent trends
+- Not too reactive, not too conservative
+- Cap at 36 minutes to prevent unrealistic projections
 
-#### Formula A: Simple Season Average
-```
-projected_min = season_avg_min
-```
-**Pros**: Stable, simple
-**Cons**: Ignores trends, slow to adapt
+---
 
-#### Formula B: Weighted Average (Conservative)
-```
-projected_min = 0.6 * season_avg_min + 0.3 * last_7_avg_min + 0.1 * prev_game_min
-```
-**Pros**: Stable but considers recent form
-**Cons**: May miss recent role changes
+### 2. Injury Adjustments (WHERE THE MONEY IS)
 
-#### Formula C: Weighted Average (Balanced)
-```
-projected_min = 0.5 * season_avg_min + 0.3 * last_7_avg_min + 0.2 * prev_game_min
-```
-**Pros**: Balanced approach
-**Cons**: Still reactive
+**Core Principle:** When a key player goes down, correctly identifying who absorbs the minutes = DFS edge.
 
-#### Formula D: Weighted Average (Reactive)
-```
-projected_min = 0.3 * season_avg_min + 0.4 * last_7_avg_min + 0.3 * prev_game_min
-```
-**Pros**: Captures trends quickly
-**Cons**: More volatile, sensitive to outliers
+---
 
-#### Formula E: Last 7 Games Only
-```
-projected_min = last_7_avg_min
-```
-**Pros**: Most reactive
-**Cons**: Volatile, misses long-term baseline
+#### Strategy A: Simple Position-Based Redistribution (Baseline)
 
-#### Formula F: Starter-Adjusted
+Distribute lost minutes evenly among teammates at the same position.
+
 ```python
-if is_starter:
-    projected_min = max(28, weighted_average)
-else:
-    projected_min = weighted_average
-```
-**Pros**: Prevents under-projecting starters
-**Cons**: Need accurate starter detection
+lost_minutes = injured_player.season_avg_min
+teammates_at_position = filter_by_position(team, injured_player.position)
 
-**Test These**: Run all formulas on historical data (Oct 30+), calculate MAE for each.
+for teammate in teammates_at_position:
+    boost = lost_minutes / len(teammates_at_position)
+    teammate.projected_min += boost
+```
+
+**Pros:** Simple, interpretable
+**Cons:** Ignores player similarity, role, and skill level. A backup point guard and third-string center aren't equally likely to absorb PG minutes.
 
 ---
 
-### 2. Injury Adjustment Strategies
+#### Strategy B: Cluster-Based Redistribution ⭐ (RECOMMENDED)
 
-Requires: NBA injury report (Status: OUT)
+Use player clusters to identify who is actually similar to the injured player.
 
-#### Strategy 1: Simple Redistribution
 ```python
-for injured_player in injuries:
-    lost_minutes = injured_player.season_avg_min
+lost_minutes = injured_player.season_avg_min
+injured_cluster = injured_player.cluster
 
-    # Find teammates in same position
-    teammates = filter_by_position(team, injured_player.position)
+# Find teammates in same cluster AND similar position
+similar_players = [
+    p for p in team
+    if p.cluster == injured_cluster
+    and position_overlap(p.position, injured_player.position)
+]
 
-    # Distribute evenly
-    for teammate in teammates:
-        teammate.projected_min += lost_minutes / len(teammates)
+# If no cluster matches, fall back to position only
+if not similar_players:
+    similar_players = filter_by_position(team, injured_player.position)
+
+# Weight distribution by current minutes (better players get more)
+total_current_min = sum(p.season_avg_min for p in similar_players)
+
+for player in similar_players:
+    weight = player.season_avg_min / total_current_min
+    player.projected_min += lost_minutes * weight
+# Set cap on minutes per player
 ```
 
-**Pros**: Simple, interpretable
-**Cons**: Ignores player quality, cluster similarity
+**Why this works:**
+- Clusters capture playstyle similarity (e.g., both are rim-runners, both are stretch-4s)
+- Players in same cluster are more likely to fill similar roles
+- Weighting by current minutes accounts for depth chart order
+
+**Example:**
+- Injured: Joel Embiid (35 min, Cluster: Elite Big)
+- Cluster match: Paul Reed (15 min, Cluster: Elite Big)
+- Position match but different cluster: Montrezl Harrell (12 min, Cluster: Energy Big)
+- Reed gets MORE of the minutes (same cluster + more current minutes)
 
 ---
 
-#### Strategy 2: Cluster-Based Redistribution
+
+#### Strategy C: Tiered Distribution (Stars vs Role Players)
+
+Different redistribution logic based on injured player's role.
+
 ```python
-for injured_player in injuries:
-    lost_minutes = injured_player.season_avg_min
+lost_minutes = injured_player.season_avg_min
 
-    # Find teammates in same cluster/position
-    similar_players = filter_by_cluster_and_position(
-        team,
-        injured_player.cluster,
-        injured_player.position
-    )
+if lost_minutes >= 32:  # Star player injury
+    # Star injuries → big minutes shift to multiple players
+    primary_backup = find_primary_backup(injured_player)  # Same cluster + position
+    secondary_backups = find_secondary_backups(injured_player)
 
-    # Distribute by inverse depth chart order
-    for player in similar_players:
-        # Backup gets most, then third-string, etc.
-        weight = calculate_depth_weight(player)
-        player.projected_min += lost_minutes * weight
-```
+    primary_backup.projected_min += lost_minutes * 0.5  # Gets 50%
 
-**Pros**: More intelligent distribution
-**Cons**: Cluster data might not capture role perfectly
+    for backup in secondary_backups:
+        backup.projected_min += (lost_minutes * 0.5) / len(secondary_backups)
 
----
+elif lost_minutes >= 20:  # Rotation player injury
+    # Minutes mostly go to direct backup
+    backup = find_primary_backup(injured_player)
+    backup.projected_min += lost_minutes * 0.7
 
-#### Strategy 3: Historical Pattern Learning
-```python
-# For each historical injury:
-# - Identify injured player and their typical minutes
-# - Observe how minutes actually redistributed
-# - Learn patterns by position/cluster
+    # Rest distributed to cluster matches
+    cluster_matches = find_cluster_matches(injured_player)
+    for player in cluster_matches:
+        player.projected_min += (lost_minutes * 0.3) / len(cluster_matches)
 
-# For new injury:
-# - Match to similar historical injury (same position, similar minutes)
-# - Apply learned redistribution pattern
-```
-
-**Pros**: Data-driven, learns real patterns
-**Cons**: Requires building historical injury database
-
----
-
-#### Strategy 4: Tiered Redistribution (Your Idea)
-```python
-for injured_player in injuries:
-    lost_minutes = injured_player.season_avg_min
-
-    # Check injury recency
-    if injury_days < 3:  # Recent injury
-        # Look for teammates with boosted proj_min
-        boosted = find_boosted_teammates(team)
-        if not boosted:
-            # Manual distribution
-            star_boost = 4
-            backup1_boost = 16
-            backup2_boost = 16
-            # Distribute to appropriate players
-    else:  # Long-term injury
-        # Analyze teammates' minutes shift since injury
-        # Compare historical avg vs recent avg vs projected
-        # Adjust projections based on observed shift
-```
-
-**Pros**: Nuanced, handles different injury scenarios
-**Cons**: Complex, many edge cases
-
----
-
-#### Strategy 5: Multiple Injuries Handler
-```python
-def handle_multiple_injuries(team, injuries):
-    """
-    When multiple players are out:
-    1. Sort injuries by typical minutes (stars first)
-    2. For each injury, redistribute considering:
-       - Already-adjusted minutes from previous injuries
-       - Avoid over-allocating to single player
-       - Cap at 36-38 minutes per player
-    """
-
-    injuries_sorted = sorted(injuries, key=lambda x: x.season_avg_min, reverse=True)
-
-    adjusted_minutes = {}
-    for injured in injuries_sorted:
-        available_teammates = [p for p in team if p not in injuries]
-
-        # Distribute lost minutes
-        lost = injured.season_avg_min
-        for teammate in available_teammates:
-            current = adjusted_minutes.get(teammate, teammate.baseline_min)
-            if current < 36:  # Don't over-allocate
-                boost = min(lost / len(available_teammates), 36 - current)
-                adjusted_minutes[teammate] = current + boost
-```
-
-**Pros**: Handles complex scenarios
-**Cons**: Very complex logic
-
----
-
-## Testing Framework
-
-### Data Requirements:
-- **Historical box scores** (have this)
-- **Daily predictions** with ACTUAL_MIN (have this, after Oct 30)
-- **NBA injury reports** (need to scrape - available on nba.com)
-- **Starting lineup data** (already scraping this)
-
-### Test Script Structure:
-```python
-def test_strategy(strategy_name, projection_function):
-    """
-    Test a minutes projection strategy against historical data
-
-    Args:
-        strategy_name: Name of the strategy
-        projection_function: Function that takes (player_stats, injuries) → projected_min
-
-    Returns:
-        MAE, detailed error breakdown
-    """
-    results = []
-
-    for game in historical_games_after_oct_30:
-        for player in game.players:
-            # Get player's historical stats BEFORE this game
-            stats = get_stats_before_game(player, game.date)
-
-            # Get injuries for that day
-            injuries = get_injuries_on_date(player.team, game.date)
-
-            # Calculate projected minutes using strategy
-            projected = projection_function(stats, injuries)
-
-            # Compare to actual
-            actual = player.actual_min
-            error = abs(projected - actual)
-
-            results.append({
-                'player': player.name,
-                'date': game.date,
-                'projected': projected,
-                'actual': actual,
-                'error': error
-            })
-
-    # Calculate MAE
-    mae = sum(r['error'] for r in results) / len(results)
-
-    return mae, results
-```
-
-### Strategies to Test:
-
-1. **SportsLine (Baseline)** - Current approach (4.74 MAE)
-2. **Formula B** - 0.6*season + 0.3*last7 + 0.1*prev
-3. **Formula C** - 0.5*season + 0.3*last7 + 0.2*prev
-4. **Formula C + Cap 36** - Formula C with 36 min cap
-5. **Formula C + Starter Baseline** - Formula C with 28 min baseline for starters
-6. **Formula C + Simple Injury** - Formula C + Strategy 1 injury adjustment
-7. **[Your custom strategy here]**
-
-### Success Metrics:
-- **Primary**: Overall MAE (target: <4.0 min)
-- **Starters**: MAE for players with season_avg > 24 min
-- **Bench**: MAE for players with season_avg < 24 min
-- **Outliers**: % of predictions with >8 min error
-- **DFS Edge**: Capture rate for +15 min opportunities (injury fill-ins)
-
----
-
-## Your Ideas & Experiments
-
-### Injury Adjustment Brainstorm:
-
-**Key Insights:**
-- Recent injuries (< 3 days): Look for projected minutes boosts in teammates
-- Long-term injuries: Analyze historical minutes shifts
-- Multiple injuries: Complex redistribution, avoid over-allocation
-
-**Questions to Explore:**
-1. How to determine if an injury is "recent" vs "established"?
-   - Use injury report date vs game date?
-   - Look at teammate minutes trends?
-
-2. How to identify which teammates get the minutes?
-   - Position matching?
-   - Cluster similarity?
-   - Depth chart order?
-
-3. How much to boost?
-   - Even split among backups?
-   - Weighted by cluster/position similarity?
-   - Based on historical patterns?
-
-4. How to handle multiple injuries?
-   - Sequential allocation?
-   - Simultaneous redistribution with constraints?
-
-**Your Notes:**
-```
-[Add your thoughts here as you experiment]
-
-Example:
-- Tested Formula C: 3.8 MAE (beat SportsLine!)
-- Issue: Still missing injury opportunities
-- Next: Try adding simple injury adjustment (+10 to backup)
-```
-
----
-
-## Injury Data Sources
-
-### NBA Official Injury Report:
-- **URL**: https://www.nba.com/injury-report
-- **Format**: HTML table with Status (OUT, QUESTIONABLE, etc.)
-- **Available**: Current day + next few days
-- **Historical**: Not easily available (would need daily scraping)
-
-### Alternative Sources:
-- ESPN injury report
-- Rotoworld
-- FantasyPros
-
-### Scraping Strategy:
-```python
-def scrape_nba_injuries(date=None):
-    """
-    Scrape NBA injury report for given date (default: today)
-
-    Returns:
-        List of {player, team, position, status, injury_note}
-    """
-    # Implementation here
+else:  # Deep bench injury (<20 min)
+    # Minimal impact - might not redistribute at all
     pass
 ```
 
----
-
-## Implementation Roadmap
-
-### Phase 1: Baseline Testing (Do First)
-- [ ] Implement 5-6 baseline formulas
-- [ ] Test on historical data (Oct 30+)
-- [ ] Identify best baseline formula
-- [ ] **Expected outcome**: Beat SportsLine's 4.74 MAE
-
-### Phase 2: Injury Scraping (Do Second)
-- [ ] Build NBA injury report scraper
-- [ ] Test scraper reliability (does it work daily?)
-- [ ] Store injury data structure
-
-### Phase 3: Injury Adjustment (Do Third)
-- [ ] Implement simple redistribution (Strategy 1)
-- [ ] Test on historical injury cases
-- [ ] Iterate on approach based on results
-- [ ] **Expected outcome**: Capture +15 min opportunities
-
-### Phase 4: Production Deployment
-- [ ] Replace SportsLine with best formula
-- [ ] Add injury adjustment layer
-- [ ] Apply 36 min cap (already done)
-- [ ] Monitor production MAE
-- [ ] **Target**: <7.38 MAE total FP (beat DFF)
+**Why this works:**
+- Star injuries create bigger rotational shifts
+- Deep bench injuries barely matter
+- Matches real coaching behavior
 
 ---
 
-## Quick Wins vs Long-Term
 
-### Quick Wins (This Week):
-1. Test baseline formulas → find one that beats 4.74 MAE
-2. Implement it in daily-predictions
-3. Deploy and monitor
 
-### Long-Term (Next Few Weeks):
-1. Build injury scraper
-2. Test injury adjustment strategies
-3. Handle edge cases (multiple injuries, back-to-backs)
-4. Iterate based on production data
+### Multiple Injuries (Critical Edge Case)
 
----
+When 2+ players are OUT, naive redistribution breaks:
 
-## Notes & Iteration Log
+```python
+def handle_multiple_injuries(team, injuries):
+    """
+    Handle multiple concurrent injuries
 
-**[Add your findings here as you test]**
+    Key principle: Process in order of importance, with diminishing returns
+    """
+    # Sort by minutes (star injuries first)
+    injuries_sorted = sorted(injuries, key=lambda x: x.season_avg_min, reverse=True)
 
-Example:
-```
-2025-11-21:
-- Tested Formula C (0.5/0.3/0.2): 3.9 MAE vs SportsLine's 4.74
-- Starters: 3.2 MAE, Bench: 5.1 MAE
-- Issue: Bench players have high variance
-- Next: Try starter-adjusted version
+    adjusted_minutes = {p: p.baseline_min for p in team}
 
-2025-11-22:
-- Added 28 min baseline for starters: 3.7 MAE overall
-- Improved starter accuracy, slight cost on bench
-- Decision: Deploy Formula C + starter baseline
+    for injured in injuries_sorted:
+        lost = injured.season_avg_min
+
+        # Find beneficiaries (cluster + position)
+        beneficiaries = find_cluster_and_position_matches(injured, team)
+
+        for player in beneficiaries:
+            current = adjusted_minutes[player]
+
+            # Cap at 38 minutes (realistic maximum)
+            if current < 38:
+                # Weight by cluster similarity and current minutes
+                weight = calculate_weight(player, injured)
+                boost = min(lost * weight, 38 - current)
+                adjusted_minutes[player] += boost
+
+    return adjusted_minutes
 ```
 
+**Key insights:**
+- Process star injuries first
+- Cap individual players at realistic maximums (36-38 min)
+- Each subsequent injury has less impact (diminishing returns)
+
 ---
 
-## Final Thoughts
+### Implementation Recommendation
 
-**Key Principle**: Start simple, add complexity only if needed.
+1. Do them all and analyze results
+---
 
-**Testing is critical**: Don't assume a formula works - validate with historical data.
+## Known Issues
 
-**Injury adjustments are optional**: Even without them, beating SportsLine's baseline will help significantly.
+### Return-from-Injury Problem
+**Issue:** When an injured player returns, our formula struggles to adjust.
 
-**Production monitoring**: After deploying any change, watch the daily MAE closely to confirm improvement.
+**Why:** The players who filled in during the injury will have inflated recent minutes:
+- Their `last_7_avg_min` is HIGH (from filling in)
+- Their `prev_game_min` is HIGH (from filling in)
+- Formula C gives 50% weight to recent data → projects them too high
+
+**Example:**
+- Star player out 2 weeks
+- Backup plays 30 min/game during absence
+- Backup's `last_7_avg` jumps from 15 → 28 minutes
+- Star returns → Backup should drop back to ~15 min
+- But Formula C projects: (15 × 0.5) + (28 × 0.3) + (30 × 0.2) = 21.9 min ❌
+- Actual should be closer to 15 min ✓
+- Even more nuance with multiple injuries at once(which is common)
+
+**Solution: Conservative Return-from-Injury + DFS Risk Management**
+
+**Core Philosophy:** In DFS, wrongly projecting a bench player at 30 min (include in lineup) when they actually play 13 min = catastrophic. Missing an opportunity (projecting 13 min when they play 20) = acceptable. **Be conservative.**
+
+**1. Injury Tracking System**
+- Create S3 table: `data/injury_tracking/current.parquet`
+- Track: `PLAYER`, `DATE`, `STATUS` (OUT/ACTIVE), `DAYS_OUT` (consecutive)
+- Update daily when scraping NBA injury reports
+
+**2. Return Detection**
+- Compare today's injury report vs yesterday's
+- If player was OUT 3+ days and now ACTIVE → Return detected
+- Find injury start date (last game before OUT status)
+
+**3. Returning Star Player Adjustment**
+```python
+if days_out <= 10:  # Short injury
+    projected_min = pre_injury_baseline
+    confidence = 'MEDIUM'  # Might have rust
+    variance = ±6 min
+else:  # Long injury
+    projected_min = pre_injury_baseline × 0.7  # Minutes restriction likely
+    confidence = 'LOW'  # High uncertainty
+    variance = ±10 min
+```
+
+**4. Fill-In Player Adjustment (THE CRITICAL PART)**
+```python
+# When star returns, check each teammate
+injury_start_date = get_injury_start_date(returning_player)
+
+for teammate in team:
+    # Get their projection BEFORE the injury started
+    pre_injury_baseline = get_projection_before_injury_date(
+        teammate,
+        injury_start_date
+    )
+
+    # Check if their role expanded during injury
+    # Use max of season_avg or recent_avg (handles both short and long injuries)
+    current_role = max(teammate.season_avg_min, teammate.recent_avg_min)
+
+    if current_role - pre_injury_baseline >= 5:
+        # Player filled in during injury - REVERT
+        projected_min = pre_injury_baseline
+        confidence = 'LOW'  # Flag as uncertain
+        variance = ±8 min
+        note = 'REVERT_FROM_FILL_IN_ROLE'
+
+# Why this works for ALL injury lengths:
+# - Short injury (10 days): recent_avg inflated, season_avg not yet → Caught
+# - Long injury (50 days): season_avg inflated, recent_avg stable → Caught
+# Example: Tatum out 50 games, Hauser goes from 15→25 min season avg → Caught (25-15=10)
+```
+
+**5. Lineup Optimizer Integration**
+```python
+# Avoid HIGH UNCERTAINTY players in DFS lineups
+safe_players = [p for p in players if p['confidence'] != 'LOW']
+risky_players = [p for p in players if p['confidence'] == 'LOW']
+
+# Build lineup from safe players first
+# Only use risky players if exceptional value AND no better options
+```
+
+**6. Self-Correction After 2-3 Games**
+- Return day projections might be conservative (maybe bench player keeps 20 min)
+- Formula C incorporates actual data from Games 1-2
+- Confidence returns to HIGH after rotation stabilizes
+- Accept missing short-term opportunity to avoid catastrophic failure
+
+**Key Insight:** Better to **under-project** fill-in players and avoid them in lineups than risk including a dud. DFS downside (wasted roster spot) >> upside (catching occasional role change).
