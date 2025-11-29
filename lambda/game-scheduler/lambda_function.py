@@ -165,7 +165,9 @@ def lambda_handler(event, context):
         ('box-score-scraper', 4),     # +4 minutes
         ('supervised-learning', 6),   # +6 minutes
         ('daily-predictions', 9),     # +8 minutes
-        ('lineup-optimizer', 11)      # +10 minutes
+        ('lineup-optimizer', 11),      # +10 minutes
+        ('injury-scraper', 11),
+        ('minutes-projection', 13)
     ]
 
     # === CREATE RULES FOR MAIN SLATE ===
@@ -294,7 +296,7 @@ def cleanup_old_rules(events_client, lambda_client):
                         # Remove Lambda permissions (extract function name from rule_name)
                         # Rule name format: nba-game-{gameId}-{func_name} or nba-slate-{slateId}-{func_name}
                         for func_name in ['cluster-scraper', 'nba-clustering', 'box-score-scraper',
-                                         'supervised-learning', 'daily-predictions', 'lineup-optimizer']:
+                                         'supervised-learning', 'daily-predictions', 'lineup-optimizer', 'injury-scraper', 'minutes-projection']:
                             if func_name in rule_name:
                                 try:
                                     lambda_client.remove_permission(

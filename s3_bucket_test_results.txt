@@ -1,0 +1,947 @@
+================================================================================
+S3 BUCKET DATA TEST - NBA PREDICTION MODEL
+================================================================================
+
+
+################################################################################
+# INPUT DATA - Raw scraped data used by all models
+################################################################################
+
+
+--------------------------------------------------------------------------------
+FILE: data/box_scores/current.parquet
+DESC: Box scores with stats and rolling averages
+--------------------------------------------------------------------------------
+Loading DataFrame from S3...
+ DataFrame loaded successfully!
+Shape: (6235, 42)
+Columns: ['SEASON_ID', 'PLAYER_ID', 'TEAM_ID', 'TEAM_ABBREVIATION', 'PLAYER TEAM', 'GAME_ID', 'GAME_DATE', 'MATCHUP', 'WL', 'MIN', 'FGM', 'FGA', 'FG_PCT', 'FG3M', 'FG3A', 'FG3_PCT', 'FTM', 'FTA', 'FT_PCT', 'OREB', 'DREB', 'REB', 'AST', 'STL', 'BLK', 'TOV', 'PF', 'PTS', 'PLUS_MINUS', 'FP', 'VIDEO_AVAILABLE', 'PLAYER', 'SEASON', 'CLUSTER', 'Last3_FP_Avg', 'Last7_FP_Avg', 'Season_FP_Avg', 'Career_FP_Avg', 'Games_Played_Career', 'Last7_MIN_Avg', 'Season_MIN_Avg', 'Career_MIN_Avg']
+
+Most recent 20 rows (sorted by GAME_DATE):
+     SEASON_ID  PLAYER_ID     TEAM_ID TEAM_ABBREVIATION            PLAYER TEAM     GAME_ID  GAME_DATE      MATCHUP WL  MIN  FGM  FGA  FG_PCT  FG3M  FG3A  FG3_PCT  FTM  FTA  FT_PCT  OREB  DREB  REB  AST  STL  BLK  TOV  PF  PTS  PLUS_MINUS    FP  VIDEO_AVAILABLE                    PLAYER   SEASON  CLUSTER  Last3_FP_Avg  Last7_FP_Avg  Season_FP_Avg  Career_FP_Avg  Games_Played_Career  Last7_MIN_Avg  Season_MIN_Avg  Career_MIN_Avg
+4056     22025    1628379  1610612737               ATL          Atlanta Hawks  0022500069 2025-11-28  ATL vs. CLE  W   16    1    3   0.333     1     3    0.333    0    0     NaN     0     0    0    2    0    0    1   0    3          -7   5.0                1              luke kennard  2025-26      NaN     16.933333     15.714286      15.700000      17.765363                  179      17.857143       21.687500       23.106145
+5317     22025    1631157  1610612749               MIL        Milwaukee Bucks  0022500074 2025-11-28    MIL @ NYK  L   41    4   10   0.400     3     5    0.600    2    2   1.000     1     4    5    6    2    2    3   4   13           0  37.0                1              ryan rollins  2025-26      NaN     37.633333     37.071429      35.173684      15.749000                  100      33.571429       32.000000       15.640000
+6065     22025    1642383  1610612762               UTA              Utah Jazz  0022500077 2025-11-28  UTA vs. SAC  W    9    0    1   0.000     0     1    0.000    0    0     NaN     0     1    1    1    1    0    1   1    0           4   4.7                1        walter clayton jr.  2025-26      NaN      9.066667     13.428571      13.646154      13.646154                   13      14.571429       15.923077       15.923077
+1891     22025    1629216  1610612747               LAL     Los Angeles Lakers  0022500078 2025-11-28  LAL vs. DAL  W   23    2    3   0.667     2     3    0.667    0    0     NaN     0     0    0    3    0    0    0   4    6           7  10.5                1              gabe vincent  2025-26      NaN      4.233333      7.466667       7.466667      13.923567                  157      21.000000       21.000000       23.089172
+1884     22025    1630532  1610612753               ORL          Orlando Magic  0022500072 2025-11-28    ORL @ DET  W   36    8   19   0.421     0     3    0.000    5    6   0.833     3     4    7    1    3    0    1   5   21         -23  38.9                1              franz wagner  2025-26      NaN     39.100000     38.542857      38.721053      34.835931                  231      33.571429       34.473684       33.017316
+3588     22025     203484  1610612763               MEM      Memphis Grizzlies  0022500079 2025-11-28    MEM @ LAC  W   21    4   10   0.400     4     7    0.571    0    0     NaN     1     3    4    1    1    0    1   0   12          19  20.3                1  kentavious caldwell-pope  2025-26      NaN      8.400000     11.285714      16.163158      20.282661                  248      20.285714       22.421053       30.209677
+600      22025    1641706  1610612766               CHA      Charlotte Hornets  0022500071 2025-11-28  CHA vs. CHI  W   32   10   19   0.526     5    11    0.455    2    3   0.667     1     4    5    1    0    3    1   0   27           8  42.5                1            brandon miller  2025-26      NaN     21.833333     26.500000      26.500000      30.101905                  105      23.500000       23.500000       32.400000
+1864     22025    1630596  1610612739               CLE    Cleveland Cavaliers  0022500069 2025-11-28    CLE @ ATL  L   34    7   17   0.412     3     6    0.500    3    3   1.000     4    10   14    7    2    2    2   2   20          -4  57.3                1               evan mobley  2025-26      NaN     40.466667     35.242857      40.233333      37.852294                  218      34.571429       34.222222       32.270642
+2711     22025    1628386  1610612739               CLE    Cleveland Cavaliers  0022500069 2025-11-28    CLE @ ATL  L   28    3    6   0.500     0     0      NaN    2    2   1.000     3     5    8    1    0    1    2   1    8         -18  20.1                1             jarrett allen  2025-26      NaN     24.433333     26.700000      30.871429      33.948963                  241      24.714286       25.928571       30.402490
+1602     22025    1631230  1610612755               PHI     Philadelphia 76ers  0022500070 2025-11-28    PHI @ BKN  W   25    4    7   0.571     0     1    0.000    2    2   1.000     1     9   10    4    0    1    1   4   10          15  30.0                1           dominick barlow  2025-26      NaN     20.166667     17.528571      19.225000      11.974038                  104      23.285714       24.625000       13.461538
+3568     22025    1629026  1610612760               OKC  Oklahoma City Thunder  0022500075 2025-11-28  OKC vs. PHX  W    7    1    3   0.333     1     2    0.500    0    0     NaN     0     1    1    1    0    0    0   1    3          -3   5.7                1          kenrich williams  2025-26      NaN      6.300000      6.300000       6.300000      14.906250                  192      13.000000       13.000000       17.593750
+4273     22025    1628969  1610612752               NYK        New York Knicks  0022500074 2025-11-28  NYK vs. MIL  W   35    6   12   0.500     2     5    0.400    0    0     NaN     1     3    4    2    2    1    0   3   14           3  30.8                1             mikal bridges  2025-26      NaN     37.900000     39.600000      37.682353      32.547727                  264      36.000000       35.176471       35.825758
+1834     22025    1642856  1610612751               BKN          Brooklyn Nets  0022500070 2025-11-28  BKN vs. PHI  L   30    8   18   0.444     5    14    0.357    2    2   1.000     1     8    9    5    1    2    3   0   23         -10  47.3                1                egor demin  2025-26      NaN     21.833333     20.814286      18.206250      18.206250                   16      24.857143       22.062500       22.062500
+618      22025    1630314  1610612742               DAL       Dallas Mavericks  0022500078 2025-11-28    DAL @ LAL  L   24    3   11   0.273     1     3    0.333    4    6   0.667     0     2    2    3    1    0    1   4   11           9  19.9                1          brandon williams  2025-26      NaN     27.833333     25.914286      23.217647      14.856716                   67      24.857143       21.941176       14.537313
+3554     22025     203482  1610612759               SAS      San Antonio Spurs  0022500076 2025-11-28    SAS @ DEN  W   13    2    3   0.667     1     2    0.500    2    2   1.000     1     0    1    0    1    0    1   3    7          11  10.2                1              kelly olynyk  2025-26      NaN      7.800000     11.042857      11.200000      24.143939                  198      12.285714       11.875000       23.661616
+1811     22025    1630700  1610612737               ATL          Atlanta Hawks  0022500069 2025-11-28  ATL vs. CLE  W   37    5    8   0.625     0     0      NaN    0    2   0.000     2     6    8    9    3    0    2   2   10          10  40.1                1             dyson daniels  2025-26      NaN     36.566667     33.071429      31.668421      24.757209                  215      33.142857       33.105263       26.060465
+2682     22025    1628991  1610612763               MEM      Memphis Grizzlies  0022500079 2025-11-28    MEM @ LAC  W   31    9   13   0.692     3     5    0.600    3    4   0.750     1     1    2    2    0    0    2   3   24          -1  27.4                1         jaren jackson jr.  2025-26      NaN     33.633333     31.342857      30.352941      37.834545                  220      30.428571       29.352941       30.077273
+1898     22025    1629726  1610612754               IND         Indiana Pacers  0022500073 2025-11-28  IND vs. WAS  W   22    2    7   0.286     2     7    0.286    3    3   1.000     0     1    1    0    1    1    1   1    9           9  15.2                1          garrison mathews  2025-26      NaN      0.966667      0.966667       0.966667       9.704706                  170       5.333333        5.333333       14.852941
+3607     22025    1631165  1610612758               SAC       Sacramento Kings  0022500077 2025-11-28    SAC @ UTA  L    7    0    2   0.000     0     2    0.000    2    4   0.500     0     0    0    0    0    0    0   2    2         -20   2.0                1                keon ellis  2025-26      NaN     12.200000     14.014286      13.772222      15.661988                  171      17.571429       17.611111       19.350877
+1911     22025     203914  1610612749               MIL        Milwaukee Bucks  0022500074 2025-11-28    MIL @ NYK  L   24    1    2   0.500     1     2    0.500    2    2   1.000     0     0    0    0    0    0    2   1    5           0   3.0                1               gary harris  2025-26      NaN     11.966667     11.457143       8.091667      12.201852                  162      17.428571       12.000000       20.604938
+
+Basic info:
+- Memory usage: 4.72 MB
+- Null values per column:
+  FG_PCT: 350
+  FG3_PCT: 1258
+  FT_PCT: 2696
+  CLUSTER: 6235
+  Last3_FP_Avg: 483
+  Last7_FP_Avg: 483
+  Season_FP_Avg: 483
+  Career_FP_Avg: 65
+  Last7_MIN_Avg: 483
+  Season_MIN_Avg: 483
+  Career_MIN_Avg: 65
+
+--------------------------------------------------------------------------------
+FILE: data/daily_predictions/current.parquet
+DESC: DraftKings + DFF + SportsLine projections
+--------------------------------------------------------------------------------
+Loading DataFrame from S3...
+ DataFrame loaded successfully!
+Shape: (2969, 14)
+Columns: ['PLAYER', 'GAME_DATE', 'PPG_PROJECTION', 'MY_MODEL_PREDICTED_FP', 'MY_MODEL_CLOSER_PREDICTION', 'SALARY', 'POSITION', 'PROJECTED_MIN', 'PREV_FP', 'PREV_MIN', 'SEASON_AVG_FP', 'SEASON_AVG_MIN', 'ACTUAL_FP', 'ACTUAL_MIN']
+
+Most recent 20 rows (sorted by GAME_DATE):
+                     PLAYER  GAME_DATE  PPG_PROJECTION  MY_MODEL_PREDICTED_FP MY_MODEL_CLOSER_PREDICTION   SALARY POSITION  PROJECTED_MIN  PREV_FP  PREV_MIN  SEASON_AVG_FP  SEASON_AVG_MIN  ACTUAL_FP  ACTUAL_MIN
+2968        zion williamson 2025-11-29            37.4              38.737884                       None   8400.0       PF           31.0     30.0      32.0      39.225000       30.750000        NaN         NaN
+2915  giannis antetokounmpo 2025-11-29            50.8              56.245571                       None  11500.0       PF           34.0     60.0      28.0      57.130769       31.846154        NaN         NaN
+2907          dillon brooks 2025-11-29            29.8              29.881929                       None   6400.0       SF           31.0     28.6      39.0      31.261538       31.076923        NaN         NaN
+2908           drake powell 2025-11-29            13.1              15.274620                       None   4200.0       SG           19.0      5.7      21.0      14.127273       18.818182        NaN         NaN
+2909         draymond green 2025-11-29            31.6              28.979563                       None   6500.0       PF           29.0     36.8      34.0      25.618750       28.812500        NaN         NaN
+2910              dru smith 2025-11-29            11.8              13.650195                       None   3600.0       PG           13.0     21.1      19.0      17.788889       17.111111        NaN         NaN
+2911        duncan robinson 2025-11-29            21.0              22.262734                       None   4800.0       SG           28.0     23.7      35.0      21.761111       31.777778        NaN         NaN
+2912             egor demin 2025-11-29            23.9              21.197381                       None   4300.0       PG           26.0     47.3      30.0      18.206250       22.062500        NaN         NaN
+2913            gary harris 2025-11-29            10.9               9.531481                       None   3200.0       SG           13.0      3.0      24.0       8.091667       12.000000        NaN         NaN
+2914         gary trent jr. 2025-11-29            16.3              20.489722                       None   4300.0       SG           28.0      4.5      25.0      17.521053       28.263158        NaN         NaN
+2916          grayson allen 2025-11-29            30.3              32.975941                       None   6800.0       SG           30.0     19.2      12.0      33.733333       33.750000        NaN         NaN
+2905            derik queen 2025-11-29            31.5              30.890935                       None   6600.0        C           28.0     30.9      23.0      28.550000       23.833333        NaN         NaN
+2917            isaac okoro 2025-11-29            14.0              17.702628                       None   3800.0       SF           24.0     11.4      17.0      16.328571       25.571429        NaN         NaN
+2918         isaiah jackson 2025-11-29            19.3              20.635680                       None   3800.0        C           22.0     18.4      18.0      19.338889       19.277778        NaN         NaN
+2919         isaiah stewart 2025-11-29            20.5              18.880979                       None   4900.0       PF           18.0     13.7      14.0      25.120000       22.533333        NaN         NaN
+2920            jalen duren 2025-11-29            41.9              36.042573                       None   7900.0        C           30.0     43.4      31.0      39.737500       29.000000        NaN         NaN
+2921            jalen smith 2025-11-29            21.5              16.205028                       None   4900.0        C           12.0     10.0      17.0      21.294118       17.058824        NaN         NaN
+2922           jalen wilson 2025-11-29             4.2              12.062321                       None   4000.0       SF           18.0      1.5      10.0       7.200000       15.357143        NaN         NaN
+2923           jamal murray 2025-11-29            42.5              39.370941                       None   8600.0       PG           35.0     53.3      36.0      40.862500       35.187500        NaN         NaN
+2924          jarace walker 2025-11-29            20.5              20.138064                       None   4200.0       SF           26.0     21.9      23.0      21.900000       28.000000        NaN         NaN
+
+Basic info:
+- Memory usage: 0.71 MB
+- Null values per column:
+  MY_MODEL_CLOSER_PREDICTION: 227
+  SALARY: 1
+  POSITION: 119
+  PROJECTED_MIN: 490
+  PREV_FP: 1936
+  PREV_MIN: 1936
+  SEASON_AVG_FP: 1938
+  SEASON_AVG_MIN: 1938
+  ACTUAL_FP: 227
+  ACTUAL_MIN: 227
+
+--------------------------------------------------------------------------------
+FILE: data/advanced_player_stats/current.parquet
+DESC: Advanced NBA stats
+--------------------------------------------------------------------------------
+Loading DataFrame from S3...
+ DataFrame loaded successfully!
+Shape: (482, 53)
+Columns: ['id', 'PLAYER_ID', 'PLAYER', 'TEAM', 'AGE', 'GP', 'W', 'L', 'MIN', 'OFFRTG', 'DEF_RTG', 'NETRTG', 'AST_PERCENT', 'AST_TO', 'AST_RATIO', 'OREB_PERCENT', 'DREB_PERCENT_TEAM', 'REB_PERCENT', 'TO_RATIO', 'EFG_PERCENT', 'TS_PERCENT', 'USG_PERCENT', 'PACE', 'PIE', 'POSS', 'FGA2P_PERCENT', 'FGA3P_PERCENT', 'PTS2P_PERCENT', 'PTS2P_MR_PERCENT', 'PTS3P_PERCENT', 'PTSFBPS_PERCENT', 'PTSFT_PERCENT', 'PTS_OFFTO_PERCENT', 'PTSPITP_PERCENT', 'FG2M_AST_PERCENT', 'FG2M_UAST_PERCENT', 'FG3M_AST_PERCENT', 'FG3M_UAST_PERCENT', 'FGM_AST_PERCENT', 'FGM_UAST_PERCENT', 'DREB', 'STL', 'STL_PERCENT', 'BLK', 'BLK_PERCENT', 'OPP_PTS_OFFTO', 'OPP_PTS_2ND_CHANCE', 'OPP_PTS_FB', 'OPP_PTS_PAINT', 'DEFWS', 'STAT_TYPE', 'SCRAPED_DATE', 'SOURCE']
+
+First 20 rows:
+    id  PLAYER_ID             PLAYER TEAM   AGE    GP     W     L   MIN  OFFRTG  DEF_RTG  NETRTG  AST_PERCENT  AST_TO  AST_RATIO  OREB_PERCENT  DREB_PERCENT_TEAM  REB_PERCENT  TO_RATIO  EFG_PERCENT  TS_PERCENT  USG_PERCENT    PACE    PIE    POSS  FGA2P_PERCENT  FGA3P_PERCENT  PTS2P_PERCENT  PTS2P_MR_PERCENT  PTS3P_PERCENT  PTSFBPS_PERCENT  PTSFT_PERCENT  PTS_OFFTO_PERCENT  PTSPITP_PERCENT  FG2M_AST_PERCENT  FG2M_UAST_PERCENT  FG3M_AST_PERCENT  FG3M_UAST_PERCENT  FGM_AST_PERCENT  FGM_UAST_PERCENT  DREB  STL  STL_PERCENT  BLK  BLK_PERCENT  OPP_PTS_OFFTO  OPP_PTS_2ND_CHANCE  OPP_PTS_FB  OPP_PTS_PAINT  DEFWS STAT_TYPE         SCRAPED_DATE   SOURCE
+0    1    1631260           aj green  MIL  26.0  19.0   8.0  11.0  28.8   116.4    116.8    -0.4        0.089    2.71       19.5         0.002              0.096        0.048       7.2        0.700       0.711        0.121  101.77  0.064  1160.0          0.089          0.911          0.059             0.000          0.863            0.049          0.078              0.112            0.059             0.500              0.500             0.915              0.085            0.877             0.123   2.7  0.5        0.111  0.1        0.019           10.8                 7.4         7.7           29.7  0.059  advanced  2025-11-29 00:00:40  NBA_API
+1    2    1642358         aj johnson  WAS  20.0   8.0   0.0   8.0   4.7   110.3    126.9   -16.7        0.133    4.00       22.2         0.051              0.073        0.063       5.6        0.182       0.274        0.154   99.49  0.006    78.0          0.818          0.182          0.571             0.000          0.000            0.571          0.429              0.000            0.571             1.000              0.000             0.000              0.000            1.000             0.000   0.4  0.0        0.000  0.0        0.000            2.8                 2.3         1.5            4.5 -0.004  advanced  2025-11-29 00:00:40  NBA_API
+2    3     203932       aaron gordon  DEN  30.0  13.0  10.0   3.0  28.3   125.7    105.0    20.7        0.062    0.94        7.9         0.053              0.147        0.102       8.4        0.623       0.676        0.221  101.00  0.130   777.0          0.591          0.409          0.443             0.049          0.344            0.078          0.213              0.107            0.393             0.574              0.426             0.786              0.214            0.646             0.354   4.5  0.8        0.179  0.2        0.094            6.8                 6.2         6.6           29.4  0.152  advanced  2025-11-29 00:00:40  NBA_API
+3    4    1628988      aaron holiday  HOU  29.0  11.0  10.0   1.0  13.4   117.4     97.4    20.0        0.120    1.33       13.3         0.013              0.036        0.025      10.0        0.582       0.634        0.218   99.12  0.101   304.0          0.344          0.656          0.227             0.023          0.580            0.205          0.193              0.239            0.205             0.500              0.500             1.000              0.000            0.815             0.185   0.5  0.4        0.121  0.1        0.071            2.4                 5.2         2.5           10.4  0.103  advanced  2025-11-29 00:00:40  NBA_API
+4    5    1630174      aaron nesmith  IND  26.0  11.0   1.0  10.0  30.4   109.6    116.6    -7.0        0.079    2.13        9.1         0.042              0.099        0.067       4.3        0.473       0.518        0.199  102.30  0.079   716.0          0.435          0.565          0.271             0.035          0.547            0.206          0.182              0.076            0.235             0.826              0.174             0.935              0.065            0.889             0.111   2.9  0.8        0.205  0.3        0.120           11.2                 8.5        10.0           34.0  0.063  advanced  2025-11-29 00:00:40  NBA_API
+5    6    1630598      aaron wiggins  OKC  26.0   9.0   8.0   1.0  27.6   119.2    100.8    18.4        0.116    2.22       13.9         0.035              0.087        0.062       6.3        0.572       0.578        0.209  101.61  0.096   522.0          0.459          0.541          0.391             0.015          0.564            0.165          0.045              0.226            0.376             0.615              0.385             0.920              0.080            0.765             0.235   2.7  0.4        0.065  0.8        0.280            8.9                 5.7         6.6           18.4  0.184  advanced  2025-11-29 00:00:40  NBA_API
+6    7    1642846         ace bailey  UTA  19.0  17.0   5.0  12.0  21.6   109.2    122.3   -13.1        0.121    1.26       14.1         0.072              0.080        0.076      11.2        0.524       0.548        0.189  104.09  0.067   795.0          0.545          0.455          0.512             0.119          0.393            0.137          0.095              0.107            0.393             0.721              0.279             0.909              0.091            0.785             0.215   1.6  0.8        0.215  0.2        0.130            8.2                 7.2         7.1           23.8  0.010  advanced  2025-11-29 00:00:40  NBA_API
+7    8    1641737          adem bona  PHI  22.0  12.0   7.0   5.0  14.8   106.3    112.7    -6.4        0.023    0.43        8.3         0.077              0.127        0.103      19.4        0.450       0.481        0.075  103.74  0.050   380.0          0.950          0.050          0.692             0.000          0.000            0.077          0.308              0.077            0.692             0.333              0.667             0.000              0.000            0.333             0.667   2.2  0.4        0.172  1.7        0.625            6.8                 6.7         6.6           13.3  0.049  advanced  2025-11-29 00:00:40  NBA_API
+8    9    1642876        adou thiero  LAL  21.0   3.0   3.0   0.0   3.1   114.3    136.4   -22.1        0.000    0.00        0.0         0.167              0.000        0.100       0.0        1.000       1.042        0.125  109.40  0.068    21.0          1.000          0.000          0.667             0.000          0.000            0.333          0.333              0.333            0.667             1.000              0.000             0.000              0.000            1.000             0.000   0.0  0.0        0.000  0.0        0.000            3.7                 0.7         0.0            4.0 -0.012  advanced  2025-11-29 00:00:40  NBA_API
+9   10    1642349      ajay mitchell  OKC  23.0  19.0  18.0   1.0  27.5   116.4     98.9    17.5        0.204    2.18       19.5         0.023              0.097        0.062       8.9        0.511       0.565        0.240  102.13  0.128  1111.0          0.722          0.278          0.581             0.033          0.218            0.155          0.201              0.211            0.548             0.398              0.602             0.727              0.273            0.464             0.536   2.9  1.7        0.288  0.3        0.130            9.1                 6.1         4.7           20.3  0.198  advanced  2025-11-29 00:00:40  NBA_API
+10  11     201143         al horford  GSW  39.0  12.0   7.0   5.0  21.8   108.1    116.9    -8.9        0.125    1.38       19.8         0.040              0.156        0.096      14.4        0.457       0.482        0.142  102.78  0.065   558.0          0.286          0.714          0.229             0.029          0.686            0.000          0.085              0.143            0.200             0.750              0.250             1.000              0.000            0.917             0.083   3.3  1.0        0.194  1.0        0.429            9.8                10.3         6.5           25.3  0.044  advanced  2025-11-29 00:00:40  NBA_API
+11  12    1627936        alex caruso  OKC  31.0  14.0  14.0   0.0  18.5   126.1     93.4    32.8        0.159    3.18       28.7         0.017              0.095        0.058       9.0        0.507       0.530        0.144  103.00  0.090   551.0          0.333          0.667          0.272             0.049          0.630            0.284          0.098              0.309            0.222             0.727              0.273             1.000              0.000            0.893             0.107   1.8  1.6        0.349  0.3        0.138            3.8                 4.4         2.1           12.9  0.165  advanced  2025-11-29 00:00:40  NBA_API
+12  13    1642259          alex sarr  WAS  20.0  15.0   2.0  13.0  29.5   111.6    121.2    -9.6        0.184    1.55       15.6         0.080              0.189        0.137      10.1        0.561       0.577        0.259  102.93  0.135   949.0          0.784          0.216          0.705             0.050          0.181            0.028          0.114              0.107            0.655             0.717              0.283             1.000              0.000            0.759             0.241   6.1  0.7        0.175  2.0        0.517           13.4                 9.7        10.0           34.0  0.022  advanced  2025-11-29 00:00:40  NBA_API
+13  14    1630578     alperen sengun  HOU  23.0  16.0  12.0   4.0  36.6   120.8    110.7    10.1        0.281    2.09       23.6         0.080              0.173        0.126      11.3        0.519       0.565        0.255   97.90  0.145  1195.0          0.823          0.177          0.619             0.085          0.162            0.043          0.219              0.151            0.534             0.349              0.651             0.895              0.105            0.430             0.570   6.4  1.1        0.155  0.9        0.298           14.5                12.9        11.3           34.0  0.137  advanced  2025-11-29 00:00:40  NBA_API
+14  15    1642873     amari williams  BOS  23.0   3.0   1.0   2.0   7.4   106.3    106.1     0.1        0.056    0.00       25.0         0.040              0.133        0.091       0.0        0.500       0.521        0.056  104.71  0.071    48.0          1.000          0.000          0.667             0.000          0.000            0.000          0.333              0.000            0.667             1.000              0.000             0.000              0.000            1.000             0.000   1.3  0.3        0.250  0.7        0.667            0.7                 5.0         1.7            7.3  0.041  advanced  2025-11-29 00:00:40  NBA_API
+15  16    1641708      amen thompson  HOU  22.0  16.0  12.0   4.0  36.6   121.3    106.9    14.5        0.195    2.19       21.7         0.065              0.112        0.089       9.9        0.496       0.540        0.204   98.49  0.114  1191.0          0.843          0.157          0.731             0.057          0.086            0.129          0.183              0.161            0.674             0.520              0.480             1.000              0.000            0.555             0.445   4.4  1.4        0.207  0.4        0.125           13.0                11.9        10.6           34.5  0.180  advanced  2025-11-29 00:00:40  NBA_API
+16  17    1629599        amir coffey  MIL  28.0  15.0   7.0   8.0   8.9   104.2    111.9    -7.7        0.075    8.00       25.8         0.030              0.065        0.049       3.2        0.500       0.538        0.073  102.48  0.046   285.0          0.571          0.429          0.500             0.083          0.375            0.208          0.125              0.333            0.417             0.333              0.667             1.000              0.000            0.556             0.444   0.7  0.0        0.000  0.1        0.083            3.0                 2.6         4.8            8.7  0.031  advanced  2025-11-29 00:00:40  NBA_API
+17  18     203083     andre drummond  PHI  32.0  16.0   9.0   7.0  24.2   114.2    113.4     0.8        0.040    0.73        8.0         0.132              0.288        0.209      10.9        0.587       0.598        0.134   99.82  0.120   803.0          0.776          0.224          0.667             0.000          0.205            0.030          0.128              0.129            0.667             0.568              0.432             1.000              0.000            0.642             0.358   7.3  0.8        0.207  1.0        0.364            8.8                 6.9         9.4           26.9  0.072  advanced  2025-11-29 00:00:40  NBA_API
+18  19    1641748  andre jackson jr.  MIL  24.0   8.0   2.0   6.0   7.3   117.7    122.0    -4.2        0.271    3.25       41.9         0.065              0.071        0.068      12.9        0.308       0.324        0.130  101.74  0.026   124.0          0.385          0.615          0.222             0.000          0.667            0.111          0.111              0.111            0.222             1.000              0.000             1.000              0.000            1.000             0.000   0.4  0.5        0.286  0.1        0.091            4.6                 1.3         3.3            7.0  0.004  advanced  2025-11-29 00:00:40  NBA_API
+19  20    1629614    andrew nembhard  IND  25.0  11.0   1.0  10.0  30.8   106.6    124.2   -17.6        0.337    2.62       25.0         0.008              0.050        0.028       9.6        0.461       0.539        0.245  102.02  0.099   722.0          0.605          0.395          0.417             0.094          0.313            0.089          0.270              0.141            0.323             0.275              0.725             0.650              0.350            0.400             0.600   1.5  0.9        0.213  0.2        0.067           12.6                10.5         8.6           36.9 -0.003  advanced  2025-11-29 00:00:40  NBA_API
+
+Basic info:
+- Memory usage: 0.33 MB
+- No null values
+
+--------------------------------------------------------------------------------
+FILE: data/daily_lineups/current.parquet
+DESC: Historical daily lineups
+--------------------------------------------------------------------------------
+Loading DataFrame from S3...
+ DataFrame loaded successfully!
+Shape: (8, 10)
+Columns: ['SLOT', 'PLAYER', 'POSITION', 'SALARY', 'PREDICTED_FP', 'GAME_DATE', 'PREV_FP', 'PREV_MIN', 'SEASON_AVG_FP', 'SEASON_AVG_MIN']
+
+Most recent 20 rows (sorted by GAME_DATE):
+   SLOT              PLAYER POSITION  SALARY  PREDICTED_FP  GAME_DATE  PREV_FP  PREV_MIN  SEASON_AVG_FP  SEASON_AVG_MIN
+0    PG      t.j. mcconnell       PG  4000.0     23.859772 2025-11-28     31.4      24.0      19.685714       15.714286
+1    SG       mikal bridges       SG  7300.0     38.421406 2025-11-28     41.5      36.0      37.443750       35.125000
+2    SF        cam whitmore       SF  3800.0     20.568531 2025-11-28      6.0      10.0      16.312500       17.187500
+3    PF       pascal siakam       PF  8700.0     44.882241 2025-11-28     21.8      31.0      42.912500       35.250000
+4     C  kristaps porzingis        C  6800.0     38.206103 2025-11-28     33.1      22.0      35.963636       26.818182
+5     G         ayo dosunmu       SG  5300.0     28.281503 2025-11-28     30.9      32.0      24.421429       26.142857
+6     F       tobias harris       PF  5300.0     27.095153 2025-11-28     27.3      27.0      26.362500       30.250000
+7  UTIL       jalen brunson       PG  8800.0     42.510448 2025-11-28     36.9      34.0      42.364286       34.142857
+
+Basic info:
+- Memory usage: 0.00 MB
+- No null values
+
+--------------------------------------------------------------------------------
+FILE: data/injuries/current.parquet
+DESC: Scraped injury data
+--------------------------------------------------------------------------------
+Loading DataFrame from S3...
+ DataFrame loaded successfully!
+Shape: (108, 6)
+Columns: ['PLAYER', 'TEAM', 'STATUS', 'RETURN_DATE', 'RETURN_DATE_DT', 'ESTIMATED_INJURY_DATE']
+
+First 20 rows:
+                PLAYER TEAM      STATUS RETURN_DATE RETURN_DATE_DT ESTIMATED_INJURY_DATE
+0   kristaps porzingis  ATL  DAY-TO-DAY      Nov 30     2025-11-30            2025-11-26
+1         n'faly dante  ATL         OUT      Nov 30     2025-11-30            2025-11-09
+2           trae young  ATL         OUT      Nov 30     2025-11-30            2025-10-30
+3       ron harper jr.  BOS  DAY-TO-DAY      Nov 30     2025-11-30            2025-11-13
+4         jaylen brown  BOS  DAY-TO-DAY      Nov 29     2025-11-29            2025-11-27
+5        neemias queta  BOS  DAY-TO-DAY      Nov 29     2025-11-29            2025-11-24
+6        derrick white  BOS  DAY-TO-DAY      Nov 29     2025-11-29            2025-11-27
+7         jayson tatum  BOS         OUT       Apr 1     2026-04-01            2025-04-12
+8   michael porter jr.  BKN  DAY-TO-DAY      Nov 29     2025-11-29            2025-11-25
+9           cam thomas  BKN         OUT      Dec 18     2025-12-18            2025-11-06
+10   haywood highsmith  BKN         OUT      Dec 18     2025-12-18            2025-04-14
+11     pat connaughton  CHA         OUT       Dec 1     2025-12-01            2025-11-23
+12            tre mann  CHA  DAY-TO-DAY      Nov 29     2025-11-29            2025-11-29
+13          josh green  CHA         OUT       Dec 1     2025-12-01            2025-04-03
+14      grant williams  CHA         OUT       Dec 1     2025-12-01            2024-11-24
+15          coby white  CHI  DAY-TO-DAY      Nov 29     2025-11-29            2025-11-29
+16         dalen terry  CHI         OUT      Nov 29     2025-11-29            2025-11-22
+17         isaac okoro  CHI         OUT      Nov 29     2025-11-29            2025-11-22
+18        zach collins  CHI         OUT       Dec 1     2025-12-01            2025-04-14
+19    craig porter jr.  CLE         OUT      Nov 30     2025-11-30            2025-11-22
+
+Basic info:
+- Memory usage: 0.03 MB
+- No null values
+
+
+################################################################################
+# TRAINED MODELS - Fantasy points prediction
+################################################################################
+
+
+--------------------------------------------------------------------------------
+FILE: models/RFCluster_feature_names.json
+DESC: Expected features for prediction
+--------------------------------------------------------------------------------
+Loading JSON from S3...
+ JSON loaded successfully!
+Feature count: 51
+First 20 features: ['Last3_FP_Avg', 'Last7_FP_Avg', 'Season_FP_Avg', 'Career_FP_Avg', 'Games_Played_Career', 'MIN', 'Last7_MIN_Avg', 'Season_MIN_Avg', 'Career_MIN_Avg', 'IS_HOME', 'REST_DAYS', 'CLUSTER_0.0', 'CLUSTER_1.0', 'CLUSTER_2.0', 'CLUSTER_3.0', 'CLUSTER_4.0', 'CLUSTER_5.0', 'CLUSTER_6.0', 'CLUSTER_7.0', 'CLUSTER_8.0']
+
+
+################################################################################
+# MODEL 1: COMPLEX POSITION OVERLAP
+# - Injury-aware minute redistribution
+# - 2x multiplier for exact position matches
+################################################################################
+
+
+--------------------------------------------------------------------------------
+FILE: model_comparison/complex_position_overlap/daily_lineups.parquet
+DESC: Optimized 8-player DK lineups
+--------------------------------------------------------------------------------
+Loading DataFrame from S3...
+ DataFrame loaded successfully!
+Shape: (8, 9)
+Columns: ['DATE', 'SLOT', 'PLAYER', 'TEAM', 'POSITION', 'SALARY', 'PROJECTED_MIN', 'PROJECTED_FP', 'ACTUAL_FP']
+
+Most recent 20 rows (sorted by DATE):
+        DATE  SLOT           PLAYER TEAM POSITION   SALARY  PROJECTED_MIN  PROJECTED_FP ACTUAL_FP
+0 2025-11-29    PG  davion mitchell  MIA       PG   4900.0           29.9          26.8      None
+1 2025-11-29    SG  duncan robinson  DET       SG   4800.0           32.1          24.9      None
+2 2025-11-29    SF   ausar thompson  DET       SF   5500.0           27.8          28.2      None
+3 2025-11-29    PF   draymond green  GSW       PF   6500.0           37.0          32.8      None
+4 2025-11-29     C     nikola jokic  DEN        C  13400.0           36.5          60.2      None
+5 2025-11-29     G      buddy hield  GSW       SG   4000.0           24.6          21.6      None
+6 2025-11-29     F       saddiq bey  NOP       SF   5500.0           31.5          27.9      None
+7 2025-11-29  UTIL  cameron johnson  DEN       SG   5300.0           36.0          27.5      None
+
+Basic info:
+- Memory usage: 0.00 MB
+- Null values per column:
+  ACTUAL_FP: 8
+
+--------------------------------------------------------------------------------
+FILE: model_comparison/complex_position_overlap/minutes_projections.parquet
+DESC: Minutes projections for all players
+--------------------------------------------------------------------------------
+Loading DataFrame from S3...
+ DataFrame loaded successfully!
+Shape: (85, 9)
+Columns: ['DATE', 'PLAYER', 'TEAM', 'POSITION', 'PROJECTED_MIN', 'ACTUAL_MIN', 'ACTUAL_FP', 'CONFIDENCE', 'PROJECTED_FP']
+
+Most recent 20 rows (sorted by DATE):
+         DATE            PLAYER TEAM POSITION  PROJECTED_MIN ACTUAL_MIN ACTUAL_FP CONFIDENCE  PROJECTED_FP
+0  2025-11-29       bruce brown  DEN       PG           23.8       None      None       HIGH          19.2
+54 2025-11-29     kevin huerter  CHI       SG           24.6       None      None       HIGH          21.7
+62 2025-11-29      jalen wilson  BKN       SF           12.1       None      None       HIGH           8.3
+61 2025-11-29        egor demin  BKN       PG           26.1       None      None       HIGH          21.2
+60 2025-11-29      drake powell  BKN       SG           21.3       None      None       HIGH          15.9
+59 2025-11-29    day'ron sharpe  BKN        C           14.4       None      None       HIGH          15.3
+58 2025-11-29         tre jones  CHI       PG           28.0       None      None       HIGH          26.6
+57 2025-11-29  patrick williams  CHI       PF           19.2       None      None       HIGH          15.3
+56 2025-11-29    nikola vucevic  CHI        C           30.4       None      None       HIGH          34.7
+55 2025-11-29     matas buzelis  CHI       PF           27.6       None      None       HIGH          26.5
+53 2025-11-29       josh giddey  CHI       PG           33.7       None      None       HIGH          40.7
+43 2025-11-29    daniss jenkins  DET       PG           18.2       None      None       HIGH          18.7
+52 2025-11-29       jalen smith  CHI        C           17.5       None      None       HIGH          20.6
+51 2025-11-29       isaac okoro  CHI       SF           18.2       None      None       HIGH          14.1
+50 2025-11-29        coby white  CHI       SG           22.8       None      None       HIGH          31.1
+49 2025-11-29       ayo dosunmu  CHI       SG           26.1       None      None       HIGH          24.0
+48 2025-11-29     tobias harris  DET       PF           29.3       None      None       HIGH          27.0
+47 2025-11-29     javonte green  DET       SG           19.5       None      None       HIGH          16.1
+46 2025-11-29       jalen duren  DET        C           30.2       None      None       HIGH          36.0
+45 2025-11-29    isaiah stewart  DET       PF           20.1       None      None       HIGH          20.3
+
+Basic info:
+- Memory usage: 0.03 MB
+- Null values per column:
+  ACTUAL_MIN: 85
+  ACTUAL_FP: 85
+
+
+################################################################################
+# MODEL 2: DIRECT POSITION EXCHANGE
+# - Injury-aware minute redistribution
+# - Only exact position matches get injured player's minutes
+################################################################################
+
+
+--------------------------------------------------------------------------------
+FILE: model_comparison/direct_position_only/daily_lineups.parquet
+DESC: Optimized 8-player DK lineups
+--------------------------------------------------------------------------------
+Loading DataFrame from S3...
+ DataFrame loaded successfully!
+Shape: (8, 9)
+Columns: ['DATE', 'SLOT', 'PLAYER', 'TEAM', 'POSITION', 'SALARY', 'PROJECTED_MIN', 'PROJECTED_FP', 'ACTUAL_FP']
+
+Most recent 20 rows (sorted by DATE):
+        DATE  SLOT           PLAYER TEAM POSITION   SALARY  PROJECTED_MIN  PROJECTED_FP ACTUAL_FP
+0 2025-11-29    PG   jeremiah fears  NOP       PG   5300.0           27.0          27.3      None
+1 2025-11-29    SG  cameron johnson  DEN       SG   5300.0           36.0          27.5      None
+2 2025-11-29    SF       saddiq bey  NOP       SF   5500.0           31.5          27.9      None
+3 2025-11-29    PF    tobias harris  DET       PF   5300.0           29.3          27.0      None
+4 2025-11-29     C     nikola jokic  DEN        C  13400.0           36.5          60.2      None
+5 2025-11-29     G  davion mitchell  MIA       PG   4900.0           29.9          26.8      None
+6 2025-11-29     F   ausar thompson  DET       SF   5500.0           27.8          28.2      None
+7 2025-11-29  UTIL  duncan robinson  DET       SG   4800.0           32.1          24.9      None
+
+Basic info:
+- Memory usage: 0.00 MB
+- Null values per column:
+  ACTUAL_FP: 8
+
+--------------------------------------------------------------------------------
+FILE: model_comparison/direct_position_only/minutes_projections.parquet
+DESC: Minutes projections for all players
+--------------------------------------------------------------------------------
+Loading DataFrame from S3...
+ DataFrame loaded successfully!
+Shape: (85, 9)
+Columns: ['DATE', 'PLAYER', 'TEAM', 'POSITION', 'PROJECTED_MIN', 'ACTUAL_MIN', 'ACTUAL_FP', 'CONFIDENCE', 'PROJECTED_FP']
+
+Most recent 20 rows (sorted by DATE):
+         DATE            PLAYER TEAM POSITION  PROJECTED_MIN ACTUAL_MIN ACTUAL_FP CONFIDENCE  PROJECTED_FP
+0  2025-11-29       bruce brown  DEN       PG           23.8       None      None       HIGH          19.2
+54 2025-11-29     kevin huerter  CHI       SG           24.6       None      None       HIGH          21.7
+62 2025-11-29      jalen wilson  BKN       SF           12.1       None      None       HIGH           8.3
+61 2025-11-29        egor demin  BKN       PG           26.1       None      None       HIGH          21.2
+60 2025-11-29      drake powell  BKN       SG           21.3       None      None       HIGH          15.9
+59 2025-11-29    day'ron sharpe  BKN        C           14.4       None      None       HIGH          15.3
+58 2025-11-29         tre jones  CHI       PG           28.0       None      None       HIGH          26.6
+57 2025-11-29  patrick williams  CHI       PF           19.2       None      None       HIGH          15.3
+56 2025-11-29    nikola vucevic  CHI        C           30.4       None      None       HIGH          34.7
+55 2025-11-29     matas buzelis  CHI       PF           27.6       None      None       HIGH          26.5
+53 2025-11-29       josh giddey  CHI       PG           33.7       None      None       HIGH          40.7
+43 2025-11-29    daniss jenkins  DET       PG           18.2       None      None       HIGH          18.7
+52 2025-11-29       jalen smith  CHI        C           17.5       None      None       HIGH          20.6
+51 2025-11-29       isaac okoro  CHI       SF           18.2       None      None       HIGH          14.1
+50 2025-11-29        coby white  CHI       SG           22.8       None      None       HIGH          31.1
+49 2025-11-29       ayo dosunmu  CHI       SG           26.1       None      None       HIGH          24.0
+48 2025-11-29     tobias harris  DET       PF           29.3       None      None       HIGH          27.0
+47 2025-11-29     javonte green  DET       SG           19.5       None      None       HIGH          16.1
+46 2025-11-29       jalen duren  DET        C           30.2       None      None       HIGH          36.0
+45 2025-11-29    isaiah stewart  DET       PF           20.1       None      None       HIGH          20.3
+
+Basic info:
+- Memory usage: 0.03 MB
+- Null values per column:
+  ACTUAL_MIN: 85
+  ACTUAL_FP: 85
+
+
+################################################################################
+# MODEL 3: FORMULA C BASELINE
+# - No injury handling
+# - Simple baseline formula
+################################################################################
+
+
+--------------------------------------------------------------------------------
+FILE: model_comparison/formula_c_baseline/daily_lineups.parquet
+DESC: Optimized 8-player DK lineups
+--------------------------------------------------------------------------------
+Loading DataFrame from S3...
+ DataFrame loaded successfully!
+Shape: (8, 9)
+Columns: ['DATE', 'SLOT', 'PLAYER', 'TEAM', 'POSITION', 'SALARY', 'PROJECTED_MIN', 'PROJECTED_FP', 'ACTUAL_FP']
+
+Most recent 20 rows (sorted by DATE):
+        DATE  SLOT           PLAYER TEAM POSITION   SALARY  PROJECTED_MIN  PROJECTED_FP ACTUAL_FP
+0 2025-11-29    PG  davion mitchell  MIA       PG   4900.0           29.9          26.8      None
+1 2025-11-29    SG     terance mann  BKN       SG   4200.0           28.6          21.7      None
+2 2025-11-29    SF   ausar thompson  DET       SF   5500.0           27.8          28.2      None
+3 2025-11-29    PF    tobias harris  DET       PF   5300.0           29.3          27.0      None
+4 2025-11-29     C     nikola jokic  DEN        C  13400.0           35.6          60.1      None
+5 2025-11-29     G    tyrese martin  BKN       PG   3700.0           20.6          18.7      None
+6 2025-11-29     F       saddiq bey  NOP       SF   5500.0           29.8          27.9      None
+7 2025-11-29  UTIL      bam adebayo  MIA        C   7500.0           29.2          36.9      None
+
+Basic info:
+- Memory usage: 0.00 MB
+- Null values per column:
+  ACTUAL_FP: 8
+
+--------------------------------------------------------------------------------
+FILE: model_comparison/formula_c_baseline/minutes_projections.parquet
+DESC: Minutes projections for all players
+--------------------------------------------------------------------------------
+Loading DataFrame from S3...
+ DataFrame loaded successfully!
+Shape: (85, 9)
+Columns: ['DATE', 'PLAYER', 'TEAM', 'POSITION', 'PROJECTED_MIN', 'ACTUAL_MIN', 'ACTUAL_FP', 'CONFIDENCE', 'PROJECTED_FP']
+
+Most recent 20 rows (sorted by DATE):
+         DATE              PLAYER TEAM POSITION  PROJECTED_MIN ACTUAL_MIN ACTUAL_FP CONFIDENCE  PROJECTED_FP
+0  2025-11-29            aj green  MIL       SG           31.5       None      None       HIGH          22.6
+54 2025-11-29         micah peavy  NOP       SF           15.9       None      None       HIGH          11.5
+62 2025-11-29       norman powell  MIA       SG           22.9       None      None       HIGH          29.5
+61 2025-11-29        noah clowney  BKN       PF           30.4       None      None       HIGH          27.0
+60 2025-11-29      nikola vucevic  CHI        C           30.4       None      None       HIGH          34.7
+59 2025-11-29        nikola jokic  DEN        C           35.6       None      None       HIGH          60.1
+58 2025-11-29       nick richards  PHX        C            9.5       None      None       HIGH           9.3
+57 2025-11-29        myles turner  MIL        C           30.4       None      None       HIGH          31.3
+56 2025-11-29         moses moody  GSW       SF           28.0       None      None       HIGH          22.8
+55 2025-11-29  michael porter jr.  BKN       SF           24.0       None      None       HIGH          32.9
+53 2025-11-29       matas buzelis  CHI       PF           27.6       None      None       HIGH          26.5
+43 2025-11-29      jeremiah fears  NOP       PG           26.7       None      None       HIGH          27.3
+52 2025-11-29       mark williams  PHX        C           24.9       None      None       HIGH          29.3
+51 2025-11-29          kyle kuzma  MIL       SF           27.1       None      None       HIGH          26.7
+50 2025-11-29       kevin huerter  CHI       SG           24.6       None      None       HIGH          21.7
+49 2025-11-29         josh giddey  CHI       PG           33.7       None      None       HIGH          40.7
+48 2025-11-29       jose alvarado  NOP       PG           22.3       None      None       HIGH          20.3
+47 2025-11-29      jordan goodwin  PHX       SG           17.2       None      None       HIGH          21.0
+46 2025-11-29    jonathan kuminga  GSW       SF           19.1       None      None       HIGH          20.6
+45 2025-11-29   jonas valanciunas  DEN        C           12.3       None      None       HIGH          13.9
+
+Basic info:
+- Memory usage: 0.03 MB
+- Null values per column:
+  ACTUAL_MIN: 85
+  ACTUAL_FP: 85
+
+
+################################################################################
+# MODEL 4: SPORTSLINE BASELINE
+# - Uses SportsLine minutes projections
+# - Industry standard comparison
+################################################################################
+
+
+--------------------------------------------------------------------------------
+FILE: model_comparison/sportsline_baseline/daily_lineups.parquet
+DESC: Optimized 8-player DK lineups
+--------------------------------------------------------------------------------
+Loading DataFrame from S3...
+ DataFrame loaded successfully!
+Shape: (8, 9)
+Columns: ['DATE', 'SLOT', 'PLAYER', 'TEAM', 'POSITION', 'SALARY', 'PROJECTED_MIN', 'PROJECTED_FP', 'ACTUAL_FP']
+
+Most recent 20 rows (sorted by DATE):
+        DATE  SLOT                 PLAYER TEAM POSITION   SALARY  PROJECTED_MIN  PROJECTED_FP ACTUAL_FP
+0 2025-11-29    PG         t.j. mcconnell  IND       PG   4500.0           23.0          23.7      None
+1 2025-11-29    SG          norman powell  MIA       SG   7000.0           31.0          34.9      None
+2 2025-11-29    SF             saddiq bey  NOP       SF   5500.0           36.0          29.9      None
+3 2025-11-29    PF          tobias harris  DET       PF   5300.0           29.0          27.0      None
+4 2025-11-29     C            bam adebayo  MIA        C   7500.0           33.0          38.2      None
+5 2025-11-29     G        davion mitchell  MIA       PG   4900.0           30.0          26.8      None
+6 2025-11-29     F  giannis antetokounmpo  MIL       PF  11500.0           34.0          55.7      None
+7 2025-11-29  UTIL         isaiah jackson  IND        C   3800.0           22.0          20.1      None
+
+Basic info:
+- Memory usage: 0.00 MB
+- Null values per column:
+  ACTUAL_FP: 8
+
+--------------------------------------------------------------------------------
+FILE: model_comparison/sportsline_baseline/minutes_projections.parquet
+DESC: Minutes projections for all players
+--------------------------------------------------------------------------------
+Loading DataFrame from S3...
+ DataFrame loaded successfully!
+Shape: (85, 9)
+Columns: ['DATE', 'PLAYER', 'TEAM', 'POSITION', 'PROJECTED_MIN', 'ACTUAL_MIN', 'ACTUAL_FP', 'CONFIDENCE', 'PROJECTED_FP']
+
+Most recent 20 rows (sorted by DATE):
+         DATE              PLAYER TEAM POSITION  PROJECTED_MIN  ACTUAL_MIN ACTUAL_FP CONFIDENCE  PROJECTED_FP
+0  2025-11-29            aj green  MIL       SG           28.0         NaN      None       HIGH          20.0
+54 2025-11-29         micah peavy  NOP       SF           13.0         NaN      None       HIGH          10.8
+62 2025-11-29       norman powell  MIA       SG           31.0         NaN      None       HIGH          34.9
+61 2025-11-29        noah clowney  BKN       PF           31.0         NaN      None       HIGH          27.0
+60 2025-11-29      nikola vucevic  CHI        C           32.0         NaN      None       HIGH          34.7
+59 2025-11-29        nikola jokic  DEN        C           36.0         NaN      None       HIGH          60.2
+58 2025-11-29       nick richards  PHX        C           11.0         NaN      None       HIGH           9.7
+57 2025-11-29        myles turner  MIL        C           29.0         NaN      None       HIGH          30.4
+56 2025-11-29         moses moody  GSW       SF           26.0         NaN      None       HIGH          22.1
+55 2025-11-29  michael porter jr.  BKN       SF           33.0         NaN      None       HIGH          36.7
+53 2025-11-29       matas buzelis  CHI       PF           30.0         NaN      None       HIGH          27.9
+43 2025-11-29      jeremiah fears  NOP       PG           27.0         NaN      None       HIGH          27.3
+52 2025-11-29       mark williams  PHX        C           26.0         NaN      None       HIGH          29.8
+51 2025-11-29          kyle kuzma  MIL       SF           26.0         NaN      None       HIGH          25.8
+50 2025-11-29       kevin huerter  CHI       SG           22.0         NaN      None       HIGH          20.3
+49 2025-11-29         josh giddey  CHI       PG           34.0         NaN      None       HIGH          40.7
+48 2025-11-29       jose alvarado  NOP       PG           24.0         NaN      None       HIGH          21.6
+47 2025-11-29      jordan goodwin  PHX       SG           25.0         NaN      None       HIGH          23.9
+46 2025-11-29    jonathan kuminga  GSW       SF           33.0         NaN      None       HIGH          27.5
+45 2025-11-29   jonas valanciunas  DEN        C           14.0         NaN      None       HIGH          14.8
+
+Basic info:
+- Memory usage: 0.02 MB
+- Null values per column:
+  ACTUAL_MIN: 85
+  ACTUAL_FP: 85
+
+
+################################################################################
+# MODEL 5: DAILYFANTASYFUEL BASELINE
+# - Uses DailyFantasyFuel fantasy points projections
+# - Industry standard comparison
+################################################################################
+
+
+--------------------------------------------------------------------------------
+FILE: model_comparison/daily_fantasy_fuel_baseline/daily_lineups.parquet
+DESC: Optimized 8-player DK lineups (using DFF FP projections)
+--------------------------------------------------------------------------------
+Loading DataFrame from S3...
+ DataFrame loaded successfully!
+Shape: (8, 9)
+Columns: ['DATE', 'SLOT', 'PLAYER', 'TEAM', 'POSITION', 'SALARY', 'PROJECTED_MIN', 'PROJECTED_FP', 'ACTUAL_FP']
+
+Most recent 20 rows (sorted by DATE):
+        DATE  SLOT           PLAYER TEAM POSITION   SALARY  PROJECTED_MIN  PROJECTED_FP ACTUAL_FP
+0 2025-11-29    PG   t.j. mcconnell  IND       PG   4500.0              0          28.2      None
+1 2025-11-29    SG  cameron johnson  DEN       SG   5300.0              0          29.0      None
+2 2025-11-29    SF       saddiq bey  NOP       SF   5500.0              0          28.5      None
+3 2025-11-29    PF    pascal siakam  IND       PF   8700.0              0          44.2      None
+4 2025-11-29     C     nikola jokic  DEN        C  13400.0              0          68.9      None
+5 2025-11-29     G       egor demin  BKN       PG   4300.0              0          23.9      None
+6 2025-11-29     F         jay huff  IND       PF   4000.0              0          25.0      None
+7 2025-11-29  UTIL       yves missi  NOP        C   3900.0              0          21.7      None
+
+Basic info:
+- Memory usage: 0.00 MB
+- Null values per column:
+  ACTUAL_FP: 8
+
+
+################################################################################
+# INJURY CONTEXT - Stateful injury tracking
+# - Tracks BENEFICIARY, EX_BENEFICIARY, RETURNING statuses
+# - Persisted across lambda runs
+################################################################################
+
+
+--------------------------------------------------------------------------------
+FILE: injury_context/complex_position_overlap.parquet
+DESC: Complex model injury state
+--------------------------------------------------------------------------------
+Loading DataFrame from S3...
+ DataFrame loaded successfully!
+Shape: (193, 8)
+Columns: ['PLAYER', 'TEAM', 'STATUS', 'INJURY_DATE', 'RETURN_DATE', 'TRUE_BASELINE', 'BENEFICIARY_OF', 'UPDATED_DATE']
+
+All rows:
+                       PLAYER TEAM          STATUS INJURY_DATE RETURN_DATE  TRUE_BASELINE     BENEFICIARY_OF                     UPDATED_DATE
+0                 bruce brown  DEN     BENEFICIARY  2025-11-13         NaT      21.818182    christian braun 2025-11-29 14:34:12.727918-05:00
+1             cameron johnson  DEN     BENEFICIARY  2025-11-13         NaT      24.454545    christian braun 2025-11-29 14:34:12.741738-05:00
+2                jamal murray  DEN     BENEFICIARY  2025-11-13         NaT      33.500000    christian braun 2025-11-29 14:34:12.741738-05:00
+3               peyton watson  DEN     BENEFICIARY  2025-11-13         NaT      21.090909    christian braun 2025-11-29 14:34:12.746393-05:00
+4               spencer jones  DEN     BENEFICIARY  2025-11-13         NaT       7.714286    christian braun 2025-11-29 14:34:12.747255-05:00
+5            tim hardaway jr.  DEN     BENEFICIARY  2025-11-13         NaT      22.818182    christian braun 2025-11-29 14:34:12.749770-05:00
+6                  zeke nnaji  DEN     BENEFICIARY  2025-11-13         NaT       3.333333    christian braun 2025-11-29 14:34:12.754431-05:00
+7             cameron johnson  DEN     BENEFICIARY  2025-11-22         NaT      24.454545       aaron gordon 2025-11-29 14:34:12.997727-05:00
+8                jamal murray  DEN     BENEFICIARY  2025-11-22         NaT      33.500000       aaron gordon 2025-11-29 14:34:13.006145-05:00
+9               peyton watson  DEN     BENEFICIARY  2025-11-22         NaT      21.090909       aaron gordon 2025-11-29 14:34:13.010880-05:00
+10              spencer jones  DEN     BENEFICIARY  2025-11-22         NaT       7.714286       aaron gordon 2025-11-29 14:34:13.013635-05:00
+11           tim hardaway jr.  DEN     BENEFICIARY  2025-11-22         NaT      22.818182       aaron gordon 2025-11-29 14:34:13.013635-05:00
+12           jabari smith jr.  HOU     BENEFICIARY  2025-11-22         NaT      33.937500       kevin durant 2025-11-29 14:34:14.056248-05:00
+13              jae'sean tate  HOU     BENEFICIARY  2025-11-22         NaT       4.555556       kevin durant 2025-11-29 14:34:14.065927-05:00
+14                 jeff green  HOU     BENEFICIARY  2025-11-22         NaT       4.200000       kevin durant 2025-11-29 14:34:14.068064-05:00
+15                josh okogie  HOU     BENEFICIARY  2025-11-22         NaT      19.529412       kevin durant 2025-11-29 14:34:14.070704-05:00
+16              aaron holiday  HOU     BENEFICIARY  2025-11-15         NaT       7.166667         tari eason 2025-11-29 14:34:14.119986-05:00
+17              amen thompson  HOU     BENEFICIARY  2025-11-15         NaT      35.181818         tari eason 2025-11-29 14:34:14.121494-05:00
+18              reed sheppard  HOU     BENEFICIARY  2025-11-15         NaT      22.454545         tari eason 2025-11-29 14:34:14.124255-05:00
+19             isaiah jackson  IND     BENEFICIARY  2025-10-27         NaT      11.666667         obi toppin 2025-11-29 14:34:14.931771-05:00
+20                   jay huff  IND     BENEFICIARY  2025-10-27         NaT      12.666667         obi toppin 2025-11-29 14:34:14.931771-05:00
+21               ben sheppard  IND  ROLE_DECREASED  2025-10-27         NaT      31.666667         obi toppin 2025-11-29 14:34:14.937630-05:00
+22            andrew nembhard  IND     BENEFICIARY  2025-11-14         NaT      27.400000      aaron nesmith 2025-11-29 14:34:15.537287-05:00
+23             isaiah jackson  IND     BENEFICIARY  2025-11-14         NaT      11.666667      aaron nesmith 2025-11-29 14:34:15.537287-05:00
+24                   jay huff  IND     BENEFICIARY  2025-11-14         NaT      12.666667      aaron nesmith 2025-11-29 14:34:15.543090-05:00
+25               taelon peter  IND  ROLE_DECREASED  2025-11-14         NaT       9.250000      aaron nesmith 2025-11-29 14:34:15.553011-05:00
+26               tony bradley  IND  ROLE_DECREASED  2025-11-14         NaT      14.000000      aaron nesmith 2025-11-29 14:34:15.554310-05:00
+27             isaiah jackson  IND     BENEFICIARY  2025-11-04         NaT      11.666667    quenton jackson 2025-11-29 14:34:15.654390-05:00
+28                   jay huff  IND     BENEFICIARY  2025-11-04         NaT      12.666667    quenton jackson 2025-11-29 14:34:15.658407-05:00
+29             isaiah jackson  IND     BENEFICIARY  2025-11-04         NaT      11.666667      johnny furphy 2025-11-29 14:34:15.750258-05:00
+30                   jay huff  IND     BENEFICIARY  2025-11-04         NaT      12.666667      johnny furphy 2025-11-29 14:34:15.805435-05:00
+31            branden carlson  OKC     BENEFICIARY  2025-11-06         NaT       6.142857      aaron wiggins 2025-11-29 14:34:16.736443-05:00
+32                alex caruso  OKC  ROLE_DECREASED  2025-11-06         NaT      21.400000      aaron wiggins 2025-11-29 14:34:16.738224-05:00
+33              chet holmgren  OKC  ROLE_DECREASED  2025-11-06         NaT      33.200000      aaron wiggins 2025-11-29 14:34:16.742268-05:00
+34         isaiah hartenstein  OKC  ROLE_DECREASED  2025-11-06         NaT      30.111111      aaron wiggins 2025-11-29 14:34:16.742268-05:00
+35              luguentz dort  OKC  ROLE_DECREASED  2025-11-06         NaT      31.857143      aaron wiggins 2025-11-29 14:34:16.747879-05:00
+36    shai gilgeous-alexander  OKC  ROLE_DECREASED  2025-11-06         NaT      35.333333      aaron wiggins 2025-11-29 14:34:16.749049-05:00
+37                 ace bailey  UTA     BENEFICIARY  2025-11-01         NaT      17.000000     walker kessler 2025-11-29 14:34:18.311858-05:00
+38              cody williams  UTA     BENEFICIARY  2025-11-01         NaT       9.666667     walker kessler 2025-11-29 14:34:18.335140-05:00
+39               jusuf nurkic  UTA     BENEFICIARY  2025-11-01         NaT      17.200000     walker kessler 2025-11-29 14:34:18.338797-05:00
+40               jared mccain  PHI     BENEFICIARY  2025-11-21         NaT      10.500000       vj edgecombe 2025-11-29 14:34:19.442372-05:00
+41             justin edwards  PHI     BENEFICIARY  2025-11-21         NaT      15.846154       vj edgecombe 2025-11-29 14:34:19.446703-05:00
+42             quentin grimes  PHI     BENEFICIARY  2025-11-21         NaT      31.933333       vj edgecombe 2025-11-29 14:34:19.447918-05:00
+43               tyrese maxey  PHI  ROLE_DECREASED  2025-11-21         NaT      40.800000       vj edgecombe 2025-11-29 14:34:19.452480-05:00
+44             andre drummond  PHI     BENEFICIARY  2025-11-15         NaT      21.545455    kelly oubre jr. 2025-11-29 14:34:19.540979-05:00
+45               jared mccain  PHI     BENEFICIARY  2025-11-15         NaT      10.500000    kelly oubre jr. 2025-11-29 14:34:19.543227-05:00
+46             justin edwards  PHI     BENEFICIARY  2025-11-15         NaT      15.846154    kelly oubre jr. 2025-11-29 14:34:19.544930-05:00
+47             quentin grimes  PHI     BENEFICIARY  2025-11-15         NaT      31.933333    kelly oubre jr. 2025-11-29 14:34:19.549619-05:00
+48             andre drummond  PHI     BENEFICIARY  2025-11-09         NaT      21.545455        joel embiid 2025-11-29 14:34:19.638621-05:00
+49             justin edwards  PHI     BENEFICIARY  2025-11-09         NaT      15.846154        joel embiid 2025-11-29 14:34:19.638621-05:00
+50             andre drummond  PHI     BENEFICIARY  2025-11-26         NaT      21.545455    trendon watford 2025-11-29 14:34:20.036343-05:00
+51            dominick barlow  PHI     BENEFICIARY  2025-11-26         NaT      24.230769    trendon watford 2025-11-29 14:34:20.039177-05:00
+52                paul george  PHI     BENEFICIARY  2025-11-26         NaT      22.000000    trendon watford 2025-11-29 14:34:20.039177-05:00
+53                   aj green  MIL     BENEFICIARY  2025-11-05         NaT      27.125000     taurean prince 2025-11-29 14:34:21.548115-05:00
+54          andre jackson jr.  MIL     BENEFICIARY  2025-11-05         NaT       4.333333     taurean prince 2025-11-29 14:34:21.548115-05:00
+55               bobby portis  MIL     BENEFICIARY  2025-11-05         NaT      19.375000     taurean prince 2025-11-29 14:34:21.553432-05:00
+56                gary harris  MIL     BENEFICIARY  2025-11-05         NaT       4.666667     taurean prince 2025-11-29 14:34:21.554266-05:00
+57               jericho sims  MIL     BENEFICIARY  2025-11-05         NaT       4.400000     taurean prince 2025-11-29 14:34:21.554266-05:00
+58                 kyle kuzma  MIL     BENEFICIARY  2025-11-05         NaT      23.142857     taurean prince 2025-11-29 14:34:21.554266-05:00
+59               cole anthony  MIL  ROLE_DECREASED  2025-11-05         NaT      20.571429     taurean prince 2025-11-29 14:34:21.560773-05:00
+60                  alex sarr  WAS     BENEFICIARY  2025-11-22         NaT      28.923077        tre johnson 2025-11-29 14:34:23.018535-05:00
+61            bilal coulibaly  WAS     BENEFICIARY  2025-11-22         NaT      25.428571        tre johnson 2025-11-29 14:34:23.021839-05:00
+62          justin champagnie  WAS     BENEFICIARY  2025-11-22         NaT       9.153846        tre johnson 2025-11-29 14:34:23.024375-05:00
+63           tristan vukcevic  WAS     BENEFICIARY  2025-11-22         NaT       8.000000        tre johnson 2025-11-29 14:34:23.026879-05:00
+64                cj mccollum  WAS     BENEFICIARY  2025-11-26         NaT      29.863636      corey kispert 2025-11-29 14:34:23.091516-05:00
+65             kyshawn george  WAS     BENEFICIARY  2025-11-26         NaT      31.947368      corey kispert 2025-11-29 14:34:23.095397-05:00
+66         brandin podziemski  GSW     BENEFICIARY  2025-11-27         NaT      27.961538      stephen curry 2025-11-29 14:34:24.797988-05:00
+67                buddy hield  GSW     BENEFICIARY  2025-11-27         NaT      18.192308      stephen curry 2025-11-29 14:34:24.800510-05:00
+68                pat spencer  GSW     BENEFICIARY  2025-11-27         NaT      12.875000      stephen curry 2025-11-29 14:34:24.800510-05:00
+69               will richard  GSW     BENEFICIARY  2025-11-27         NaT      18.458333      stephen curry 2025-11-29 14:34:24.806580-05:00
+70             draymond green  GSW     BENEFICIARY  2025-11-22         NaT      29.000000         al horford 2025-11-29 14:34:24.900449-05:00
+71                 gui santos  GSW     BENEFICIARY  2025-11-22         NaT       7.866667         al horford 2025-11-29 14:34:24.905172-05:00
+72                moses moody  GSW     BENEFICIARY  2025-11-22         NaT      26.800000         al horford 2025-11-29 14:34:24.905172-05:00
+73               quinten post  GSW     BENEFICIARY  2025-11-22         NaT      15.272727         al horford 2025-11-29 14:34:24.905172-05:00
+74               desmond bane  ORL     BENEFICIARY  2025-11-13         NaT      30.916667     paolo banchero 2025-11-29 14:34:25.677856-05:00
+75                jalen suggs  ORL     BENEFICIARY  2025-11-13         NaT      21.444444     paolo banchero 2025-11-29 14:34:25.684852-05:00
+76            jase richardson  ORL     BENEFICIARY  2025-11-13         NaT       4.285714     paolo banchero 2025-11-29 14:34:25.686092-05:00
+77                jett howard  ORL     BENEFICIARY  2025-11-13         NaT       6.875000     paolo banchero 2025-11-29 14:34:25.686092-05:00
+78             jonathan isaac  ORL     BENEFICIARY  2025-11-13         NaT       8.909091     paolo banchero 2025-11-29 14:34:25.691368-05:00
+79                 noah penda  ORL     BENEFICIARY  2025-11-13         NaT       6.714286     paolo banchero 2025-11-29 14:34:25.693883-05:00
+80           tristan da silva  ORL     BENEFICIARY  2025-11-13         NaT      20.916667     paolo banchero 2025-11-29 14:34:25.693883-05:00
+81             daniel gafford  DAL     BENEFICIARY  2025-11-29         NaT      24.050000      anthony davis 2025-11-29 14:34:27.035756-05:00
+82               moussa cisse  DAL     BENEFICIARY  2025-11-29         NaT      10.238095      anthony davis 2025-11-29 14:34:27.041270-05:00
+83              naji marshall  DAL     BENEFICIARY  2025-11-29         NaT      26.333333      anthony davis 2025-11-29 14:34:27.042756-05:00
+84           brandon williams  DAL     BENEFICIARY  2025-11-22         NaT      21.333333   dereck lively ii 2025-11-29 14:34:27.097791-05:00
+85               caleb martin  DAL  ROLE_DECREASED  2025-11-22         NaT       9.785714   dereck lively ii 2025-11-29 14:34:27.097791-05:00
+86              dwight powell  DAL  ROLE_DECREASED  2025-11-22         NaT       8.421053   dereck lively ii 2025-11-29 14:34:27.097791-05:00
+87                jaden hardy  DAL  ROLE_DECREASED  2025-11-22         NaT      11.571429   dereck lively ii 2025-11-29 14:34:27.107976-05:00
+88               max christie  DAL  ROLE_DECREASED  2025-11-22         NaT      30.294118   dereck lively ii 2025-11-29 14:34:27.110853-05:00
+89              dwight powell  DAL     BENEFICIARY  2025-11-29         NaT       8.421053      anthony davis 2025-11-29 14:34:27.161472-05:00
+90             moussa diabate  CHA  ROLE_DECREASED  2025-11-23         NaT      23.062500    pat connaughton 2025-11-29 14:34:28.453168-05:00
+91                   tre mann  CHA  ROLE_DECREASED  2025-11-23         NaT      21.928571    pat connaughton 2025-11-29 14:34:28.453168-05:00
+92            jordan clarkson  NYK     BENEFICIARY  2025-11-15         NaT      17.333333         og anunoby 2025-11-29 14:34:29.879758-05:00
+93                  josh hart  NYK     BENEFICIARY  2025-11-15         NaT      24.636364         og anunoby 2025-11-29 14:34:29.879758-05:00
+94              miles mcbride  NYK     BENEFICIARY  2025-11-15         NaT      22.800000         og anunoby 2025-11-29 14:34:29.884606-05:00
+95                tyler kolek  NYK     BENEFICIARY  2025-11-15         NaT       6.700000         og anunoby 2025-11-29 14:34:29.884606-05:00
+96                  josh hart  NYK     BENEFICIARY  2025-11-23         NaT      24.636364      landry shamet 2025-11-29 14:34:30.988666-05:00
+97              miles mcbride  NYK     BENEFICIARY  2025-11-23         NaT      22.800000      landry shamet 2025-11-29 14:34:30.991501-05:00
+98                tyler kolek  NYK     BENEFICIARY  2025-11-23         NaT       6.700000      landry shamet 2025-11-29 14:34:30.995553-05:00
+99              dyson daniels  ATL     BENEFICIARY  2025-10-30         NaT      30.200000         trae young 2025-11-29 14:34:31.551203-05:00
+100             jalen johnson  ATL     BENEFICIARY  2025-10-30         NaT      30.500000         trae young 2025-11-29 14:34:31.551770-05:00
+101            keaton wallace  ATL     BENEFICIARY  2025-10-30         NaT      10.200000         trae young 2025-11-29 14:34:31.555459-05:00
+102                egor demin  BKN     BENEFICIARY  2025-11-06         NaT      18.714286         cam thomas 2025-11-29 14:34:32.878164-05:00
+103              noah clowney  BKN     BENEFICIARY  2025-11-06         NaT      22.750000         cam thomas 2025-11-29 14:34:32.882181-05:00
+104           ziaire williams  BKN     BENEFICIARY  2025-11-06         NaT      20.333333         cam thomas 2025-11-29 14:34:32.884191-05:00
+105              jalen wilson  BKN  ROLE_DECREASED  2025-11-06         NaT      17.857143         cam thomas 2025-11-29 14:34:32.888461-05:00
+106        david jones garcia  SAS     BENEFICIARY  2025-11-15         NaT       3.666667  victor wembanyama 2025-11-29 14:34:34.308854-05:00
+107           harrison barnes  SAS     BENEFICIARY  2025-11-15         NaT      29.583333  victor wembanyama 2025-11-29 14:34:34.308854-05:00
+108             jeremy sochan  SAS     BENEFICIARY  2025-11-15         NaT      14.500000  victor wembanyama 2025-11-29 14:34:34.313553-05:00
+109              kelly olynyk  SAS     BENEFICIARY  2025-11-15         NaT       6.333333  victor wembanyama 2025-11-29 14:34:34.315613-05:00
+110               luke kornet  SAS     BENEFICIARY  2025-11-15         NaT      22.000000  victor wembanyama 2025-11-29 14:34:34.316433-05:00
+111        david jones garcia  SAS     BENEFICIARY  2025-11-17         NaT       3.666667     stephon castle 2025-11-29 14:34:34.396078-05:00
+112           harrison barnes  SAS     BENEFICIARY  2025-11-17         NaT      29.583333     stephon castle 2025-11-29 14:34:34.400659-05:00
+113             jeremy sochan  SAS     BENEFICIARY  2025-11-17         NaT      14.500000     stephon castle 2025-11-29 14:34:34.403167-05:00
+114         julian champagnie  SAS     BENEFICIARY  2025-11-17         NaT      27.384615     stephon castle 2025-11-29 14:34:34.405173-05:00
+115            keldon johnson  SAS     BENEFICIARY  2025-11-17         NaT      23.076923     stephon castle 2025-11-29 14:34:34.408787-05:00
+116              kelly olynyk  SAS     BENEFICIARY  2025-11-17         NaT       6.333333     stephon castle 2025-11-29 14:34:34.408787-05:00
+117               luke kornet  SAS     BENEFICIARY  2025-11-17         NaT      22.000000     stephon castle 2025-11-29 14:34:34.408787-05:00
+118        david jones garcia  SAS     BENEFICIARY  2025-11-08         NaT       3.666667  jordan mclaughlin 2025-11-29 14:34:34.478399-05:00
+119                caleb love  POR     BENEFICIARY  2025-11-15         NaT       7.750000       jrue holiday 2025-11-29 14:34:36.375536-05:00
+120              jerami grant  POR     BENEFICIARY  2025-11-15         NaT      27.000000       jrue holiday 2025-11-29 14:34:36.375536-05:00
+121               kris murray  POR     BENEFICIARY  2025-11-15         NaT      22.090909       jrue holiday 2025-11-29 14:34:36.375536-05:00
+122              rayan rupert  POR     BENEFICIARY  2025-11-15         NaT       6.000000       jrue holiday 2025-11-29 14:34:36.383583-05:00
+123       robert williams iii  POR     BENEFICIARY  2025-11-15         NaT      11.857143       jrue holiday 2025-11-29 14:34:36.386639-05:00
+124              sidy cissoko  POR     BENEFICIARY  2025-11-15         NaT      11.000000       jrue holiday 2025-11-29 14:34:36.388521-05:00
+125                chris paul  LAC     BENEFICIARY  2025-11-17         NaT      13.000000  derrick jones jr. 2025-11-29 14:34:37.610259-05:00
+126              john collins  LAC     BENEFICIARY  2025-11-17         NaT      25.153846  derrick jones jr. 2025-11-29 14:34:37.614082-05:00
+127                kobe brown  LAC     BENEFICIARY  2025-11-17         NaT       8.714286  derrick jones jr. 2025-11-29 14:34:37.616597-05:00
+128              kobe sanders  LAC     BENEFICIARY  2025-11-17         NaT      14.200000  derrick jones jr. 2025-11-29 14:34:37.619620-05:00
+129                chris paul  LAC     BENEFICIARY  2025-11-09         NaT      13.000000       bradley beal 2025-11-29 14:34:37.689445-05:00
+130               ivica zubac  LAC     BENEFICIARY  2025-11-09         NaT      29.555556       bradley beal 2025-11-29 14:34:37.689445-05:00
+131                kobe brown  LAC     BENEFICIARY  2025-11-09         NaT       8.714286       bradley beal 2025-11-29 14:34:37.694309-05:00
+132             nicolas batum  LAC     BENEFICIARY  2025-11-09         NaT      15.777778       bradley beal 2025-11-29 14:34:37.694309-05:00
+133               ivica zubac  LAC     BENEFICIARY  2025-11-17         NaT      29.555556  derrick jones jr. 2025-11-29 14:34:37.800012-05:00
+134             nicolas batum  LAC     BENEFICIARY  2025-11-17         NaT      15.777778  derrick jones jr. 2025-11-29 14:34:37.800012-05:00
+135            brandon ingram  TOR     BENEFICIARY  2025-11-24         NaT      33.238095         rj barrett 2025-11-29 14:34:39.254736-05:00
+136      collin murray-boyles  TOR     BENEFICIARY  2025-11-24         NaT      19.214286         rj barrett 2025-11-29 14:34:39.258439-05:00
+137               gradey dick  TOR     BENEFICIARY  2025-11-24         NaT      17.190476         rj barrett 2025-11-29 14:34:39.258439-05:00
+138            jamison battle  TOR     BENEFICIARY  2025-11-24         NaT       6.285714         rj barrett 2025-11-29 14:34:39.258439-05:00
+139              ochai agbaji  TOR     BENEFICIARY  2025-11-24         NaT      14.307692         rj barrett 2025-11-29 14:34:39.264546-05:00
+140            scottie barnes  TOR     BENEFICIARY  2025-11-24         NaT      32.904762         rj barrett 2025-11-29 14:34:39.264880-05:00
+141            bryce mcgowens  NOP     BENEFICIARY  2025-11-05         NaT       4.000000       jordan poole 2025-11-29 14:34:39.977181-05:00
+142               derik queen  NOP     BENEFICIARY  2025-11-05         NaT      17.714286       jordan poole 2025-11-29 14:34:39.979383-05:00
+143             jose alvarado  NOP     BENEFICIARY  2025-11-05         NaT      17.333333       jordan poole 2025-11-29 14:34:39.979383-05:00
+144               micah peavy  NOP     BENEFICIARY  2025-11-05         NaT       6.000000       jordan poole 2025-11-29 14:34:39.984703-05:00
+145                saddiq bey  NOP     BENEFICIARY  2025-11-05         NaT      24.142857       jordan poole 2025-11-29 14:34:39.987476-05:00
+146                yves missi  NOP  ROLE_DECREASED  2025-11-05         NaT      23.200000       jordan poole 2025-11-29 14:34:39.990489-05:00
+147            bryce mcgowens  NOP     BENEFICIARY  2025-11-22         NaT       4.000000      herbert jones 2025-11-29 14:34:40.314427-05:00
+148               derik queen  NOP     BENEFICIARY  2025-11-22         NaT      17.714286      herbert jones 2025-11-29 14:34:40.317036-05:00
+149             jose alvarado  NOP     BENEFICIARY  2025-11-22         NaT      17.333333      herbert jones 2025-11-29 14:34:40.317036-05:00
+150               micah peavy  NOP     BENEFICIARY  2025-11-22         NaT       6.000000      herbert jones 2025-11-29 14:34:40.320561-05:00
+151                saddiq bey  NOP     BENEFICIARY  2025-11-22         NaT      24.142857      herbert jones 2025-11-29 14:34:40.324935-05:00
+152                yves missi  NOP     BENEFICIARY  2025-11-22         NaT      18.454545      herbert jones 2025-11-29 14:34:40.327257-05:00
+153            jeremiah fears  NOP     BENEFICIARY  2025-11-27         NaT      26.692308     jordan hawkins 2025-11-29 14:34:40.370461-05:00
+154             jose alvarado  NOP     BENEFICIARY  2025-11-27         NaT      17.333333     jordan hawkins 2025-11-29 14:34:40.373627-05:00
+155                saddiq bey  NOP     BENEFICIARY  2025-11-27         NaT      24.142857     jordan hawkins 2025-11-29 14:34:40.376254-05:00
+156            bryce mcgowens  NOP     BENEFICIARY  2025-11-18         NaT       4.000000     karlo matkovic 2025-11-29 14:34:40.423355-05:00
+157               derik queen  NOP     BENEFICIARY  2025-11-18         NaT      17.714286     karlo matkovic 2025-11-29 14:34:40.426877-05:00
+158             jose alvarado  NOP     BENEFICIARY  2025-11-18         NaT      17.333333     karlo matkovic 2025-11-29 14:34:40.426877-05:00
+159               micah peavy  NOP     BENEFICIARY  2025-11-18         NaT       6.000000     karlo matkovic 2025-11-29 14:34:40.426877-05:00
+160                saddiq bey  NOP     BENEFICIARY  2025-11-18         NaT      24.142857     karlo matkovic 2025-11-29 14:34:40.432179-05:00
+161               cam spencer  MEM     BENEFICIARY  2025-11-16         NaT      18.714286          ja morant 2025-11-29 14:34:41.534285-05:00
+162         jaren jackson jr.  MEM     BENEFICIARY  2025-11-16         NaT      28.642857          ja morant 2025-11-29 14:34:41.534285-05:00
+163              jaylen wells  MEM     BENEFICIARY  2025-11-16         NaT      25.214286          ja morant 2025-11-29 14:34:41.534285-05:00
+164        vince williams jr.  MEM     BENEFICIARY  2025-11-16         NaT      19.333333          ja morant 2025-11-29 14:34:41.534285-05:00
+165               cam spencer  MEM     BENEFICIARY  2025-11-08         NaT      18.714286        javon small 2025-11-29 14:34:41.837071-05:00
+166                gg jackson  MEM     BENEFICIARY  2025-11-08         NaT       5.000000        javon small 2025-11-29 14:34:41.841672-05:00
+167   olivier-maxence prosper  MEM     BENEFICIARY  2025-11-08         NaT       7.000000        javon small 2025-11-29 14:34:41.843918-05:00
+168        vince williams jr.  MEM     BENEFICIARY  2025-11-08         NaT      19.333333        javon small 2025-11-29 14:34:41.845895-05:00
+169            darius garland  CLE     BENEFICIARY  2025-11-18         NaT      24.333333        sam merrill 2025-11-29 14:34:43.663925-05:00
+170           nae'qwan tomlin  CLE     BENEFICIARY  2025-11-18         NaT      12.833333        sam merrill 2025-11-29 14:34:43.667064-05:00
+171           nae'qwan tomlin  CLE     BENEFICIARY  2025-11-22         NaT      12.833333   craig porter jr. 2025-11-29 14:34:43.733799-05:00
+172             isaiah livers  PHX     BENEFICIARY  2025-11-09         NaT       8.800000        jalen green 2025-11-29 14:34:45.161289-05:00
+173            jordan goodwin  PHX     BENEFICIARY  2025-11-09         NaT      13.857143        jalen green 2025-11-29 14:34:45.161289-05:00
+174           rasheer fleming  PHX     BENEFICIARY  2025-11-09         NaT       4.000000        jalen green 2025-11-29 14:34:45.161289-05:00
+175              drew eubanks  SAC     BENEFICIARY  2025-11-17         NaT      14.642857   domantas sabonis 2025-11-29 14:34:46.743305-05:00
+176            maxime raynaud  SAC     BENEFICIARY  2025-11-17         NaT      12.333333   domantas sabonis 2025-11-29 14:34:46.745234-05:00
+177          precious achiuwa  SAC     BENEFICIARY  2025-11-17         NaT      16.857143   domantas sabonis 2025-11-29 14:34:46.746767-05:00
+178           dennis schroder  SAC  ROLE_DECREASED  2025-11-17         NaT      30.357143   domantas sabonis 2025-11-29 14:34:46.751821-05:00
+179                keon ellis  SAC  ROLE_DECREASED  2025-11-17         NaT      18.714286   domantas sabonis 2025-11-29 14:34:46.754476-05:00
+180            nique clifford  SAC  ROLE_DECREASED  2025-11-17         NaT      19.500000   domantas sabonis 2025-11-29 14:34:46.759745-05:00
+181             jarace walker  IND  ROLE_DECREASED  2025-11-04         NaT      30.714286      johnny furphy 2025-11-29 14:55:48.436126-05:00
+182               rayj dennis  IND  ROLE_DECREASED  2025-11-04         NaT      22.666667      johnny furphy 2025-11-29 14:55:48.440989-05:00
+183             dyson daniels  ATL     BENEFICIARY  2025-11-09         NaT      30.200000       n'faly dante 2025-11-29 14:55:55.001497-05:00
+184             jalen johnson  ATL     BENEFICIARY  2025-11-09         NaT      30.500000       n'faly dante 2025-11-29 14:55:55.008197-05:00
+185            keaton wallace  ATL     BENEFICIARY  2025-11-09         NaT      10.200000       n'faly dante 2025-11-29 14:55:55.019016-05:00
+186                vit krejci  ATL     BENEFICIARY  2025-11-09         NaT      17.666667       n'faly dante 2025-11-29 14:55:55.019016-05:00
+187                asa newell  ATL  ROLE_DECREASED  2025-11-09         NaT      11.600000       n'faly dante 2025-11-29 14:55:55.034850-05:00
+188              luke kennard  ATL  ROLE_DECREASED  2025-11-09         NaT      25.250000       n'faly dante 2025-11-29 14:55:55.046622-05:00
+189               brook lopez  LAC  ROLE_DECREASED  2025-11-09         NaT      15.888889       bradley beal 2025-11-29 14:55:58.337115-05:00
+190             kawhi leonard  LAC  ROLE_DECREASED  2025-11-09         NaT      33.500000       bradley beal 2025-11-29 14:55:58.348019-05:00
+191              jock landale  MEM  ROLE_DECREASED  2025-11-08         NaT      24.500000        javon small 2025-11-29 14:56:00.333904-05:00
+192  kentavious caldwell-pope  MEM  ROLE_DECREASED  2025-11-08         NaT      24.600000        javon small 2025-11-29 14:56:00.342097-05:00
+
+Basic info:
+- Memory usage: 0.06 MB
+- Null values per column:
+  RETURN_DATE: 193
+
+--------------------------------------------------------------------------------
+FILE: injury_context/direct_position_only.parquet
+DESC: Direct model injury state
+--------------------------------------------------------------------------------
+Loading DataFrame from S3...
+ DataFrame loaded successfully!
+Shape: (177, 8)
+Columns: ['PLAYER', 'TEAM', 'STATUS', 'INJURY_DATE', 'RETURN_DATE', 'TRUE_BASELINE', 'BENEFICIARY_OF', 'UPDATED_DATE']
+
+All rows:
+                       PLAYER TEAM          STATUS INJURY_DATE RETURN_DATE  TRUE_BASELINE     BENEFICIARY_OF                     UPDATED_DATE
+0                 bruce brown  DEN     BENEFICIARY  2025-11-13         NaT      21.818182    christian braun 2025-11-29 14:34:51.377683-05:00
+1             cameron johnson  DEN     BENEFICIARY  2025-11-13         NaT      24.454545    christian braun 2025-11-29 14:34:51.381216-05:00
+2                jamal murray  DEN     BENEFICIARY  2025-11-13         NaT      33.500000    christian braun 2025-11-29 14:34:51.382715-05:00
+3               peyton watson  DEN     BENEFICIARY  2025-11-13         NaT      21.090909    christian braun 2025-11-29 14:34:51.386751-05:00
+4               spencer jones  DEN     BENEFICIARY  2025-11-13         NaT       7.714286    christian braun 2025-11-29 14:34:51.386751-05:00
+5            tim hardaway jr.  DEN     BENEFICIARY  2025-11-13         NaT      22.818182    christian braun 2025-11-29 14:34:51.389650-05:00
+6                  zeke nnaji  DEN     BENEFICIARY  2025-11-13         NaT       3.333333    christian braun 2025-11-29 14:34:51.389650-05:00
+7             cameron johnson  DEN     BENEFICIARY  2025-11-22         NaT      24.454545       aaron gordon 2025-11-29 14:34:51.640217-05:00
+8                jamal murray  DEN     BENEFICIARY  2025-11-22         NaT      33.500000       aaron gordon 2025-11-29 14:34:51.644915-05:00
+9               peyton watson  DEN     BENEFICIARY  2025-11-22         NaT      21.090909       aaron gordon 2025-11-29 14:34:51.646308-05:00
+10              spencer jones  DEN     BENEFICIARY  2025-11-22         NaT       7.714286       aaron gordon 2025-11-29 14:34:51.650368-05:00
+11           tim hardaway jr.  DEN     BENEFICIARY  2025-11-22         NaT      22.818182       aaron gordon 2025-11-29 14:34:51.654455-05:00
+12              jae'sean tate  HOU     BENEFICIARY  2025-11-22         NaT       4.555556       kevin durant 2025-11-29 14:34:52.900683-05:00
+13              aaron holiday  HOU     BENEFICIARY  2025-11-15         NaT       7.166667         tari eason 2025-11-29 14:34:52.976761-05:00
+14              amen thompson  HOU     BENEFICIARY  2025-11-15         NaT      35.181818         tari eason 2025-11-29 14:34:52.982637-05:00
+15           jabari smith jr.  HOU     BENEFICIARY  2025-11-15         NaT      32.100000         tari eason 2025-11-29 14:34:52.982637-05:00
+16              reed sheppard  HOU     BENEFICIARY  2025-11-15         NaT      22.454545         tari eason 2025-11-29 14:34:52.982637-05:00
+17                josh okogie  HOU  ROLE_DECREASED  2025-11-15         NaT      22.727273         tari eason 2025-11-29 14:34:52.982637-05:00
+18             isaiah jackson  IND     BENEFICIARY  2025-10-27         NaT      11.666667         obi toppin 2025-11-29 14:34:54.146703-05:00
+19                   jay huff  IND     BENEFICIARY  2025-10-27         NaT      12.666667         obi toppin 2025-11-29 14:34:54.150248-05:00
+20               ben sheppard  IND  ROLE_DECREASED  2025-10-27         NaT      31.666667         obi toppin 2025-11-29 14:34:54.150248-05:00
+21            andrew nembhard  IND     BENEFICIARY  2025-11-14         NaT      27.400000      aaron nesmith 2025-11-29 14:34:54.824430-05:00
+22             isaiah jackson  IND     BENEFICIARY  2025-11-14         NaT      11.666667      aaron nesmith 2025-11-29 14:34:54.825941-05:00
+23                   jay huff  IND     BENEFICIARY  2025-11-14         NaT      12.666667      aaron nesmith 2025-11-29 14:34:54.828222-05:00
+24               taelon peter  IND  ROLE_DECREASED  2025-11-14         NaT       9.250000      aaron nesmith 2025-11-29 14:34:54.834441-05:00
+25               tony bradley  IND  ROLE_DECREASED  2025-11-14         NaT      14.000000      aaron nesmith 2025-11-29 14:34:54.834441-05:00
+26             isaiah jackson  IND     BENEFICIARY  2025-11-04         NaT      11.666667    quenton jackson 2025-11-29 14:34:54.917687-05:00
+27                   jay huff  IND     BENEFICIARY  2025-11-04         NaT      12.666667    quenton jackson 2025-11-29 14:34:54.919523-05:00
+28             isaiah jackson  IND     BENEFICIARY  2025-11-04         NaT      11.666667      johnny furphy 2025-11-29 14:34:55.003645-05:00
+29                   jay huff  IND     BENEFICIARY  2025-11-04         NaT      12.666667      johnny furphy 2025-11-29 14:34:55.003645-05:00
+30            branden carlson  OKC     BENEFICIARY  2025-11-06         NaT       6.142857      aaron wiggins 2025-11-29 14:34:55.947504-05:00
+31                alex caruso  OKC  ROLE_DECREASED  2025-11-06         NaT      21.400000      aaron wiggins 2025-11-29 14:34:55.954130-05:00
+32              chet holmgren  OKC  ROLE_DECREASED  2025-11-06         NaT      33.200000      aaron wiggins 2025-11-29 14:34:55.955743-05:00
+33         isaiah hartenstein  OKC  ROLE_DECREASED  2025-11-06         NaT      30.111111      aaron wiggins 2025-11-29 14:34:55.957493-05:00
+34              luguentz dort  OKC  ROLE_DECREASED  2025-11-06         NaT      31.857143      aaron wiggins 2025-11-29 14:34:55.961215-05:00
+35    shai gilgeous-alexander  OKC  ROLE_DECREASED  2025-11-06         NaT      35.333333      aaron wiggins 2025-11-29 14:34:55.962358-05:00
+36                 ace bailey  UTA     BENEFICIARY  2025-11-01         NaT      17.000000     walker kessler 2025-11-29 14:34:57.202451-05:00
+37              cody williams  UTA     BENEFICIARY  2025-11-01         NaT       9.666667     walker kessler 2025-11-29 14:34:57.202451-05:00
+38               jusuf nurkic  UTA     BENEFICIARY  2025-11-01         NaT      17.200000     walker kessler 2025-11-29 14:34:57.202451-05:00
+39               jared mccain  PHI     BENEFICIARY  2025-11-21         NaT      10.500000       vj edgecombe 2025-11-29 14:34:58.679643-05:00
+40             justin edwards  PHI     BENEFICIARY  2025-11-21         NaT      15.846154       vj edgecombe 2025-11-29 14:34:58.679643-05:00
+41             quentin grimes  PHI     BENEFICIARY  2025-11-21         NaT      31.933333       vj edgecombe 2025-11-29 14:34:58.687163-05:00
+42               tyrese maxey  PHI  ROLE_DECREASED  2025-11-21         NaT      40.800000       vj edgecombe 2025-11-29 14:34:58.687163-05:00
+43             andre drummond  PHI     BENEFICIARY  2025-11-15         NaT      21.545455    kelly oubre jr. 2025-11-29 14:34:58.754123-05:00
+44               jared mccain  PHI     BENEFICIARY  2025-11-15         NaT      10.500000    kelly oubre jr. 2025-11-29 14:34:58.758699-05:00
+45             justin edwards  PHI     BENEFICIARY  2025-11-15         NaT      15.846154    kelly oubre jr. 2025-11-29 14:34:58.760340-05:00
+46             quentin grimes  PHI     BENEFICIARY  2025-11-15         NaT      31.933333    kelly oubre jr. 2025-11-29 14:34:58.760340-05:00
+47             andre drummond  PHI     BENEFICIARY  2025-11-09         NaT      21.545455        joel embiid 2025-11-29 14:34:58.835555-05:00
+48             justin edwards  PHI     BENEFICIARY  2025-11-09         NaT      15.846154        joel embiid 2025-11-29 14:34:58.835555-05:00
+49            dominick barlow  PHI     BENEFICIARY  2025-11-26         NaT      24.230769    trendon watford 2025-11-29 14:34:59.310808-05:00
+50                   aj green  MIL     BENEFICIARY  2025-11-05         NaT      27.125000     taurean prince 2025-11-29 14:35:00.652712-05:00
+51          andre jackson jr.  MIL     BENEFICIARY  2025-11-05         NaT       4.333333     taurean prince 2025-11-29 14:35:00.655255-05:00
+52               bobby portis  MIL     BENEFICIARY  2025-11-05         NaT      19.375000     taurean prince 2025-11-29 14:35:00.657604-05:00
+53                gary harris  MIL     BENEFICIARY  2025-11-05         NaT       4.666667     taurean prince 2025-11-29 14:35:00.659808-05:00
+54               jericho sims  MIL     BENEFICIARY  2025-11-05         NaT       4.400000     taurean prince 2025-11-29 14:35:00.663241-05:00
+55                 kyle kuzma  MIL     BENEFICIARY  2025-11-05         NaT      23.142857     taurean prince 2025-11-29 14:35:00.663241-05:00
+56               cole anthony  MIL  ROLE_DECREASED  2025-11-05         NaT      20.571429     taurean prince 2025-11-29 14:35:00.665862-05:00
+57                  alex sarr  WAS     BENEFICIARY  2025-11-22         NaT      28.923077        tre johnson 2025-11-29 14:35:02.445546-05:00
+58            bilal coulibaly  WAS     BENEFICIARY  2025-11-22         NaT      25.428571        tre johnson 2025-11-29 14:35:02.450634-05:00
+59          justin champagnie  WAS     BENEFICIARY  2025-11-22         NaT       9.153846        tre johnson 2025-11-29 14:35:02.450634-05:00
+60           tristan vukcevic  WAS     BENEFICIARY  2025-11-22         NaT       8.000000        tre johnson 2025-11-29 14:35:02.457952-05:00
+61                cj mccollum  WAS     BENEFICIARY  2025-11-26         NaT      29.863636      corey kispert 2025-11-29 14:35:02.506615-05:00
+62          justin champagnie  WAS     BENEFICIARY  2025-11-26         NaT       9.153846      corey kispert 2025-11-29 14:35:02.508624-05:00
+63             kyshawn george  WAS     BENEFICIARY  2025-11-26         NaT      31.947368      corey kispert 2025-11-29 14:35:02.511554-05:00
+64         brandin podziemski  GSW     BENEFICIARY  2025-11-27         NaT      27.961538      stephen curry 2025-11-29 14:35:04.260124-05:00
+65                pat spencer  GSW     BENEFICIARY  2025-11-27         NaT      12.875000      stephen curry 2025-11-29 14:35:04.262909-05:00
+66             draymond green  GSW     BENEFICIARY  2025-11-22         NaT      29.000000         al horford 2025-11-29 14:35:04.310227-05:00
+67                 gui santos  GSW     BENEFICIARY  2025-11-22         NaT       7.866667         al horford 2025-11-29 14:35:04.313697-05:00
+68               desmond bane  ORL     BENEFICIARY  2025-11-13         NaT      30.916667     paolo banchero 2025-11-29 14:35:05.018045-05:00
+69                jalen suggs  ORL     BENEFICIARY  2025-11-13         NaT      21.444444     paolo banchero 2025-11-29 14:35:05.025928-05:00
+70            jase richardson  ORL     BENEFICIARY  2025-11-13         NaT       4.285714     paolo banchero 2025-11-29 14:35:05.026672-05:00
+71                jett howard  ORL     BENEFICIARY  2025-11-13         NaT       6.875000     paolo banchero 2025-11-29 14:35:05.031447-05:00
+72             jonathan isaac  ORL     BENEFICIARY  2025-11-13         NaT       8.909091     paolo banchero 2025-11-29 14:35:05.032037-05:00
+73                 noah penda  ORL     BENEFICIARY  2025-11-13         NaT       6.714286     paolo banchero 2025-11-29 14:35:05.034401-05:00
+74           tristan da silva  ORL     BENEFICIARY  2025-11-13         NaT      20.916667     paolo banchero 2025-11-29 14:35:05.034401-05:00
+75           brandon williams  DAL     BENEFICIARY  2025-11-22         NaT      21.333333   dereck lively ii 2025-11-29 14:35:06.343120-05:00
+76               caleb martin  DAL  ROLE_DECREASED  2025-11-22         NaT       9.785714   dereck lively ii 2025-11-29 14:35:06.343120-05:00
+77              dwight powell  DAL  ROLE_DECREASED  2025-11-22         NaT       9.583333   dereck lively ii 2025-11-29 14:35:06.348294-05:00
+78                jaden hardy  DAL  ROLE_DECREASED  2025-11-22         NaT      11.571429   dereck lively ii 2025-11-29 14:35:06.351717-05:00
+79               max christie  DAL  ROLE_DECREASED  2025-11-22         NaT      30.294118   dereck lively ii 2025-11-29 14:35:06.351717-05:00
+80             moussa diabate  CHA  ROLE_DECREASED  2025-11-23         NaT      23.062500    pat connaughton 2025-11-29 14:35:08.043634-05:00
+81                   tre mann  CHA  ROLE_DECREASED  2025-11-23         NaT      21.928571    pat connaughton 2025-11-29 14:35:08.043634-05:00
+82            jordan clarkson  NYK     BENEFICIARY  2025-11-15         NaT      17.333333         og anunoby 2025-11-29 14:35:09.330180-05:00
+83                  josh hart  NYK     BENEFICIARY  2025-11-15         NaT      24.636364         og anunoby 2025-11-29 14:35:09.336325-05:00
+84              miles mcbride  NYK     BENEFICIARY  2025-11-15         NaT      22.800000         og anunoby 2025-11-29 14:35:09.343778-05:00
+85                tyler kolek  NYK     BENEFICIARY  2025-11-15         NaT       6.700000         og anunoby 2025-11-29 14:35:09.349560-05:00
+86                  josh hart  NYK     BENEFICIARY  2025-11-23         NaT      24.636364      landry shamet 2025-11-29 14:35:11.267018-05:00
+87              miles mcbride  NYK     BENEFICIARY  2025-11-23         NaT      22.800000      landry shamet 2025-11-29 14:35:11.270126-05:00
+88                tyler kolek  NYK     BENEFICIARY  2025-11-23         NaT       6.700000      landry shamet 2025-11-29 14:35:11.274653-05:00
+89              dyson daniels  ATL     BENEFICIARY  2025-10-30         NaT      30.200000         trae young 2025-11-29 14:35:11.874350-05:00
+90              jalen johnson  ATL     BENEFICIARY  2025-10-30         NaT      30.500000         trae young 2025-11-29 14:35:11.884621-05:00
+91             keaton wallace  ATL     BENEFICIARY  2025-10-30         NaT      10.200000         trae young 2025-11-29 14:35:11.885471-05:00
+92                 egor demin  BKN     BENEFICIARY  2025-11-06         NaT      18.714286         cam thomas 2025-11-29 14:35:13.156262-05:00
+93               noah clowney  BKN     BENEFICIARY  2025-11-06         NaT      22.750000         cam thomas 2025-11-29 14:35:13.164856-05:00
+94            ziaire williams  BKN     BENEFICIARY  2025-11-06         NaT      20.333333         cam thomas 2025-11-29 14:35:13.164856-05:00
+95               jalen wilson  BKN  ROLE_DECREASED  2025-11-06         NaT      17.857143         cam thomas 2025-11-29 14:35:13.170687-05:00
+96         david jones garcia  SAS     BENEFICIARY  2025-11-15         NaT       3.666667  victor wembanyama 2025-11-29 14:35:14.611437-05:00
+97            harrison barnes  SAS     BENEFICIARY  2025-11-15         NaT      29.583333  victor wembanyama 2025-11-29 14:35:14.613744-05:00
+98              jeremy sochan  SAS     BENEFICIARY  2025-11-15         NaT      14.500000  victor wembanyama 2025-11-29 14:35:14.613744-05:00
+99               kelly olynyk  SAS     BENEFICIARY  2025-11-15         NaT       6.333333  victor wembanyama 2025-11-29 14:35:14.613744-05:00
+100               luke kornet  SAS     BENEFICIARY  2025-11-15         NaT      22.000000  victor wembanyama 2025-11-29 14:35:14.620101-05:00
+101        david jones garcia  SAS     BENEFICIARY  2025-11-17         NaT       3.666667     stephon castle 2025-11-29 14:35:14.692273-05:00
+102           harrison barnes  SAS     BENEFICIARY  2025-11-17         NaT      29.583333     stephon castle 2025-11-29 14:35:14.692273-05:00
+103             jeremy sochan  SAS     BENEFICIARY  2025-11-17         NaT      14.500000     stephon castle 2025-11-29 14:35:14.697287-05:00
+104         julian champagnie  SAS     BENEFICIARY  2025-11-17         NaT      27.384615     stephon castle 2025-11-29 14:35:14.697605-05:00
+105            keldon johnson  SAS     BENEFICIARY  2025-11-17         NaT      23.076923     stephon castle 2025-11-29 14:35:14.700264-05:00
+106              kelly olynyk  SAS     BENEFICIARY  2025-11-17         NaT       6.333333     stephon castle 2025-11-29 14:35:14.700264-05:00
+107               luke kornet  SAS     BENEFICIARY  2025-11-17         NaT      22.000000     stephon castle 2025-11-29 14:35:14.700264-05:00
+108        david jones garcia  SAS     BENEFICIARY  2025-11-08         NaT       3.666667  jordan mclaughlin 2025-11-29 14:35:14.772527-05:00
+109                caleb love  POR     BENEFICIARY  2025-11-15         NaT       7.750000       jrue holiday 2025-11-29 14:35:16.805976-05:00
+110              jerami grant  POR     BENEFICIARY  2025-11-15         NaT      27.000000       jrue holiday 2025-11-29 14:35:16.813443-05:00
+111               kris murray  POR     BENEFICIARY  2025-11-15         NaT      22.090909       jrue holiday 2025-11-29 14:35:16.815069-05:00
+112              rayan rupert  POR     BENEFICIARY  2025-11-15         NaT       6.000000       jrue holiday 2025-11-29 14:35:16.815069-05:00
+113       robert williams iii  POR     BENEFICIARY  2025-11-15         NaT      11.857143       jrue holiday 2025-11-29 14:35:16.820049-05:00
+114              sidy cissoko  POR     BENEFICIARY  2025-11-15         NaT      11.000000       jrue holiday 2025-11-29 14:35:16.823328-05:00
+115                chris paul  LAC     BENEFICIARY  2025-11-17         NaT      13.000000  derrick jones jr. 2025-11-29 14:35:18.237278-05:00
+116              john collins  LAC     BENEFICIARY  2025-11-17         NaT      25.153846  derrick jones jr. 2025-11-29 14:35:18.241431-05:00
+117                kobe brown  LAC     BENEFICIARY  2025-11-17         NaT       8.714286  derrick jones jr. 2025-11-29 14:35:18.242599-05:00
+118              kobe sanders  LAC     BENEFICIARY  2025-11-17         NaT      14.200000  derrick jones jr. 2025-11-29 14:35:18.242599-05:00
+119                chris paul  LAC     BENEFICIARY  2025-11-09         NaT      13.000000       bradley beal 2025-11-29 14:35:18.347452-05:00
+120               ivica zubac  LAC     BENEFICIARY  2025-11-09         NaT      29.555556       bradley beal 2025-11-29 14:35:18.347452-05:00
+121                kobe brown  LAC     BENEFICIARY  2025-11-09         NaT       8.714286       bradley beal 2025-11-29 14:35:18.352472-05:00
+122             nicolas batum  LAC     BENEFICIARY  2025-11-09         NaT      15.777778       bradley beal 2025-11-29 14:35:18.354389-05:00
+123               ivica zubac  LAC     BENEFICIARY  2025-11-17         NaT      29.555556  derrick jones jr. 2025-11-29 14:35:18.443832-05:00
+124             nicolas batum  LAC     BENEFICIARY  2025-11-17         NaT      15.777778  derrick jones jr. 2025-11-29 14:35:18.448233-05:00
+125            jamison battle  TOR     BENEFICIARY  2025-11-24         NaT       6.285714         rj barrett 2025-11-29 14:35:19.608443-05:00
+126              ochai agbaji  TOR     BENEFICIARY  2025-11-24         NaT      14.307692         rj barrett 2025-11-29 14:35:19.614488-05:00
+127            bryce mcgowens  NOP     BENEFICIARY  2025-11-05         NaT       4.000000       jordan poole 2025-11-29 14:35:20.031292-05:00
+128               derik queen  NOP     BENEFICIARY  2025-11-05         NaT      17.714286       jordan poole 2025-11-29 14:35:20.033053-05:00
+129             jose alvarado  NOP     BENEFICIARY  2025-11-05         NaT      17.333333       jordan poole 2025-11-29 14:35:20.036294-05:00
+130               micah peavy  NOP     BENEFICIARY  2025-11-05         NaT       6.000000       jordan poole 2025-11-29 14:35:20.040018-05:00
+131                saddiq bey  NOP     BENEFICIARY  2025-11-05         NaT      24.142857       jordan poole 2025-11-29 14:35:20.041528-05:00
+132                yves missi  NOP  ROLE_DECREASED  2025-11-05         NaT      23.200000       jordan poole 2025-11-29 14:35:20.041528-05:00
+133            bryce mcgowens  NOP     BENEFICIARY  2025-11-22         NaT       4.000000      herbert jones 2025-11-29 14:35:20.170043-05:00
+134               derik queen  NOP     BENEFICIARY  2025-11-22         NaT      17.714286      herbert jones 2025-11-29 14:35:20.174751-05:00
+135             jose alvarado  NOP     BENEFICIARY  2025-11-22         NaT      17.333333      herbert jones 2025-11-29 14:35:20.176535-05:00
+136               micah peavy  NOP     BENEFICIARY  2025-11-22         NaT       6.000000      herbert jones 2025-11-29 14:35:20.176535-05:00
+137                saddiq bey  NOP     BENEFICIARY  2025-11-22         NaT      24.142857      herbert jones 2025-11-29 14:35:20.180816-05:00
+138                yves missi  NOP     BENEFICIARY  2025-11-22         NaT      18.454545      herbert jones 2025-11-29 14:35:20.181136-05:00
+139            bryce mcgowens  NOP     BENEFICIARY  2025-11-27         NaT       4.000000     jordan hawkins 2025-11-29 14:35:20.217676-05:00
+140            bryce mcgowens  NOP     BENEFICIARY  2025-11-18         NaT       4.000000     karlo matkovic 2025-11-29 14:35:20.266768-05:00
+141               derik queen  NOP     BENEFICIARY  2025-11-18         NaT      17.714286     karlo matkovic 2025-11-29 14:35:20.270160-05:00
+142             jose alvarado  NOP     BENEFICIARY  2025-11-18         NaT      17.333333     karlo matkovic 2025-11-29 14:35:20.270160-05:00
+143               micah peavy  NOP     BENEFICIARY  2025-11-18         NaT       6.000000     karlo matkovic 2025-11-29 14:35:20.275978-05:00
+144                saddiq bey  NOP     BENEFICIARY  2025-11-18         NaT      24.142857     karlo matkovic 2025-11-29 14:35:20.275978-05:00
+145               cam spencer  MEM     BENEFICIARY  2025-11-16         NaT      18.714286          ja morant 2025-11-29 14:35:21.242859-05:00
+146         jaren jackson jr.  MEM     BENEFICIARY  2025-11-16         NaT      28.642857          ja morant 2025-11-29 14:35:21.242859-05:00
+147              jaylen wells  MEM     BENEFICIARY  2025-11-16         NaT      25.214286          ja morant 2025-11-29 14:35:21.242859-05:00
+148        vince williams jr.  MEM     BENEFICIARY  2025-11-16         NaT      19.333333          ja morant 2025-11-29 14:35:21.249435-05:00
+149               cam spencer  MEM     BENEFICIARY  2025-11-08         NaT      18.714286        javon small 2025-11-29 14:35:21.540957-05:00
+150                gg jackson  MEM     BENEFICIARY  2025-11-08         NaT       5.000000        javon small 2025-11-29 14:35:21.543780-05:00
+151   olivier-maxence prosper  MEM     BENEFICIARY  2025-11-08         NaT       7.000000        javon small 2025-11-29 14:35:21.546355-05:00
+152        vince williams jr.  MEM     BENEFICIARY  2025-11-08         NaT      19.333333        javon small 2025-11-29 14:35:21.546698-05:00
+153            darius garland  CLE     BENEFICIARY  2025-11-18         NaT      24.333333        sam merrill 2025-11-29 14:35:23.525139-05:00
+154           nae'qwan tomlin  CLE     BENEFICIARY  2025-11-18         NaT      12.833333        sam merrill 2025-11-29 14:35:23.535204-05:00
+155           nae'qwan tomlin  CLE     BENEFICIARY  2025-11-22         NaT      12.833333   craig porter jr. 2025-11-29 14:35:23.599570-05:00
+156             isaiah livers  PHX     BENEFICIARY  2025-11-09         NaT       8.800000        jalen green 2025-11-29 14:35:25.184324-05:00
+157            jordan goodwin  PHX     BENEFICIARY  2025-11-09         NaT      13.857143        jalen green 2025-11-29 14:35:25.189504-05:00
+158           rasheer fleming  PHX     BENEFICIARY  2025-11-09         NaT       4.000000        jalen green 2025-11-29 14:35:25.189504-05:00
+159              drew eubanks  SAC     BENEFICIARY  2025-11-17         NaT      14.642857   domantas sabonis 2025-11-29 14:35:26.556106-05:00
+160            maxime raynaud  SAC     BENEFICIARY  2025-11-17         NaT      12.333333   domantas sabonis 2025-11-29 14:35:26.562000-05:00
+161          precious achiuwa  SAC     BENEFICIARY  2025-11-17         NaT      16.857143   domantas sabonis 2025-11-29 14:35:26.562000-05:00
+162           dennis schroder  SAC  ROLE_DECREASED  2025-11-17         NaT      30.357143   domantas sabonis 2025-11-29 14:35:26.564199-05:00
+163                keon ellis  SAC  ROLE_DECREASED  2025-11-17         NaT      18.714286   domantas sabonis 2025-11-29 14:35:26.569995-05:00
+164            nique clifford  SAC  ROLE_DECREASED  2025-11-17         NaT      19.500000   domantas sabonis 2025-11-29 14:35:26.572604-05:00
+165             jarace walker  IND  ROLE_DECREASED  2025-11-04         NaT      30.714286      johnny furphy 2025-11-29 14:56:18.072469-05:00
+166               rayj dennis  IND  ROLE_DECREASED  2025-11-04         NaT      22.666667      johnny furphy 2025-11-29 14:56:18.078754-05:00
+167             dyson daniels  ATL     BENEFICIARY  2025-11-09         NaT      30.200000       n'faly dante 2025-11-29 14:56:20.308422-05:00
+168             jalen johnson  ATL     BENEFICIARY  2025-11-09         NaT      30.500000       n'faly dante 2025-11-29 14:56:20.308422-05:00
+169            keaton wallace  ATL     BENEFICIARY  2025-11-09         NaT      10.200000       n'faly dante 2025-11-29 14:56:20.317112-05:00
+170                vit krejci  ATL     BENEFICIARY  2025-11-09         NaT      17.666667       n'faly dante 2025-11-29 14:56:20.320273-05:00
+171                asa newell  ATL  ROLE_DECREASED  2025-11-09         NaT      11.600000       n'faly dante 2025-11-29 14:56:20.327333-05:00
+172              luke kennard  ATL  ROLE_DECREASED  2025-11-09         NaT      25.250000       n'faly dante 2025-11-29 14:56:20.329342-05:00
+173               brook lopez  LAC  ROLE_DECREASED  2025-11-09         NaT      15.888889       bradley beal 2025-11-29 14:56:21.875118-05:00
+174             kawhi leonard  LAC  ROLE_DECREASED  2025-11-09         NaT      33.500000       bradley beal 2025-11-29 14:56:21.885891-05:00
+175              jock landale  MEM  ROLE_DECREASED  2025-11-08         NaT      24.500000        javon small 2025-11-29 14:56:22.678815-05:00
+176  kentavious caldwell-pope  MEM  ROLE_DECREASED  2025-11-08         NaT      24.600000        javon small 2025-11-29 14:56:22.679631-05:00
+
+Basic info:
+- Memory usage: 0.05 MB
+- Null values per column:
+  RETURN_DATE: 177
+
+
+================================================================================
+S3 BUCKET TEST COMPLETE
+================================================================================

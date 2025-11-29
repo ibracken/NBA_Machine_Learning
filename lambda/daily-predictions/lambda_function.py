@@ -487,42 +487,55 @@ def run_model_predictions(todays_scraped_projections):
             logger.info(f"Removing {len(invalid_opponent_cols)} invalid opponent columns: {invalid_opponent_cols}")
             todays_player_features = todays_player_features.drop(columns=invalid_opponent_cols)
 
-        # Get expected features from model
+        # Get expected features from model or load from S3
         if hasattr(model, 'feature_names_in_'):
             expected_features = model.feature_names_in_
             logger.info(f"Model expects {len(expected_features)} features")
-
-            # Add any missing features as 0
-            missing_features = [col for col in expected_features if col not in todays_player_features.columns]
-            if missing_features:
-                logger.info(f"Adding {len(missing_features)} missing features as 0")
-                for col in missing_features:
-                    todays_player_features[col] = 0
-
-            # Select features in exact order expected by model
-            model_input_features = todays_player_features[expected_features]
         else:
-            # Fallback for older sklearn without feature_names_in_
-            logger.info("Model doesn't have feature_names_in_, reconstructing feature order...")
+            # Load saved feature names from S3 (saved during training)
+            try:
+                logger.info("Model doesn't have feature_names_in_, loading from S3...")
+                feature_names_obj = s3.get_object(Bucket=BUCKET_NAME, Key='models/RFCluster_feature_names.json')
+                feature_names_data = json.loads(feature_names_obj['Body'].read().decode('utf-8'))
+                expected_features = feature_names_data['features']
+                logger.info(f"Loaded {len(expected_features)} features from S3")
+            except Exception as e:
+                logger.error(f"Failed to load feature names from S3: {e}")
+                # Fallback to reconstruction (will likely fail with feature mismatch)
+                logger.info("Falling back to feature reconstruction...")
+                base_features = ['Last3_FP_Avg', 'Last7_FP_Avg', 'Season_FP_Avg',
+                               'Career_FP_Avg', 'Games_Played_Career', 'MIN',
+                               'Last7_MIN_Avg', 'Season_MIN_Avg', 'Career_MIN_Avg',
+                               'IS_HOME', 'REST_DAYS']
+                cluster_columns = sorted([col for col in todays_player_features.columns if col.startswith('CLUSTER_')])
+                opponent_columns = sorted([col for col in todays_player_features.columns if col.startswith('OPPONENT_')])
+                expected_features = base_features + cluster_columns + opponent_columns
 
-            base_features = ['Last3_FP_Avg', 'Last7_FP_Avg', 'Season_FP_Avg',
-                           'Career_FP_Avg', 'Games_Played_Career', 'MIN',
-                           'Last7_MIN_Avg', 'Season_MIN_Avg', 'Career_MIN_Avg',
-                           'IS_HOME', 'REST_DAYS']
+        # Add any missing features as 0
+        missing_features = [col for col in expected_features if col not in todays_player_features.columns]
+        if missing_features:
+            logger.info(f"Adding {len(missing_features)} missing features as 0")
+            for col in missing_features:
+                todays_player_features[col] = 0
 
-            cluster_columns = sorted([col for col in todays_player_features.columns if col.startswith('CLUSTER_')])
-            opponent_columns = sorted([col for col in todays_player_features.columns if col.startswith('OPPONENT_')])
-
-            feature_order = base_features + cluster_columns + opponent_columns
-            logger.info(f"Reconstructed {len(feature_order)} features (Base: {len(base_features)}, "
-                       f"Clusters: {len(cluster_columns)}, Opponents: {len(opponent_columns)})")
-
-            model_input_features = todays_player_features[feature_order]
+        # Select features in exact order expected by model
+        model_input_features = todays_player_features[expected_features]
 
         # Check if we have data to predict
         if model_input_features.empty:
             logger.warning("No data available for prediction. Skipping model prediction.")
             return None
+
+        # Check for and handle NaN values before prediction
+        nan_counts = model_input_features.isna().sum()
+        if nan_counts.any():
+            logger.warning(f"Found NaN values in features:")
+            for col in nan_counts[nan_counts > 0].index:
+                logger.warning(f"  {col}: {nan_counts[col]} NaN values")
+
+            # Fill NaN values with 0 (reasonable default for missing historical stats)
+            logger.info("Filling NaN values with 0")
+            model_input_features = model_input_features.fillna(0)
 
         # Generate predictions
         logger.info(f"Making predictions for {len(model_input_features)} players with {len(model_input_features.columns)} features")

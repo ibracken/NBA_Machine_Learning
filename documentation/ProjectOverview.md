@@ -1,9 +1,8 @@
 # **NBA_Machine_Learning**
-
+# OUTDATED RIGHT NOW
 ## **Overview**
 This repository contains work for a machine learning (ML) model designed to predict NBA player fantasy points. 
 
-## Right now only the flow chart is up to date so look to that for project structure ##
 
 ## **Table of Contents**
 - [Scripts](#scripts)
