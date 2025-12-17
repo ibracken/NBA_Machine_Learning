@@ -1683,16 +1683,10 @@ def update_actual_minutes(box_scores, target_date=None, today=None):
 
     Args:
         box_scores: DataFrame of box score data
-        target_date: Date to update (defaults to yesterday based on today)
-        today: Current date in Eastern time (used to calculate default target_date)
+        target_date: DEPRECATED - function now updates ALL missing actuals
+        today: DEPRECATED - not used anymore
     """
-    if target_date is None:
-        if today is None:
-            eastern = pytz.timezone('US/Eastern')
-            today = datetime.now(eastern).date()
-        target_date = today - timedelta(days=1)
-
-    logger.info(f"Updating actual minutes and FP for {target_date}")
+    logger.info(f"Updating actual minutes and FP for ALL games with available box scores")
 
     try:
         # Use provided box scores
@@ -1701,17 +1695,17 @@ def update_actual_minutes(box_scores, target_date=None, today=None):
             logger.warning("No box score data available")
             return 0
 
-        # Filter for target date and extract actual minutes + FP
+        # Extract ALL actual minutes + FP from box scores (don't filter by date)
         df_box['GAME_DATE'] = pd.to_datetime(df_box['GAME_DATE']).dt.date
-        df_actuals = df_box[df_box['GAME_DATE'] == target_date][['PLAYER', 'GAME_DATE', 'MIN', 'FP']].rename(
-            columns={'MIN': 'ACTUAL_MIN', 'FP': 'ACTUAL_FP'}
+        df_actuals = df_box[['PLAYER', 'GAME_DATE', 'MIN', 'FP']].rename(
+            columns={'MIN': 'ACTUAL_MIN', 'FP': 'ACTUAL_FP', 'GAME_DATE': 'DATE'}
         )
 
         if df_actuals.empty:
-            logger.warning(f"No box scores found for {target_date}")
+            logger.warning(f"No box scores found")
             return 0
 
-        logger.info(f"Found {len(df_actuals)} actual results for {target_date}")
+        logger.info(f"Found {len(df_actuals)} actual results across all dates")
 
         # Update all 5 model files
         models = [
@@ -1731,26 +1725,29 @@ def update_actual_minutes(box_scores, target_date=None, today=None):
             if not df_proj.empty:
                 df_proj['DATE'] = pd.to_datetime(df_proj['DATE']).dt.date
 
-                # Merge actual data
+                # Track rows with missing actuals before update
+                missing_before = df_proj['ACTUAL_MIN'].isna().sum()
+
+                # Drop existing ACTUAL_MIN and ACTUAL_FP to avoid conflicts
+                if 'ACTUAL_MIN' in df_proj.columns:
+                    df_proj = df_proj.drop(columns=['ACTUAL_MIN'])
+                if 'ACTUAL_FP' in df_proj.columns:
+                    df_proj = df_proj.drop(columns=['ACTUAL_FP'])
+
+                # Merge actual data on (PLAYER, DATE) to match correct game
                 df_proj = df_proj.merge(
-                    df_actuals[['PLAYER', 'ACTUAL_MIN', 'ACTUAL_FP']],
-                    on='PLAYER',
-                    how='left',
-                    suffixes=('', '_new')
+                    df_actuals[['PLAYER', 'DATE', 'ACTUAL_MIN', 'ACTUAL_FP']],
+                    on=['PLAYER', 'DATE'],
+                    how='left'
                 )
 
-                # Update only for target date
-                mask = df_proj['DATE'] == target_date
-                if 'ACTUAL_MIN_new' in df_proj.columns:
-                    df_proj.loc[mask, 'ACTUAL_MIN'] = df_proj.loc[mask, 'ACTUAL_MIN_new']
-                    df_proj = df_proj.drop(columns=['ACTUAL_MIN_new'])
-                if 'ACTUAL_FP_new' in df_proj.columns:
-                    df_proj.loc[mask, 'ACTUAL_FP'] = df_proj.loc[mask, 'ACTUAL_FP_new']
-                    df_proj = df_proj.drop(columns=['ACTUAL_FP_new'])
+                # Track rows with missing actuals after update
+                missing_after = df_proj['ACTUAL_MIN'].isna().sum()
+                updated_this_model = missing_before - missing_after
 
                 save_to_s3(df_proj, key)
-                updated_count += len(df_proj[mask])
-                logger.info(f"Updated {len(df_proj[mask])} projection records for {model}")
+                updated_count += updated_this_model
+                logger.info(f"Updated {updated_this_model} projection records for {model} (was {missing_before} missing, now {missing_after} missing)")
 
             # Update lineups
             lineup_key = f'model_comparison/{model}/daily_lineups.parquet'
@@ -1759,22 +1756,26 @@ def update_actual_minutes(box_scores, target_date=None, today=None):
             if not df_lineup.empty:
                 df_lineup['DATE'] = pd.to_datetime(df_lineup['DATE']).dt.date
 
-                # Merge actual FP for lineup players
+                # Track rows with missing actuals before update
+                lineup_missing_before = df_lineup['ACTUAL_FP'].isna().sum()
+
+                # Drop existing ACTUAL_FP to avoid conflicts
+                if 'ACTUAL_FP' in df_lineup.columns:
+                    df_lineup = df_lineup.drop(columns=['ACTUAL_FP'])
+
+                # Merge actual FP on (PLAYER, DATE) to match correct game
                 df_lineup = df_lineup.merge(
-                    df_actuals[['PLAYER', 'ACTUAL_FP']],
-                    on='PLAYER',
-                    how='left',
-                    suffixes=('', '_new')
+                    df_actuals[['PLAYER', 'DATE', 'ACTUAL_FP']],
+                    on=['PLAYER', 'DATE'],
+                    how='left'
                 )
 
-                # Update only for target date
-                lineup_mask = df_lineup['DATE'] == target_date
-                if 'ACTUAL_FP_new' in df_lineup.columns:
-                    df_lineup.loc[lineup_mask, 'ACTUAL_FP'] = df_lineup.loc[lineup_mask, 'ACTUAL_FP_new']
-                    df_lineup = df_lineup.drop(columns=['ACTUAL_FP_new'])
+                # Track rows with missing actuals after update
+                lineup_missing_after = df_lineup['ACTUAL_FP'].isna().sum()
+                lineup_updated = lineup_missing_before - lineup_missing_after
 
                 save_to_s3(df_lineup, lineup_key)
-                logger.info(f"Updated {lineup_mask.sum()} lineup records for {model}")
+                logger.info(f"Updated {lineup_updated} lineup records for {model} (was {lineup_missing_before} missing, now {lineup_missing_after} missing)")
 
         return updated_count
 

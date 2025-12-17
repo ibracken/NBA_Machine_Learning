@@ -117,6 +117,11 @@ def fetch_box_scores_from_api(season=None):
 
                 # Create DataFrame
                 df = pd.DataFrame(rows, columns=headers_list)
+
+                # Drop FANTASY_PTS immediately (we calculate DraftKings FP ourselves)
+                if 'FANTASY_PTS' in df.columns:
+                    df = df.drop(columns=['FANTASY_PTS'])
+
                 return df
             else:
                 logger.error(f"No resultSets found in NBA API response for season {season}")
@@ -129,28 +134,92 @@ def fetch_box_scores_from_api(season=None):
         logger.error(f"Error fetching from NBA API for season {season}: {str(e)}")
         return None
 
+def calculate_draftkings_fp(row):
+    """
+    Calculate DraftKings fantasy points from box score stats
+
+    DraftKings NBA scoring system:
+    - Points: 1.0 point per point scored
+    - Three-pointers made: 0.5 bonus points
+    - Rebounds: 1.25 points
+    - Assists: 1.5 points
+    - Steals: 2.0 points
+    - Blocks: 2.0 points
+    - Turnovers: -0.5 points
+    - Double-double: 1.5 bonus points
+    - Triple-double: 3.0 bonus points
+
+    Sources:
+    - https://www.draftkings.com/help/rules/nba
+    - https://fantasydata.com/api/fantasy-scoring-system/nba
+    """
+    fp = 0.0
+
+    # Basic stats
+    fp += row['PTS'] * 1.0
+    fp += row['FG3M'] * 0.5  # Three-pointer bonus
+    fp += row['REB'] * 1.25
+    fp += row['AST'] * 1.5
+    fp += row['STL'] * 2.0
+    fp += row['BLK'] * 2.0
+    fp += row['TOV'] * -0.5
+
+    # Check for double-double and triple-double
+    # Count stats >= 10 (PTS, REB, AST, STL, BLK)
+    double_stats = [
+        row['PTS'] >= 10,
+        row['REB'] >= 10,
+        row['AST'] >= 10,
+        row['STL'] >= 10,
+        row['BLK'] >= 10
+    ]
+    count_doubles = sum(double_stats)
+
+    if count_doubles >= 3:
+        fp += 3.0  # Triple-double bonus
+    elif count_doubles >= 2:
+        fp += 1.5  # Double-double bonus
+
+    return fp
+
+
 def process_box_scores(df):
     """Process and enrich box score data"""
     logger.info("Processing box score data")
-    
+
     try:
         # Rename columns first to match existing structure
-        df = df.rename(columns={'FANTASY_PTS': 'FP', 'TEAM_NAME': 'PLAYER TEAM'})
-        
+        df = df.rename(columns={'TEAM_NAME': 'PLAYER TEAM'})
+
         # Data preprocessing - normalize player names and drop original
         df['PLAYER'] = df['PLAYER_NAME'].apply(normalize_name)
         df = df.drop(columns=['PLAYER_NAME'])  # Remove duplicate column
-        
-        # Convert data types
-        df['FP'] = pd.to_numeric(df['FP'], errors='coerce')
+
+        # Convert data types for stats needed for DraftKings FP calculation
+        stat_cols = ['PTS', 'FG3M', 'REB', 'AST', 'STL', 'BLK', 'TOV']
+        for col in stat_cols:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+
+        # Calculate DraftKings fantasy points from raw stats
+        logger.info("Calculating DraftKings fantasy points from raw stats")
+        df['FP'] = df.apply(calculate_draftkings_fp, axis=1)
+
+        # Convert game date
         df['GAME_DATE'] = pd.to_datetime(df['GAME_DATE'], format='%Y-%m-%d')
-        
+
         # Sort by player and game date
         df = df.sort_values(by=['PLAYER', 'GAME_DATE'], ascending=[True, True])
-        
-        logger.info(f"Processed {len(df)} records")
+
+        logger.info(f"Processed {len(df)} records with DraftKings FP calculations")
+
+        # Log some sample FP values to verify calculation
+        sample = df.head(3)
+        for _, row in sample.iterrows():
+            logger.info(f"Sample - {row['PLAYER']}: PTS={row['PTS']:.0f}, REB={row['REB']:.0f}, AST={row['AST']:.0f}, "
+                       f"STL={row['STL']:.0f}, BLK={row['BLK']:.0f}, TOV={row['TOV']:.0f}, DK_FP={row['FP']:.2f}")
+
         return df
-        
+
     except Exception as e:
         logger.error(f"Error processing box scores: {str(e)}")
         return None
@@ -262,6 +331,7 @@ def calculate_rolling_averages(df):
     except Exception as e:
         logger.error(f"Error calculating rolling averages: {str(e)}")
         return df
+
 
 def run_box_score_scraper():
     """Main function to run the box score scraping process"""

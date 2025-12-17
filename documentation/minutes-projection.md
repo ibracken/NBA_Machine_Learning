@@ -2,12 +2,13 @@
 
 ## Overview
 
-The minutes-projection lambda generates NBA player minutes predictions using injury-aware modeling. It produces 4 models for comparison:
+The minutes-projection lambda generates NBA player minutes predictions using injury-aware modeling. It produces 5 models for comparison:
 
 1. **Complex Position Overlap** - Adjacent positions can substitute (PG/SG, SG/SF, SF/PF, PF/C), 2x multiplier for exact position match
 2. **Direct Position Exchange** - Exact position match only, no multiplier
 3. **Formula C Baseline** - No injury handling, pure statistical formula
 4. **SportsLine Baseline** - Industry standard from daily-predictions
+5. **DailyFantasyFuel Baseline** - DFF fantasy projections (lineup optimization only, no minutes projections)
 
 ## Data Sources
 
@@ -48,9 +49,9 @@ The minutes-projection lambda generates NBA player minutes predictions using inj
 - Get injured player's TRUE baseline (pre-injury minutes)
 - Find teammates at same/overlapping positions (based on model's position overlap function)
 - Calculate TRUE baselines for each teammate using injury context
-- Distribute lost minutes weighted by baseline + BENCH_OPPORTUNITY_CONSTANT (3)
+- Distribute lost minutes weighted by baseline + BENCH_OPPORTUNITY_CONSTANT (0.1)
 - Apply 2x multiplier for exact position match (complex model only)
-- Handle overflow from 36-minute cap by redistributing to non-capped players
+- Handle overflow from 37-minute cap by redistributing to non-capped players
 - Track beneficiaries in injury context (if boost > 3 MPG)
 
 **Special Cases**:
@@ -123,7 +124,7 @@ Prevents compounding minutes problem when players fill in for injuries:
 
 ### Redistribution Weighting
 ```python
-base_weight = baseline + BENCH_OPPORTUNITY_CONSTANT (3)
+base_weight = baseline + BENCH_OPPORTUNITY_CONSTANT (0.1)
 if use_multiplier and player_position == injured_position:
     weighted = base_weight * 2.0  # Complex model only
 ```
@@ -134,8 +135,8 @@ if use_multiplier and player_position == injured_position:
 
 ## Constants
 
-- `MAX_MINUTES = 36` - Individual player cap
-- `BENCH_OPPORTUNITY_CONSTANT = 3` - Small boost for deep bench players
+- `MAX_MINUTES = 37` - Individual player cap
+- `BENCH_OPPORTUNITY_CONSTANT = 0.1` - Tiny boost to prevent zero-weight for bench players
 - `EXACT_POSITION_MULTIPLIER = 2.0` - Direct backups get 2x weight (complex model)
 - `CONFIDENCE_CLEARANCE_GAMES = 3` - Games needed to clear LOW confidence
 - `CAREER_AVG_MIN >= 20` - Threshold for season-long return detection (filters bench players)
@@ -183,7 +184,7 @@ After 4 games:
 2. **Players returning today**: Excluded from redistribution via RETURN_DATE_DT filter
 3. **Deep bench false positives**: Season-long return requires CAREER_AVG_MIN ≥ 20
 4. **Players with no NBA games**: Excluded by injury-scraper (G-League/rookies)
-5. **36-minute cap overflow**: Redistributed to non-capped teammates using same weighting
+5. **37-minute cap overflow**: Redistributed to non-capped teammates using same weighting
 
 ### Recent Edge Case Fixes (2025-11-26)
 
@@ -221,8 +222,26 @@ All date operations use **Eastern Time (US/Eastern)** via `pytz.timezone('US/Eas
 
 ## Output
 
-Each model saves to: `s3://nba-prediction-ibracken/model_comparison/{model_name}/minutes_projections.parquet`
+### Minutes Projections
+Models 1-4 save to: `s3://nba-prediction-ibracken/model_comparison/{model_name}/minutes_projections.parquet`
 
-**Columns**: DATE, PLAYER, TEAM, POSITION, PROJECTED_MIN, ACTUAL_MIN, CONFIDENCE
+**Columns**: DATE, PLAYER, TEAM, POSITION, PROJECTED_MIN, ACTUAL_MIN, PROJECTED_FP, ACTUAL_FP, CONFIDENCE
 
-**Injury Context**: Saved to `s3://nba-prediction-ibracken/injury_context/{model_name}.parquet` (complex and direct models only)
+**Model Names**:
+- `complex_position_overlap`
+- `direct_position_only`
+- `formula_c_baseline`
+- `sportsline_baseline`
+
+### Daily Lineups
+All 5 models save optimized lineups to: `s3://nba-prediction-ibracken/model_comparison/{model_name}/daily_lineups.parquet`
+
+**Columns**: DATE, SLOT, PLAYER, TEAM, POSITION, SALARY, PROJECTED_MIN, PROJECTED_FP, ACTUAL_FP
+
+**Additional Model**:
+- `daily_fantasy_fuel_baseline` (lineup-only, no minutes projections file)
+
+### Injury Context
+Saved to `s3://nba-prediction-ibracken/injury_context/{model_name}.parquet` (complex and direct models only)
+
+**Columns**: PLAYER, TEAM, STATUS, INJURY_DATE, RETURN_DATE, TRUE_BASELINE, BENEFICIARY_OF, UPDATED_DATE
