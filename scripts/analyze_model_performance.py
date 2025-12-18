@@ -1,7 +1,7 @@
 """
-Analyze and compare performance of 5 NBA prediction models
+Analyze and compare performance of 4 NBA prediction models
 
-This script loads the daily lineups from all 5 models and compares their performance
+This script loads the daily lineups from all 4 models and compares their performance
 by analyzing median FP, mean FP, and top-performing lineups.
 """
 
@@ -28,12 +28,11 @@ def load_dataframe_from_s3(key):
         return pd.DataFrame()
 
 def load_all_model_lineups():
-    """Load daily lineups from all 5 models"""
+    """Load daily lineups from all 4 models"""
     models = {
         'Complex Position Overlap': 'model_comparison/complex_position_overlap/daily_lineups.parquet',
         'Direct Position Only': 'model_comparison/direct_position_only/daily_lineups.parquet',
         'Formula C Baseline': 'model_comparison/formula_c_baseline/daily_lineups.parquet',
-        'SportsLine Baseline': 'model_comparison/sportsline_baseline/daily_lineups.parquet',
         'DailyFantasyFuel Baseline': 'model_comparison/daily_fantasy_fuel_baseline/daily_lineups.parquet'
     }
 

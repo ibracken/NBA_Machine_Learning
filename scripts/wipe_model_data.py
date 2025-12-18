@@ -3,8 +3,8 @@ Wipe injury context and model comparison data from S3
 
 This script deletes:
 - Injury context files (complex and direct models)
-- All 5 model minutes projections
-- All 5 model daily lineups
+- All 4 model minutes projections
+- All 4 model daily lineups
 
 Run this after fixing bugs to ensure clean data rebuild.
 """
@@ -33,11 +33,7 @@ FILES_TO_DELETE = [
     'model_comparison/formula_c_baseline/minutes_projections.parquet',
     'model_comparison/formula_c_baseline/daily_lineups.parquet',
 
-    # Model 4: SportsLine Baseline
-    'model_comparison/sportsline_baseline/minutes_projections.parquet',
-    'model_comparison/sportsline_baseline/daily_lineups.parquet',
-
-    # Model 5: DailyFantasyFuel Baseline
+    # Model 4: DailyFantasyFuel Baseline
     'model_comparison/daily_fantasy_fuel_baseline/daily_lineups.parquet',
 ]
 

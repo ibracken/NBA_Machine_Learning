@@ -15,7 +15,7 @@ logger = logging.getLogger()
 
 def update_actual_minutes(box_scores, target_date=None, today=None):
     """
-    Update ACTUAL_MIN and ACTUAL_FP for all 5 models after games complete
+    Update ACTUAL_MIN and ACTUAL_FP for all 4 models after games complete
 
     Args:
         box_scores: DataFrame of box score data
@@ -43,12 +43,11 @@ def update_actual_minutes(box_scores, target_date=None, today=None):
 
         logger.info(f"Found {len(df_actuals)} actual results across all dates")
 
-        # Update all 5 model files
+        # Update all 4 model files
         models = [
             'complex_position_overlap',
             'direct_position_only',
             'formula_c_baseline',
-            'sportsline_baseline',
             'daily_fantasy_fuel_baseline'
         ]
 

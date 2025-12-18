@@ -160,14 +160,14 @@ def lambda_handler(event, context):
 
     # === LAMBDA FUNCTION PIPELINE (sequential execution with 2-minute delays) ===
     lambda_pipeline = [
-        ('cluster-scraper', 0),      # Start at game time - 30 min
-        ('nba-clustering', 2),        # +2 minutes
-        ('box-score-scraper', 4),     # +4 minutes
-        ('supervised-learning', 6),   # +6 minutes
-        ('daily-predictions', 9),     # +8 minutes
-        ('lineup-optimizer', 11),      # +10 minutes
-        ('injury-scraper', 11),
-        ('minutes-projection', 13)
+        ('cluster-scraper', 0),       # Start at game time - 30 min
+        ('nba-clustering', 2),         # +2 minutes
+        ('box-score-scraper', 4),      # +4 minutes
+        ('supervised-learning', 6),    # +6 minutes
+        ('daily-predictions', 9),      # +9 minutes (DFF scraping only)
+        ('injury-scraper', 11),        # +11 minutes
+        ('minutes-projection', 13),    # +13 minutes (minutes + FP predictions)
+        ('lineup-optimizer', 15)       # +15 minutes (uses updated predictions)
     ]
 
     # === CREATE RULES FOR MAIN SLATE ===

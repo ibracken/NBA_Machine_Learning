@@ -31,7 +31,7 @@ def test_s3_data():
 
         input_data_keys = [
             ('data/box_scores/current.parquet', 'Box scores with stats and rolling averages'),
-            ('data/daily_predictions/current.parquet', 'DraftKings + DFF + SportsLine projections'),
+            ('data/daily_predictions/current.parquet', 'DraftKings + DFF projections'),
             ('data/advanced_player_stats/current.parquet', 'Advanced NBA stats'),
             ('data/daily_lineups/current.parquet', 'Historical daily lineups'),
             ('data/injuries/current.parquet', 'Scraped injury data')
@@ -107,27 +107,10 @@ def test_s3_data():
             test_file(f, key, description)
 
         # ========================================================================
-        # MODEL COMPARISON - SportsLine Baseline
-        # ========================================================================
-        print(f"\n\n{'#' * 80}", file=f)
-        print("# MODEL 4: SPORTSLINE BASELINE", file=f)
-        print("# - Uses SportsLine minutes projections", file=f)
-        print("# - Industry standard comparison", file=f)
-        print(f"{'#' * 80}\n", file=f)
-
-        sportsline_keys = [
-            ('model_comparison/sportsline_baseline/daily_lineups.parquet', 'Optimized 8-player DK lineups'),
-            ('model_comparison/sportsline_baseline/minutes_projections.parquet', 'Minutes projections for all players')
-        ]
-
-        for key, description in sportsline_keys:
-            test_file(f, key, description)
-
-        # ========================================================================
         # MODEL COMPARISON - DailyFantasyFuel Baseline
         # ========================================================================
         print(f"\n\n{'#' * 80}", file=f)
-        print("# MODEL 5: DAILYFANTASYFUEL BASELINE", file=f)
+        print("# MODEL 4: DAILYFANTASYFUEL BASELINE", file=f)
         print("# - Uses DailyFantasyFuel fantasy points projections", file=f)
         print("# - Industry standard comparison", file=f)
         print(f"{'#' * 80}\n", file=f)

@@ -121,113 +121,6 @@ def get_chrome_driver():
         # Local environment - let Selenium automatically manage ChromeDriver (no options, like script)
         return webdriver.Chrome()
 
-def normalize_team_abbrev(team_abbrev):
-    """
-    Normalize SportsLine team abbreviations to NBA official abbreviations
-    SportsLine uses different abbreviations for some teams
-    """
-    # Mapping from SportsLine abbreviations to NBA official abbreviations
-    # Keep adding to this
-    sportsline_to_nba = {
-        'SA': 'SAS',    # San Antonio Spurs
-        'NO': 'NOP',    # New Orleans Pelicans
-        'NY': 'NYK',    # New York Knicks
-        'GS': 'GSW',    # Golden State Warriors
-        'PHO': 'PHX',   # Phoenix Suns
-    }
-
-    team_abbrev = str(team_abbrev).strip().upper()
-    return sportsline_to_nba.get(team_abbrev, team_abbrev)
-
-def parse_matchup(matchup_str, player_team_abbrev):
-    """
-    Parse matchup string like 'UTA@SAC' or 'ATL@ORL'
-    Returns: (is_home, opponent)
-    player_team_abbrev is needed to determine if player's team is home or away
-    """
-    if pd.isna(matchup_str) or not matchup_str:
-        return 0, 'UNKNOWN'
-
-    matchup_str = str(matchup_str).strip()
-
-    if '@' in matchup_str:
-        # Away @ Home format
-        parts = matchup_str.split('@')
-        if len(parts) == 2:
-            away_team = normalize_team_abbrev(parts[0].strip())
-            home_team = normalize_team_abbrev(parts[1].strip())
-
-            # Normalize player's team abbreviation too
-            player_team_abbrev_normalized = normalize_team_abbrev(player_team_abbrev)
-
-            # Determine if player's team is home or away
-            if player_team_abbrev_normalized == home_team:
-                return 1, away_team  # Player is on home team, opponent is away team
-            elif player_team_abbrev_normalized == away_team:
-                return 0, home_team  # Player is on away team, opponent is home team
-
-    return 0, 'UNKNOWN'
-
-def scrape_minutes_projection():
-    """Scrape minutes projections and matchup data from SportsLine"""
-    logger.info("Starting SportsLine minutes projection scraping")
-
-    url = "https://www.sportsline.com/nba/expert-projections/simulation/"
-
-    try:
-        response = requests.get(url, timeout=30, proxies=proxies)
-        response.raise_for_status()
-
-        # Parse with BeautifulSoup
-        soup = BeautifulSoup(response.content, 'lxml')
-
-        # Find the table using the xpath structure
-        # XPath: /html/body/div[1]/div[5]/div/section[1]/div/main/div/section/section/section/table/tbody
-        table = soup.find('table')
-
-        if not table:
-            logger.error("Could not find table on SportsLine page")
-            return {}, {}
-
-        tbody = table.find('tbody')
-        if not tbody:
-            logger.error("Could not find tbody in table")
-            return {}, {}
-
-        rows = tbody.find_all('tr')
-        logger.info(f"Found {len(rows)} rows in SportsLine table")
-
-        player_minutes = {}
-        player_matchups = {}
-        for row in rows:
-            cells = row.find_all('td')
-
-            # td[1] has player name, td[4] has matchup, td[10] has minutes
-            if len(cells) >= 10:
-                player_name = cells[0].get_text(strip=True)  # td[1] is cells[0] (0-indexed)
-                matchup = cells[3].get_text(strip=True)      # td[4] is cells[3] (0-indexed)
-                minutes = cells[9].get_text(strip=True)      # td[10] is cells[9] (0-indexed)
-
-                if player_name and minutes:
-                    # Normalize the player name to match the format used elsewhere
-                    normalized_name = normalize_name(player_name)
-                    player_minutes[normalized_name] = str(minutes)
-                    player_matchups[normalized_name] = matchup
-                    logger.debug(f"Found player: {normalized_name} - Minutes: {minutes} - Matchup: {matchup}")
-
-        logger.info(f"Successfully scraped minutes for {len(player_minutes)} players from SportsLine")
-        return player_minutes, player_matchups
-
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Failed to fetch data from SportsLine: {e}")
-        import traceback
-        logger.error(f"Full traceback: {traceback.format_exc()}")
-        return {}, {}
-    except Exception as e:
-        logger.error(f"Failed to parse SportsLine page: {e}")
-        import traceback
-        logger.error(f"Full traceback: {traceback.format_exc()}")
-        return {}, {}
 
 def scrape_starting_lineup(driver):
     """
@@ -333,59 +226,36 @@ def scrape_projections_data():
             for player, data in player_data.items()
         ])
 
-        # Get minutes projections and matchups
-        minutes_dict, matchup_dict = scrape_minutes_projection()
+        # Set MIN to None - will be filled later by minutes-projection lambda
+        df['MIN'] = None
 
-        # Merge minutes and matchup data
-        df['MIN'] = df['Player'].map(minutes_dict)
-        df['MATCHUP'] = df['Player'].map(matchup_dict)
-
-        # Apply baseline minutes for starters with low projected minutes
-        STARTER_BASELINE_MINUTES = 24
-        MAX_MINUTES_CAP = 36  # Cap extreme projections (e.g., Sion James at 42 min)
-
-        for idx, row in df.iterrows():
-            player_name = row['Player']
-            current_minutes = pd.to_numeric(row['MIN'], errors='coerce')
-
-            # If player is a starter and their projected minutes are below baseline
-            if player_name in starters:
-                if pd.isna(current_minutes) or current_minutes < STARTER_BASELINE_MINUTES:
-                    logger.info(f"Applying baseline {STARTER_BASELINE_MINUTES} min for starter: {player_name} (was: {current_minutes})")
-                    df.at[idx, 'MIN'] = str(STARTER_BASELINE_MINUTES)
-
-            # Cap all projections at reasonable maximum
-            current_minutes = pd.to_numeric(df.at[idx, 'MIN'], errors='coerce')
-            if not pd.isna(current_minutes) and current_minutes > MAX_MINUTES_CAP:
-                logger.info(f"Capping minutes for {player_name}: {current_minutes} → {MAX_MINUTES_CAP}")
-                df.at[idx, 'MIN'] = str(MAX_MINUTES_CAP)
-
-        df = df.dropna(subset=['MIN'])
-
-        logger.info(f"Final dataset: {len(df)} players with both projections and minutes")
+        logger.info(f"Final dataset: {len(df)} players with projections (minutes will be set by minutes-projection lambda)")
         return df
 
     except Exception as e:
         logger.error(f"Error scraping projections: {e}")
         import traceback
         logger.error(f"Full traceback: {traceback.format_exc()}")
-        return pd.DataFrame(columns=['Player', 'PPG Projection', 'MIN', 'MATCHUP', 'SALARY', 'POSITION'])
+        return pd.DataFrame(columns=['Player', 'PPG Projection', 'MIN', 'SALARY', 'POSITION'])
     finally:
         driver.quit()
 
-def run_model_predictions(todays_scraped_projections):
+## NOTE: Model predictions moved to minutes-projection lambda
+## This keeps FP predictions with minutes calculations for better accuracy
+
+def run_model_predictions_DEPRECATED(todays_scraped_projections):
     """
     Generate ML model predictions for today's playing players.
 
     This function:
     1. Loads each player's most recent historical game to extract features
-    2. Merges with today's scraped data (minutes, matchup, salary, position)
+    2. Merges with today's scraped data (minutes, salary, position)
     3. Encodes features and generates predictions
     4. Saves predictions to S3
 
     Args:
         todays_scraped_projections: DataFrame with today's players
-                                   (columns: Player, PPG Projection, MIN, MATCHUP, SALARY, POSITION)
+                                   (columns: Player, PPG Projection, MIN, SALARY, POSITION)
 
     Returns:
         Number of predictions generated
@@ -433,22 +303,19 @@ def run_model_predictions(todays_scraped_projections):
 
         todays_player_features = todays_player_features.drop(columns=['MIN'], errors='ignore')
 
-        # Merge today's scraped data (projected minutes, matchup, salary, position)
+        # Merge today's scraped data (projected minutes, salary, position)
         todays_projections_cleaned = todays_scraped_projections.rename(columns={
-            'Player': 'PLAYER',
-            'MATCHUP': 'MATCHUP_TODAY'
+            'Player': 'PLAYER'
         })
         todays_projections_cleaned['MIN'] = pd.to_numeric(todays_projections_cleaned['MIN'], errors='coerce')
         todays_projections_cleaned['SALARY'] = pd.to_numeric(todays_projections_cleaned['SALARY'], errors='coerce')
 
         todays_player_features = todays_player_features.merge(todays_projections_cleaned, on='PLAYER', how='left')
 
-        # Parse matchup to extract home/away and opponent team
-        matchup_parsed = todays_player_features.apply(
-            lambda row: parse_matchup(row['MATCHUP_TODAY'], row['TEAM_ABBREVIATION']), axis=1
-        )
-        todays_player_features['IS_HOME'] = matchup_parsed.apply(lambda x: x[0])
-        todays_player_features['OPPONENT'] = matchup_parsed.apply(lambda x: x[1])
+        # Set IS_HOME and OPPONENT to defaults (no matchup data available)
+        # Note: These features will have reduced accuracy without actual matchup data
+        todays_player_features['IS_HOME'] = 0
+        todays_player_features['OPPONENT'] = 'ATL'  # Placeholder - will create one-hot columns
 
         # Fill missing clusters with placeholder
         todays_player_features['CLUSTER'] = todays_player_features['CLUSTER'].fillna('CLUSTER_NAN')
@@ -624,7 +491,7 @@ def run_model_predictions(todays_scraped_projections):
         logger.error(f"Error in model predictions: {e}")
         raise
 
-def check_scores_for_accuracy():
+def check_scores_for_accuracy_DEPRECATED():
     """Check prediction accuracy against actual scores"""
     logger.info("Checking prediction accuracy")
     
@@ -725,53 +592,87 @@ def check_scores_for_accuracy():
         return None
 
 def run_daily_predictions_scraper():
-    """Main function to run daily predictions pipeline"""
+    """
+    Main function to scrape DFF projections and save to S3
+    Note: FP predictions are now handled by minutes-projection lambda
+    """
     logger.info("Starting daily predictions scraper")
-    
+
     try:
-        # Step 1: Scrape projections and minutes for today
-        logger.info("=== STEP 1: SCRAPING PROJECTIONS ===")
+        # Scrape DFF projections (SALARY, POSITION, PPG_PROJECTION)
+        logger.info("=== SCRAPING DFF PROJECTIONS ===")
         df = scrape_projections_data()
-        
+
         if df.empty:
             logger.error("No projection data scraped")
             return {
                 'success': False,
                 'error': 'No projection data scraped'
             }
-        
-        # Step 2: Run model predictions
-        logger.info("=== STEP 2: MODEL PREDICTIONS ===")
-        predictions_count = run_model_predictions(df)
-        
-        # Step 3: Check accuracy
-        logger.info("=== STEP 3: ACCURACY CHECK ===")
-        accuracy_results = check_scores_for_accuracy()
 
-        logger.info("Daily predictions scraper completed successfully")
+        # Prepare data for S3
+        # Set today's date in ET timezone (Lambda runs in UTC)
+        et_tz = pytz.timezone('America/New_York')
+        current_date = datetime.datetime.now(et_tz).date()
 
-        # Extract results or use defaults if None
-        if accuracy_results:
-            return {
-                'success': True,
-                'scraped_players': len(df),
-                'predictions_generated': predictions_count,
-                'accuracy_ratio': accuracy_results.get('accuracy_ratio'),
-                'dff_mae': accuracy_results.get('dff_mae'),
-                'model_mae': accuracy_results.get('model_mae'),
-                'total_accuracy_predictions': accuracy_results.get('total_predictions')
-            }
-        else:
-            return {
-                'success': True,
-                'scraped_players': len(df),
-                'predictions_generated': predictions_count,
-                'accuracy_ratio': None,
-                'dff_mae': None,
-                'model_mae': None,
-                'total_accuracy_predictions': 0
-            }
-        
+        # Create records for daily_predictions
+        new_records = []
+        for _, row in df.iterrows():
+            new_records.append({
+                "PLAYER": row['Player'],
+                "GAME_DATE": current_date,
+                "PPG_PROJECTION": safe_float(row['PPG Projection']),
+                "MY_MODEL_PREDICTED_FP": None,  # Will be filled by minutes-projection
+                "PROJECTED_MIN": None,  # Will be filled by minutes-projection
+                "SALARY": safe_float(row['SALARY']),
+                "POSITION": row['POSITION'],
+                "PREV_FP": None,
+                "PREV_MIN": None,
+                "SEASON_AVG_FP": None,
+                "SEASON_AVG_MIN": None,
+                "ACTUAL_FP": None,
+                "ACTUAL_MIN": None
+            })
+
+        # Load existing daily predictions from S3
+        try:
+            df_fp = load_dataframe_from_s3('data/daily_predictions/current.parquet')
+            # Ensure GAME_DATE is date type
+            df_fp['GAME_DATE'] = pd.to_datetime(df_fp['GAME_DATE']).dt.date
+        except:
+            logger.info("No existing daily predictions found, creating new DataFrame")
+            df_fp = pd.DataFrame(columns=['PLAYER', 'GAME_DATE', 'PPG_PROJECTION', 'MY_MODEL_PREDICTED_FP',
+                                         'PROJECTED_MIN', 'ACTUAL_MIN', 'ACTUAL_FP', 'MY_MODEL_CLOSER_PREDICTION',
+                                         'SALARY', 'POSITION', 'PREV_FP', 'PREV_MIN', 'SEASON_AVG_FP', 'SEASON_AVG_MIN'])
+
+        if df_fp.empty:
+            df_fp = pd.DataFrame(columns=['PLAYER', 'GAME_DATE', 'PPG_PROJECTION', 'MY_MODEL_PREDICTED_FP',
+                                         'PROJECTED_MIN', 'ACTUAL_MIN', 'ACTUAL_FP', 'MY_MODEL_CLOSER_PREDICTION',
+                                         'SALARY', 'POSITION', 'PREV_FP', 'PREV_MIN', 'SEASON_AVG_FP', 'SEASON_AVG_MIN'])
+
+        # Update or add new records
+        for record in new_records:
+            mask = (df_fp['PLAYER'] == record['PLAYER']) & (df_fp['GAME_DATE'] == record['GAME_DATE'])
+            if mask.any():
+                # Update existing record (keep existing MY_MODEL_PREDICTED_FP and PROJECTED_MIN if present)
+                df_fp.loc[mask, 'PPG_PROJECTION'] = record['PPG_PROJECTION']
+                df_fp.loc[mask, 'SALARY'] = record['SALARY']
+                df_fp.loc[mask, 'POSITION'] = record['POSITION']
+            else:
+                # Add new record - convert to DataFrame first to avoid FutureWarning
+                new_row_df = pd.DataFrame([record])
+                df_fp = pd.concat([df_fp, new_row_df], ignore_index=True)
+
+        # Save to S3
+        save_dataframe_to_s3(df_fp, 'data/daily_predictions/current.parquet')
+
+        logger.info(f"Daily predictions scraper completed successfully: {len(new_records)} players")
+
+        return {
+            'success': True,
+            'scraped_players': len(new_records)
+        }
+
     except Exception as e:
         logger.error(f"Error in daily predictions scraper: {str(e)}")
         return {
@@ -782,32 +683,27 @@ def run_daily_predictions_scraper():
 def lambda_handler(event, context):
     """AWS Lambda handler function"""
     logger.info("Daily predictions Lambda function started")
-    
+
     try:
         result = run_daily_predictions_scraper()
-        
+
         if result['success']:
             return {
                 'statusCode': 200,
                 'body': json.dumps({
-                    'message': 'Daily predictions completed successfully',
-                    'scraped_players': result.get('scraped_players'),
-                    'predictions_generated': result.get('predictions_generated'),
-                    'accuracy_ratio': result.get('accuracy_ratio'),
-                    'dff_mae': result.get('dff_mae'),
-                    'model_mae': result.get('model_mae'),
-                    'total_accuracy_predictions': result.get('total_accuracy_predictions')
+                    'message': 'DFF scraping completed successfully (FP predictions will be done by minutes-projection)',
+                    'scraped_players': result.get('scraped_players')
                 })
             }
         else:
             return {
                 'statusCode': 500,
                 'body': json.dumps({
-                    'message': 'Daily predictions failed',
+                    'message': 'DFF scraping failed',
                     'error': result['error']
                 })
             }
-            
+
     except Exception as e:
         logger.error(f"Lambda handler error: {str(e)}")
         return {

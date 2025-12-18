@@ -16,9 +16,17 @@ logger = logging.getLogger()
 
 def transition_beneficiaries_to_ex(injury_context, currently_injured, today):
     """
-    Transition statuses when injured player returns:
+    Transition statuses when injured player returns (MID-SEASON INJURIES ONLY):
     - BENEFICIARY → EX_BENEFICIARY (will revert to pre-injury baseline)
-    - ROLE_DECREASED → Remove from tracking (will keep using recent games)
+    - ROLE_DECREASED → Keep unchanged (will keep using recent games)
+
+    This handles the normal flow where:
+    1. Player gets injured mid-season → teammates marked as BENEFICIARY
+    2. Player returns → this function transitions BENEFICIARY → EX_BENEFICIARY
+
+    DOES NOT HANDLE: Season-long returns (e.g., Kawhi out all season, never had BENEFICIARY status)
+    Those are detected in project_minutes_with_injuries() which has access to player_stats
+    and can check for GAMES_PLAYED=0, FROM_PREV_SEASON=True conditions.
 
     Args:
         injury_context: DataFrame of injury context to process
@@ -60,7 +68,6 @@ def transition_beneficiaries_to_ex(injury_context, currently_injured, today):
                   (injury_context['BENEFICIARY_OF'] == injured_player))
             ].copy()
 
-    # Handle ROLE_DECREASED transitions
     # KEEP ROLE_DECREASED status even when injured player returns
     # These players permanently lost minutes - continue using recent games (don't revert to old baseline)
     # Example: Kennard lost minutes when Trae injured, should stay at reduced role even after Trae returns
@@ -400,7 +407,7 @@ def redistribute_injury_minutes(injured_player, team_players, injury_context, to
         )
         return {}, injury_context
 
-    # ========== ONGOING INJURY CHECK (>= 3 games) ==========
+    # ========== ONGOING INJURY CHECK (>= 2 games) ==========
     # For ongoing injuries, use post-injury Formula C instead of predictive redistribution
     # This adapts to actual rotation changes (handles positionless basketball)
     injury_date_to_use = injured_player.get('ESTIMATED_INJURY_DATE', today)
@@ -422,7 +429,7 @@ def redistribute_injury_minutes(injured_player, team_players, injury_context, to
         # Track the maximum - this represents how many games the team has played
         games_since_injury = max(games_since_injury, len(teammate_games))
 
-    if games_since_injury >= 3:
+    if games_since_injury >= 2:
         logger.info(
             f"{injured_player['PLAYER']} out for {games_since_injury} games - using post-injury Formula C "
             f"(calculated from games after injury, adapts to actual rotation)"
