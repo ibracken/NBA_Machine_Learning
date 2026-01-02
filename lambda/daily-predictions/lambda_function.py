@@ -3,19 +3,19 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.chrome.options import Options
 from bs4 import BeautifulSoup
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
 import pandas as pd
-import pickle
-import time
 import datetime
 import boto3
 import json
-import requests
 from io import BytesIO
 from unidecode import unidecode
 import logging
 import pytz
+import os
+from dotenv import load_dotenv
+
+# Load .env file for local testing (Lambda uses environment variables)
+load_dotenv()
 
 # Configure logging
 logger = logging.getLogger()
@@ -33,11 +33,16 @@ if not logger.handlers:
 s3 = boto3.client('s3')
 BUCKET_NAME = 'nba-prediction-ibracken'
 
-# Use proxy for NBA API requests (NBA blocks some IPs)
-proxy_url = "http://smart-b0ibmkjy90uq_area-US_state-Northcarolina:sU8CQmV8LDmh2mXj@proxy.smartproxy.net:3120"
+# Get proxy URL from environment variable
+# For Lambda: Set PROXY_URL in Lambda environment variables
+# For local: Set in .env file or environment
+PROXY_URL = os.environ.get('PROXY_URL')
+if not PROXY_URL:
+    raise ValueError("PROXY_URL environment variable must be set")
+
 proxies = {
-    'http': proxy_url,
-    'https': proxy_url
+    'http': PROXY_URL,
+    'https': PROXY_URL
 }
 
 # S3 utility functions
@@ -125,7 +130,7 @@ def get_chrome_driver():
 def scrape_starting_lineup(driver):
     """
     Scrape starting lineup indicators from DailyFantasyFuel
-    Returns a set of normalized player names who are listed as starters
+    Returns a dict mapping player names to starter status ('CONFIRMED' or 'EXPECTED')
     """
     try:
         src = driver.page_source
@@ -133,7 +138,7 @@ def scrape_starting_lineup(driver):
 
         table = parser.find('table', class_="col-pad-lg-left-5 col-pad-lg-right-5 col-pad-md-left-3 col-pad-md-right-3 text-black row-pad-lg-top-2 row-pad-md-top-2 row-pad-sm-top-2 col-12 row-pad-5 row-pad-xs-1")
 
-        starters = set()
+        starters = {}
 
         if table:
             tbody = table.find('tbody')
@@ -144,25 +149,27 @@ def scrape_starting_lineup(driver):
                     cells = row.find_all('td')
 
                     # td[5] (cells[4] in 0-indexed) contains starting indicator
-                    # If there's any text/content in that cell, they're likely starting
                     if len(cells) >= 5:
                         starting_indicator = cells[4].get_text(strip=True)
 
-                        # If there's any text in the starting column
-                        if starting_indicator == "YES":
+                        # Check for both confirmed (YES) and expected (EXP.) starters
+                        if starting_indicator in ["YES", "EXP."]:
                             # Get player name from data-name attribute
                             data_name = row.get('data-name')
                             if data_name:
                                 normalized_name = normalize_name(data_name)
-                                starters.add(normalized_name)
-                                logger.info(f"Detected starter: {normalized_name} (indicator: '{starting_indicator}')")
+                                status = 'CONFIRMED' if starting_indicator == "YES" else 'EXPECTED'
+                                starters[normalized_name] = status
+                                logger.info(f"Detected {status.lower()} starter: {normalized_name}")
 
-        logger.info(f"Total starters detected: {len(starters)}")
+        confirmed_count = sum(1 for s in starters.values() if s == 'CONFIRMED')
+        expected_count = sum(1 for s in starters.values() if s == 'EXPECTED')
+        logger.info(f"Total starters detected: {len(starters)} ({confirmed_count} confirmed, {expected_count} expected)")
         return starters
 
     except Exception as e:
         logger.error(f"Failed to scrape starting lineup: {e}")
-        return set()
+        return {}
 
 def scrape_projections_data():
     """Scrape fantasy projections from DailyFantasyFuel and merge with minutes"""
@@ -229,367 +236,21 @@ def scrape_projections_data():
         # Set MIN to None - will be filled later by minutes-projection lambda
         df['MIN'] = None
 
+        # Add starter status from scraped data
+        df['STARTER_STATUS'] = df['Player'].map(starters)
+
         logger.info(f"Final dataset: {len(df)} players with projections (minutes will be set by minutes-projection lambda)")
+        logger.info(f"Starter status: {df['STARTER_STATUS'].value_counts().to_dict()}")
         return df
 
     except Exception as e:
         logger.error(f"Error scraping projections: {e}")
         import traceback
         logger.error(f"Full traceback: {traceback.format_exc()}")
-        return pd.DataFrame(columns=['Player', 'PPG Projection', 'MIN', 'SALARY', 'POSITION'])
+        return pd.DataFrame(columns=['Player', 'PPG Projection', 'MIN', 'SALARY', 'POSITION', 'STARTER_STATUS'])
     finally:
         driver.quit()
 
-## NOTE: Model predictions moved to minutes-projection lambda
-## This keeps FP predictions with minutes calculations for better accuracy
-
-def run_model_predictions_DEPRECATED(todays_scraped_projections):
-    """
-    Generate ML model predictions for today's playing players.
-
-    This function:
-    1. Loads each player's most recent historical game to extract features
-    2. Merges with today's scraped data (minutes, salary, position)
-    3. Encodes features and generates predictions
-    4. Saves predictions to S3
-
-    Args:
-        todays_scraped_projections: DataFrame with today's players
-                                   (columns: Player, PPG Projection, MIN, SALARY, POSITION)
-
-    Returns:
-        Number of predictions generated
-    """
-    logger.info("Starting model predictions")
-
-    try:
-        # Load trained model
-        logger.info("Loading trained model from S3")
-        model = load_model_from_s3('models/RFCluster.sav')
-
-        # Load historical box scores (to extract features from each player's last game)
-        logger.info("Loading historical box scores data")
-        historical_box_scores = load_dataframe_from_s3('data/box_scores/current.parquet')
-
-        # Validate required columns
-        required_cols = {'MIN', 'WL', 'FP', 'PLAYER', 'GAME_DATE', 'TEAM_ABBREVIATION'}
-        missing_cols = required_cols - set(historical_box_scores.columns)
-        if missing_cols:
-            logger.error(f"Missing required columns {missing_cols} in box scores data")
-            return None
-
-        # Clean historical data
-        historical_box_scores = historical_box_scores[historical_box_scores['MIN'] != 0]
-        historical_box_scores = historical_box_scores.dropna(subset=['WL'])
-        historical_box_scores['GAME_DATE'] = pd.to_datetime(historical_box_scores['GAME_DATE'])
-        historical_box_scores = historical_box_scores.sort_values(by=['PLAYER', 'GAME_DATE'], ascending=[True, True])
-
-        # Get each player's most recent game (for feature extraction like Last3_FP_Avg, Career_FP_Avg, etc.)
-        logger.info("Using pre-calculated rolling averages and career features from box score data")
-        player_last_games = historical_box_scores.groupby('PLAYER').tail(1).copy()
-
-        # Calculate rest days from last game to today
-        today = pd.Timestamp(datetime.date.today())
-        player_last_games['REST_DAYS'] = (today - player_last_games['GAME_DATE']).dt.days
-        player_last_games['REST_DAYS'] = player_last_games['REST_DAYS'].clip(0, 30)
-
-        # Filter to only players playing today
-        todays_players = todays_scraped_projections['Player'].unique()
-        todays_player_features = player_last_games[player_last_games['PLAYER'].isin(todays_players)].copy()
-
-        # Save historical MIN as PREV_MIN_HIST before dropping (we'll use today's projected MIN instead)
-        if 'MIN' in todays_player_features.columns:
-            todays_player_features['PREV_MIN_HIST'] = todays_player_features['MIN']
-
-        todays_player_features = todays_player_features.drop(columns=['MIN'], errors='ignore')
-
-        # Merge today's scraped data (projected minutes, salary, position)
-        todays_projections_cleaned = todays_scraped_projections.rename(columns={
-            'Player': 'PLAYER'
-        })
-        todays_projections_cleaned['MIN'] = pd.to_numeric(todays_projections_cleaned['MIN'], errors='coerce')
-        todays_projections_cleaned['SALARY'] = pd.to_numeric(todays_projections_cleaned['SALARY'], errors='coerce')
-
-        todays_player_features = todays_player_features.merge(todays_projections_cleaned, on='PLAYER', how='left')
-
-        # Set IS_HOME and OPPONENT to defaults (no matchup data available)
-        # Note: These features will have reduced accuracy without actual matchup data
-        todays_player_features['IS_HOME'] = 0
-        todays_player_features['OPPONENT'] = 'ATL'  # Placeholder - will create one-hot columns
-
-        # Fill missing clusters with placeholder
-        todays_player_features['CLUSTER'] = todays_player_features['CLUSTER'].fillna('CLUSTER_NAN')
-
-        # One-hot encode CLUSTER and OPPONENT
-        # All 30 NBA teams for opponent encoding
-        ALL_NBA_TEAMS = [
-            'ATL', 'BOS', 'BKN', 'CHA', 'CHI', 'CLE', 'DAL', 'DEN', 'DET', 'GSW',
-            'HOU', 'IND', 'LAC', 'LAL', 'MEM', 'MIA', 'MIL', 'MIN', 'NOP', 'NYK',
-            'OKC', 'ORL', 'PHI', 'PHX', 'POR', 'SAC', 'SAS', 'TOR', 'UTA', 'WAS'
-        ]
-
-        todays_player_features = pd.get_dummies(todays_player_features, columns=['CLUSTER', 'OPPONENT'], drop_first=False)
-
-        # Add missing opponent columns (teams not playing today)
-        for team in ALL_NBA_TEAMS:
-            opponent_col = f'OPPONENT_{team}'
-            if opponent_col not in todays_player_features.columns:
-                todays_player_features[opponent_col] = 0
-
-        # Add missing cluster columns (0-14 plus NAN)
-        for cluster_num in range(15):
-            cluster_col = f'CLUSTER_{float(cluster_num)}'
-            if cluster_col not in todays_player_features.columns:
-                todays_player_features[cluster_col] = 0
-
-        if 'CLUSTER_CLUSTER_NAN' not in todays_player_features.columns:
-            todays_player_features['CLUSTER_CLUSTER_NAN'] = 0
-
-        # Remove invalid opponent columns (e.g., OPPONENT_UNKNOWN)
-        valid_opponent_columns = [f'OPPONENT_{team}' for team in ALL_NBA_TEAMS]
-        invalid_opponent_cols = [col for col in todays_player_features.columns
-                                if col.startswith('OPPONENT_') and col not in valid_opponent_columns]
-
-        if invalid_opponent_cols:
-            logger.info(f"Removing {len(invalid_opponent_cols)} invalid opponent columns: {invalid_opponent_cols}")
-            todays_player_features = todays_player_features.drop(columns=invalid_opponent_cols)
-
-        # Get expected features from model or load from S3
-        if hasattr(model, 'feature_names_in_'):
-            expected_features = model.feature_names_in_
-            logger.info(f"Model expects {len(expected_features)} features")
-        else:
-            # Load saved feature names from S3 (saved during training)
-            try:
-                logger.info("Model doesn't have feature_names_in_, loading from S3...")
-                feature_names_obj = s3.get_object(Bucket=BUCKET_NAME, Key='models/RFCluster_feature_names.json')
-                feature_names_data = json.loads(feature_names_obj['Body'].read().decode('utf-8'))
-                expected_features = feature_names_data['features']
-                logger.info(f"Loaded {len(expected_features)} features from S3")
-            except Exception as e:
-                logger.error(f"Failed to load feature names from S3: {e}")
-                # Fallback to reconstruction (will likely fail with feature mismatch)
-                logger.info("Falling back to feature reconstruction...")
-                base_features = ['Last3_FP_Avg', 'Last7_FP_Avg', 'Season_FP_Avg',
-                               'Career_FP_Avg', 'Games_Played_Career', 'MIN',
-                               'Last7_MIN_Avg', 'Season_MIN_Avg', 'Career_MIN_Avg',
-                               'IS_HOME', 'REST_DAYS']
-                cluster_columns = sorted([col for col in todays_player_features.columns if col.startswith('CLUSTER_')])
-                opponent_columns = sorted([col for col in todays_player_features.columns if col.startswith('OPPONENT_')])
-                expected_features = base_features + cluster_columns + opponent_columns
-
-        # Add any missing features as 0
-        missing_features = [col for col in expected_features if col not in todays_player_features.columns]
-        if missing_features:
-            logger.info(f"Adding {len(missing_features)} missing features as 0")
-            for col in missing_features:
-                todays_player_features[col] = 0
-
-        # Select features in exact order expected by model
-        model_input_features = todays_player_features[expected_features]
-
-        # Check if we have data to predict
-        if model_input_features.empty:
-            logger.warning("No data available for prediction. Skipping model prediction.")
-            return None
-
-        # Check for and handle NaN values before prediction
-        nan_counts = model_input_features.isna().sum()
-        if nan_counts.any():
-            logger.warning(f"Found NaN values in features:")
-            for col in nan_counts[nan_counts > 0].index:
-                logger.warning(f"  {col}: {nan_counts[col]} NaN values")
-
-            # Fill NaN values with 0 (reasonable default for missing historical stats)
-            logger.info("Filling NaN values with 0")
-            model_input_features = model_input_features.fillna(0)
-
-        # Generate predictions
-        logger.info(f"Making predictions for {len(model_input_features)} players with {len(model_input_features.columns)} features")
-        predictions = model.predict(model_input_features.to_numpy())
-
-        # Format results
-        todays_player_features['My Model Predicted FP'] = predictions
-        final_columns = ['PLAYER', 'PPG Projection', 'My Model Predicted FP', 'GAME_DATE', 'SALARY', 'POSITION', 'MIN', 'FP', 'PREV_MIN_HIST', 'Season_FP_Avg', 'Season_MIN_Avg']
-        prediction_results = todays_player_features[final_columns].copy()
-        prediction_results = prediction_results.rename(columns={
-            'MIN': 'PROJECTED_MIN',
-            'FP': 'PREV_FP',
-            'PREV_MIN_HIST': 'PREV_MIN',
-            'Season_FP_Avg': 'SEASON_AVG_FP',
-            'Season_MIN_Avg': 'SEASON_AVG_MIN'
-        })
-
-        # Set today's date in ET timezone (Lambda runs in UTC)
-        et_tz = pytz.timezone('America/New_York')
-        current_date = datetime.datetime.now(et_tz).date()
-        prediction_results['GAME_DATE'] = current_date
-
-        # Load existing daily predictions from S3
-        try:
-            df_fp = load_dataframe_from_s3('data/daily_predictions/current.parquet')
-        except:
-            logger.info("No existing daily predictions found, creating new DataFrame")
-            df_fp = pd.DataFrame(columns=['PLAYER', 'GAME_DATE', 'PPG_PROJECTION', 'MY_MODEL_PREDICTED_FP', 'PROJECTED_MIN', 'ACTUAL_MIN', 'ACTUAL_FP', 'MY_MODEL_CLOSER_PREDICTION', 'SALARY', 'POSITION'])
-
-        if df_fp.empty:
-            df_fp = pd.DataFrame(columns=['PLAYER', 'GAME_DATE', 'PPG_PROJECTION', 'MY_MODEL_PREDICTED_FP', 'PROJECTED_MIN', 'ACTUAL_MIN', 'ACTUAL_FP', 'MY_MODEL_CLOSER_PREDICTION', 'SALARY', 'POSITION'])
-
-        # Update existing predictions or add new ones
-        logger.info("Updating daily predictions")
-        new_records = []
-
-        for _, row in prediction_results.iterrows():
-            mask = (df_fp['PLAYER'] == row['PLAYER']) & (df_fp['GAME_DATE'] == row['GAME_DATE'])
-            if mask.any():
-                df_fp.loc[mask, 'PPG_PROJECTION'] = safe_float(row['PPG Projection'])
-                df_fp.loc[mask, 'MY_MODEL_PREDICTED_FP'] = safe_float(row['My Model Predicted FP'])
-                df_fp.loc[mask, 'PROJECTED_MIN'] = safe_float(row['PROJECTED_MIN'])
-                df_fp.loc[mask, 'SALARY'] = safe_float(row['SALARY'])
-                df_fp.loc[mask, 'POSITION'] = row['POSITION']
-                df_fp.loc[mask, 'PREV_FP'] = safe_float(row.get('PREV_FP', 0))
-                df_fp.loc[mask, 'PREV_MIN'] = safe_float(row.get('PREV_MIN', 0))
-                df_fp.loc[mask, 'SEASON_AVG_FP'] = safe_float(row.get('SEASON_AVG_FP', 0))
-                df_fp.loc[mask, 'SEASON_AVG_MIN'] = safe_float(row.get('SEASON_AVG_MIN', 0))
-                if 'ACTUAL_FP' in row and pd.notna(row['ACTUAL_FP']):
-                    df_fp.loc[mask, 'ACTUAL_FP'] = safe_float(row['ACTUAL_FP'])
-                if 'ACTUAL_MIN' in row and pd.notna(row['ACTUAL_MIN']):
-                    df_fp.loc[mask, 'ACTUAL_MIN'] = safe_float(row['ACTUAL_MIN'])
-                if 'MY_MODEL_CLOSER_PREDICTION' in row and pd.notna(row['MY_MODEL_CLOSER_PREDICTION']):
-                    df_fp.loc[mask, 'MY_MODEL_CLOSER_PREDICTION'] = row['MY_MODEL_CLOSER_PREDICTION']
-            else:
-                new_record_data = {
-                    "PLAYER": row['PLAYER'],
-                    "GAME_DATE": row['GAME_DATE'],
-                    "PPG_PROJECTION": safe_float(row['PPG Projection']),
-                    "MY_MODEL_PREDICTED_FP": safe_float(row['My Model Predicted FP']),
-                    "PROJECTED_MIN": safe_float(row['PROJECTED_MIN']),
-                    "SALARY": safe_float(row['SALARY']),
-                    "POSITION": row['POSITION'],
-                    "PREV_FP": safe_float(row.get('PREV_FP', 0)),
-                    "PREV_MIN": safe_float(row.get('PREV_MIN', 0)),
-                    "SEASON_AVG_FP": safe_float(row.get('SEASON_AVG_FP', 0)),
-                    "SEASON_AVG_MIN": safe_float(row.get('SEASON_AVG_MIN', 0)),
-                }
-                if 'ACTUAL_FP' in row and pd.notna(row['ACTUAL_FP']):
-                    new_record_data["ACTUAL_FP"] = safe_float(row['ACTUAL_FP'])
-                if 'ACTUAL_MIN' in row and pd.notna(row['ACTUAL_MIN']):
-                    new_record_data["ACTUAL_MIN"] = safe_float(row['ACTUAL_MIN'])
-                if 'MY_MODEL_CLOSER_PREDICTION' in row and pd.notna(row['MY_MODEL_CLOSER_PREDICTION']):
-                    new_record_data["MY_MODEL_CLOSER_PREDICTION"] = row['MY_MODEL_CLOSER_PREDICTION']
-                new_records.append(new_record_data)
-
-        # Add all new records at once if there are any
-        if new_records:
-            df_fp = pd.concat([df_fp, pd.DataFrame(new_records)], ignore_index=True)
-        save_dataframe_to_s3(df_fp, 'data/daily_predictions/current.parquet')
-        logger.info("Model predictions completed and saved")
-
-        return len(prediction_results)
-
-    except Exception as e:
-        logger.error(f"Error in model predictions: {e}")
-        raise
-
-def check_scores_for_accuracy_DEPRECATED():
-    """Check prediction accuracy against actual scores"""
-    logger.info("Checking prediction accuracy")
-    
-    try:
-        df_box = load_dataframe_from_s3('data/box_scores/current.parquet')
-        df_fp = load_dataframe_from_s3('data/daily_predictions/current.parquet')
-        
-        # Validate required columns
-        required_box_cols = {'PLAYER', 'GAME_DATE', 'FP', 'MIN'}
-        missing_box_cols = required_box_cols - set(df_box.columns)
-        if missing_box_cols:
-            logger.error(f"Missing required columns {missing_box_cols} in box scores")
-            return
-
-        if df_fp.empty:
-            logger.warning("No daily predictions found")
-            return
-
-        # Merge actual scores and actual minutes
-        df_box = df_box[['PLAYER', 'GAME_DATE', 'FP', 'MIN']].rename(columns={'FP': 'ACTUAL_FP', 'MIN': 'ACTUAL_MIN'})
-
-        # Ensure GAME_DATE is the same type in both dataframes
-        df_box['GAME_DATE'] = pd.to_datetime(df_box['GAME_DATE']).dt.date
-        df_fp['GAME_DATE'] = pd.to_datetime(df_fp['GAME_DATE']).dt.date
-
-        # Drop and merge 'ACTUAL_FP' and 'ACTUAL_MIN' to avoid conflict
-        df_fp = df_fp.drop(columns=['ACTUAL_FP', 'ACTUAL_MIN'], errors='ignore')
-        df_fp = df_fp.merge(df_box, on=['PLAYER', 'GAME_DATE'], how='left')
-        
-        if 'MY_MODEL_CLOSER_PREDICTION' not in df_fp.columns:
-            df_fp['MY_MODEL_CLOSER_PREDICTION'] = pd.Series(dtype=bool)
-
-        # Calculate accuracy only for games after Oct 30, 2025 (when we fixed the stale data issue)
-        import datetime as dt
-        accuracy_cutoff_date = dt.date(2025, 10, 30)
-
-        false_count = 0
-        true_count = 0
-
-        # Lists to track errors for mean error calculations
-        dff_errors = []
-        model_errors = []
-
-        for index, row in df_fp.iterrows():
-            actual_fp = safe_float(row['ACTUAL_FP'])
-            ppg_projection = safe_float(row['PPG_PROJECTION'])
-            model_predicted_fp = safe_float(row['MY_MODEL_PREDICTED_FP'])
-            game_date = row['GAME_DATE']
-
-            # Only count accuracy for games after cutoff date
-            if not pd.isnull(actual_fp) and game_date >= accuracy_cutoff_date:
-                ppg_diff = abs(ppg_projection - actual_fp) if not pd.isnull(ppg_projection) else float('inf')
-                model_diff = abs(model_predicted_fp - actual_fp) if not pd.isnull(model_predicted_fp) else float('inf')
-
-                # Track errors for mean calculations
-                if not pd.isnull(ppg_projection):
-                    dff_errors.append(ppg_diff)
-                if not pd.isnull(model_predicted_fp):
-                    model_errors.append(model_diff)
-
-                if ppg_diff < model_diff:
-                    df_fp.at[index, 'MY_MODEL_CLOSER_PREDICTION'] = False
-                    false_count += 1
-                else:
-                    df_fp.at[index, 'MY_MODEL_CLOSER_PREDICTION'] = True
-                    true_count += 1
-
-        # Save updated predictions with accuracy
-        save_dataframe_to_s3(df_fp, 'data/daily_predictions/current.parquet')
-
-        # Calculate accuracy ratio
-        total_predictions = true_count + false_count
-        total_with_actual = df_fp['ACTUAL_FP'].notna().sum()
-        filtered_out = total_with_actual - total_predictions
-        accuracy_ratio = true_count / total_predictions if total_predictions > 0 else 0
-
-        # Calculate mean absolute errors
-        dff_mae = sum(dff_errors) / len(dff_errors) if dff_errors else 0
-        model_mae = sum(model_errors) / len(model_errors) if model_errors else 0
-
-        logger.info(f"Accuracy check: {total_with_actual} predictions with actual results")
-        logger.info(f"Filtered out {filtered_out} predictions before {accuracy_cutoff_date} (stale data)")
-        logger.info(f"Counted accuracy for {total_predictions} predictions after {accuracy_cutoff_date}")
-        logger.info(f"Accuracy: {true_count}/{total_predictions} = {accuracy_ratio:.3f}")
-        logger.info(f"DFF Mean Absolute Error: {dff_mae:.2f} FP ({len(dff_errors)} predictions)")
-        logger.info(f"My Model Mean Absolute Error: {model_mae:.2f} FP ({len(model_errors)} predictions)")
-        logger.info(f"Mean Error Improvement: {dff_mae - model_mae:.2f} FP (negative = model is worse)")
-
-        return {
-            'accuracy_ratio': accuracy_ratio,
-            'dff_mae': dff_mae,
-            'model_mae': model_mae,
-            'total_predictions': total_predictions
-        }
-
-    except Exception as e:
-        logger.error(f"Error checking accuracy: {e}")
-        return None
 
 def run_daily_predictions_scraper():
     """
@@ -622,14 +283,10 @@ def run_daily_predictions_scraper():
                 "PLAYER": row['Player'],
                 "GAME_DATE": current_date,
                 "PPG_PROJECTION": safe_float(row['PPG Projection']),
-                "MY_MODEL_PREDICTED_FP": None,  # Will be filled by minutes-projection
                 "PROJECTED_MIN": None,  # Will be filled by minutes-projection
                 "SALARY": safe_float(row['SALARY']),
                 "POSITION": row['POSITION'],
-                "PREV_FP": None,
-                "PREV_MIN": None,
-                "SEASON_AVG_FP": None,
-                "SEASON_AVG_MIN": None,
+                "STARTER_STATUS": row.get('STARTER_STATUS'),  # CONFIRMED, EXPECTED, or None
                 "ACTUAL_FP": None,
                 "ACTUAL_MIN": None
             })
@@ -641,14 +298,12 @@ def run_daily_predictions_scraper():
             df_fp['GAME_DATE'] = pd.to_datetime(df_fp['GAME_DATE']).dt.date
         except:
             logger.info("No existing daily predictions found, creating new DataFrame")
-            df_fp = pd.DataFrame(columns=['PLAYER', 'GAME_DATE', 'PPG_PROJECTION', 'MY_MODEL_PREDICTED_FP',
-                                         'PROJECTED_MIN', 'ACTUAL_MIN', 'ACTUAL_FP', 'MY_MODEL_CLOSER_PREDICTION',
-                                         'SALARY', 'POSITION', 'PREV_FP', 'PREV_MIN', 'SEASON_AVG_FP', 'SEASON_AVG_MIN'])
+            df_fp = pd.DataFrame(columns=['PLAYER', 'GAME_DATE', 'PPG_PROJECTION', 'PROJECTED_MIN',
+                                         'ACTUAL_MIN', 'ACTUAL_FP', 'SALARY', 'POSITION', 'STARTER_STATUS'])
 
         if df_fp.empty:
-            df_fp = pd.DataFrame(columns=['PLAYER', 'GAME_DATE', 'PPG_PROJECTION', 'MY_MODEL_PREDICTED_FP',
-                                         'PROJECTED_MIN', 'ACTUAL_MIN', 'ACTUAL_FP', 'MY_MODEL_CLOSER_PREDICTION',
-                                         'SALARY', 'POSITION', 'PREV_FP', 'PREV_MIN', 'SEASON_AVG_FP', 'SEASON_AVG_MIN'])
+            df_fp = pd.DataFrame(columns=['PLAYER', 'GAME_DATE', 'PPG_PROJECTION', 'PROJECTED_MIN',
+                                         'ACTUAL_MIN', 'ACTUAL_FP', 'SALARY', 'POSITION', 'STARTER_STATUS'])
 
         # Update or add new records
         for record in new_records:
@@ -658,6 +313,7 @@ def run_daily_predictions_scraper():
                 df_fp.loc[mask, 'PPG_PROJECTION'] = record['PPG_PROJECTION']
                 df_fp.loc[mask, 'SALARY'] = record['SALARY']
                 df_fp.loc[mask, 'POSITION'] = record['POSITION']
+                df_fp.loc[mask, 'STARTER_STATUS'] = record['STARTER_STATUS']
             else:
                 # Add new record - convert to DataFrame first to avoid FutureWarning
                 new_row_df = pd.DataFrame([record])

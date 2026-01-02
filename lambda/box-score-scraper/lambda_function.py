@@ -6,6 +6,11 @@ import logging
 from datetime import datetime
 from io import BytesIO
 from unidecode import unidecode
+import os
+from dotenv import load_dotenv
+
+# Load .env file for local testing (Lambda uses environment variables)
+load_dotenv()
 
 # Configure logging
 logger = logging.getLogger()
@@ -94,11 +99,16 @@ def fetch_box_scores_from_api(season=None):
         'Sorter': 'DATE'
     }
 
-    # Use proxy for NBA API requests (NBA blocks AWS IPs)
-    proxy_url = "http://smart-b0ibmkjy90uq_area-US_state-Northcarolina:sU8CQmV8LDmh2mXj@proxy.smartproxy.net:3120"
+    # Get proxy URL from environment variable
+    # For Lambda: Set PROXY_URL in Lambda environment variables
+    # For local: Set in .env file or environment
+    PROXY_URL = os.environ.get('PROXY_URL')
+    if not PROXY_URL:
+        raise ValueError("PROXY_URL environment variable must be set")
+
     proxies = {
-        'http': proxy_url,
-        'https': proxy_url
+        'http': PROXY_URL,
+        'https': PROXY_URL
     }
 
     try:

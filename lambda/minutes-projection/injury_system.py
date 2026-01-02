@@ -179,7 +179,18 @@ def get_player_baseline(player_row, injury_context, box_scores):
 
     if not active_beneficiary.empty:
         # Return frozen baseline from before they started filling in
-        return active_beneficiary['TRUE_BASELINE'].iloc[0]
+        baseline = active_beneficiary['TRUE_BASELINE'].iloc[0]
+
+        # Apply starter floor if applicable
+        starter_status = player_row.get('STARTER_STATUS')
+        if starter_status == 'CONFIRMED' and baseline < 24:
+            logger.info(f"{player_name}: CONFIRMED starter floor applied to BENEFICIARY baseline ({baseline:.1f} -> 24.0 MPG)")
+            baseline = 24
+        elif starter_status == 'EXPECTED' and baseline < 20:
+            logger.info(f"{player_name}: EXPECTED starter floor applied to BENEFICIARY baseline ({baseline:.1f} -> 20.0 MPG)")
+            baseline = 20
+
+        return baseline
 
     # Check for ROLE_DECREASED status (player squeezed out during teammate's injury)
     # These players should NOT revert to pre-injury baseline when injured player returns
@@ -195,10 +206,21 @@ def get_player_baseline(player_row, injury_context, box_scores):
         recent_baseline = player_row.get('LAST_7_AVG_MIN')
         if recent_baseline is not None and recent_baseline > 0:
             logger.info(f"{player_name}: ROLE_DECREASED status - using recent baseline {recent_baseline:.1f} MPG (not reverting to pre-injury)")
-            return recent_baseline
+            baseline = recent_baseline
         else:
             # Fallback to season average if no recent games
-            return player_row.get('SEASON_AVG_MIN', 10)
+            baseline = player_row.get('SEASON_AVG_MIN', 10)
+
+        # Apply starter floor if applicable
+        starter_status = player_row.get('STARTER_STATUS')
+        if starter_status == 'CONFIRMED' and baseline < 24:
+            logger.info(f"{player_name}: CONFIRMED starter floor applied to ROLE_DECREASED baseline ({baseline:.1f} -> 24.0 MPG)")
+            baseline = 24
+        elif starter_status == 'EXPECTED' and baseline < 20:
+            logger.info(f"{player_name}: EXPECTED starter floor applied to ROLE_DECREASED baseline ({baseline:.1f} -> 20.0 MPG)")
+            baseline = 20
+
+        return baseline
 
     # Check if player WAS a beneficiary (ex-beneficiary with historical INJURY_DATE)
     # Can have MULTIPLE rows if player filled in during multiple injury periods
@@ -245,17 +267,27 @@ def get_player_baseline(player_row, injury_context, box_scores):
 
                 logger.info(f"{player_name}: Ex-beneficiary baseline = {historical_baseline:.1f} MPG "
                            f"(excluding {excluded_count} inflated games, {recent_games} recent games weighted 2x)")
-                return historical_baseline
+                baseline = historical_baseline
             else:
                 # No valid games - use conservative fallback
                 logger.warning(f"{player_name}: No valid games for ex-beneficiary - using conservative 10 MPG")
-                return 10
+                baseline = 10
+
+            # Apply starter floor if applicable
+            starter_status = player_row.get('STARTER_STATUS')
+            if starter_status == 'CONFIRMED' and baseline < 24:
+                logger.info(f"{player_name}: CONFIRMED starter floor applied to EX_BENEFICIARY baseline ({baseline:.1f} -> 24.0 MPG)")
+                baseline = 24
+            elif starter_status == 'EXPECTED' and baseline < 20:
+                logger.info(f"{player_name}: EXPECTED starter floor applied to EX_BENEFICIARY baseline ({baseline:.1f} -> 20.0 MPG)")
+                baseline = 20
+
+            return baseline
 
     # Not a beneficiary - normal baseline calculation
     if player_row.get('GAMES_PLAYED', 0) >= 4:
         # Reliable: 4+ games this season
-        return player_row.get('SEASON_AVG_MIN', 10)
-
+        baseline = player_row.get('SEASON_AVG_MIN', 10)
     elif player_row.get('FROM_PREV_SEASON', False):
         # Season-long injury (0 games this season) - check if same team
         prev_team = player_row.get('PREV_TEAM')
@@ -263,17 +295,31 @@ def get_player_baseline(player_row, injury_context, box_scores):
 
         if prev_team == current_team:
             # Same team - use previous season baseline (reliable)
-            return player_row.get('SEASON_AVG_MIN', 10)
+            baseline = player_row.get('SEASON_AVG_MIN', 10)
         else:
             # TRADED - previous season data unreliable (different role on old team)
             logger.warning(f"{player_name}: Season-long injury on new team after trade ({prev_team} -> {current_team}) - using conservative 10 MPG baseline")
-            return 10  # Conservative fallback
-
+            baseline = 10  # Conservative fallback
     else:
         # < 4 games this season - UNRELIABLE
         # Don't use CAREER_AVG_MIN (could be inflated from old team/role)
         logger.debug(f"{player_name}: Insufficient games ({player_row.get('GAMES_PLAYED', 0)}) - using conservative 10 MPG baseline")
-        return 10  # Conservative fallback
+        baseline = 10  # Conservative fallback
+
+    # Apply starter floor if player is listed as starter (DailyFantasyFuel data)
+    # This catches: bench-to-starter promotions, rookies/new players starting, traded players starting
+    # Does NOT interfere with high-minute starters (max preserves their historical baseline)
+    starter_status = player_row.get('STARTER_STATUS')
+    if starter_status == 'CONFIRMED':
+        if baseline < 24:
+            logger.info(f"{player_name}: CONFIRMED starter floor applied ({baseline:.1f} -> 24.0 MPG)")
+            baseline = 24
+    elif starter_status == 'EXPECTED':
+        if baseline < 20:
+            logger.info(f"{player_name}: EXPECTED starter floor applied ({baseline:.1f} -> 20.0 MPG)")
+            baseline = 20
+
+    return baseline
 
 
 def update_confidence_status(player_row, injury_context, games_log):

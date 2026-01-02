@@ -96,21 +96,55 @@ Serialized machine learning models (e.g., `.sav` files) for fantasy point predic
 
 
 ## **FlowChart**
-A visual representation of the data pipeline and machine learning workflow. Only up to date part of README right now.
+A visual representation of the data pipeline and machine learning workflow. Updated 2025-12-22.
 ```mermaid
 graph TD;
     lambda/cluster-scraper-->advanced_player_stats_S3;
     lambda/box-score-scraper-->box_scores_S3;
+    lambda/injury-scraper-->injuries_S3;
     advanced_player_stats_S3-->lambda/nba-clustering;
     lambda/nba-clustering-->clustered_players_S3;
     box_scores_S3-->lambda/supervised_learning;
     clustered_players_S3-->lambda/supervised_learning;
     lambda/supervised_learning-->test_player_predictions_S3;
     lambda/supervised_learning-->models/RFCluster.sav;
-    models/RFCluster.sav-->lambda/daily-predictions;
     clustered_players_S3-->lambda/box-score-scraper;
     lambda/daily-predictions-->daily_predictions_S3;
-    daily_predictions_S3-->lambda/lineup-optimizer;
-    lambda/lineup-optimizer-->daily_lineups_S3;
+    daily_predictions_S3-->lambda/minutes-projection;
+    box_scores_S3-->lambda/minutes-projection;
+    injuries_S3-->lambda/minutes-projection;
+    models/RFCluster.sav-->lambda/minutes-projection;
+    lambda/minutes-projection-->model_comparison/complex_position_overlap;
+    lambda/minutes-projection-->model_comparison/direct_position_only;
+    lambda/minutes-projection-->model_comparison/formula_c_baseline;
+    lambda/minutes-projection-->model_comparison/daily_fantasy_fuel_baseline;
 
 ```
+
+## **Recent Changes (2025-12-22)**
+
+### Deprecated
+- **`MY_MODEL_PREDICTED_FP` column**: Removed from daily-predictions (was confusing and redundant)
+- **`lambda/lineup-optimizer/`**: No longer triggered by game-scheduler. Minutes-projection handles all lineup generation.
+- **`fp_predictor.py`**: Removed from minutes-projection (duplicate of functionality in lineup_optimizer.py)
+
+### Updated Pipeline
+Now runs 7 lambdas (was 8):
+1. cluster-scraper (t+0)
+2. nba-clustering (t+2)
+3. box-score-scraper (t+4)
+4. supervised-learning (t+6)
+5. daily-predictions (t+9)
+6. injury-scraper (t+11)
+7. minutes-projection (t+13) - **Now generates all lineups**
+
+### Data Schema Changes
+
+**daily_predictions** now has 8 columns (removed 6):
+- PLAYER, GAME_DATE, PPG_PROJECTION, PROJECTED_MIN, SALARY, POSITION, ACTUAL_FP, ACTUAL_MIN
+
+Removed columns:
+- MY_MODEL_PREDICTED_FP
+- MY_MODEL_CLOSER_PREDICTION
+- PREV_FP, PREV_MIN
+- SEASON_AVG_FP, SEASON_AVG_MIN

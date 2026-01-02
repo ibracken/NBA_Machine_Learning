@@ -57,16 +57,16 @@ def save_model_to_s3(model, key):
 def calculate_rest_days(df):
     """Calculate rest days for each player based on their previous game"""
     logger.info("Calculating rest days for players")
-    
+
     # Create a copy to avoid modifying the original
     df_sorted = df.copy()
-    
-    # Ensure GAME_DATE is datetime
+
+    # Ensure GAME_DATE is datetime (will be used later for SEASON calculation too)
     df_sorted['GAME_DATE'] = pd.to_datetime(df_sorted['GAME_DATE'])
-    
+
     # Sort by player and game date (ascending for proper calculation)
     df_sorted = df_sorted.sort_values(['PLAYER', 'GAME_DATE'])
-    
+
     # Calculate days since last game for each player
     df_sorted['PREV_GAME_DATE'] = df_sorted.groupby('PLAYER')['GAME_DATE'].shift(1)
     df_sorted['REST_DAYS'] = (df_sorted['GAME_DATE'] - df_sorted['PREV_GAME_DATE']).dt.days
@@ -137,21 +137,18 @@ def run_supervised_learning():
             error_msg = "Box scores data is empty"
             logger.error(error_msg)
             return {'success': False, 'error': error_msg}
-        
+
         logger.info(f"Box scores data validation passed: {len(df)} records with required columns")
-        
+
         # Filter out players with zero minutes (data validation)
         if 'MIN' in df.columns:
             original_count = len(df)
             df = df[df['MIN'] != 0]
             logger.info(f"Filtered from {original_count} to {len(df)} records (MIN != 0)")
-        
-        # Sort by game date (most recent first)
-        df = df.sort_values(by=['GAME_DATE'], ascending=[False])
-        
+
         # Data preprocessing for MIN column (convert to numeric and add minutes noise)
         df['MIN'] = pd.to_numeric(df['MIN'], errors='coerce')
-        df['MIN'] = df['MIN'] + np.random.uniform(-10, 10, size=len(df))
+        df['MIN'] = df['MIN'] + np.random.uniform(-8, 8, size=len(df))
         df['MIN'] = df['MIN'].clip(lower=0)
         
         # Handle missing clusters with placeholder
@@ -240,265 +237,171 @@ def run_supervised_learning():
         logger.info(f"After NaN handling - Season_MIN_Avg nulls: {df['Season_MIN_Avg'].isna().sum()}")
         logger.info(f"After NaN handling - Career_MIN_Avg nulls: {df['Career_MIN_Avg'].isna().sum()}")
 
-        # Define features and target
-        feature_names = ['Last3_FP_Avg', 'Last7_FP_Avg', 'Season_FP_Avg',
+        # Calculate FP_PER_MIN feature
+        # First 5 games of season: Use Career_FP_Avg / Career_MIN_Avg
+        # After 5 games: Use Season_FP_Avg / Season_MIN_Avg
+        logger.info("Calculating FP_PER_MIN feature")
+
+        # Extract season from GAME_DATE for season-based grouping
+        # NBA seasons span two calendar years (e.g., 2024-25 season starts in Oct 2024)
+        # Games from Oct-Dec belong to season starting that year
+        # Games from Jan-Sep belong to season starting previous year
+        # Note: GAME_DATE is already datetime from calculate_rest_days()
+        df['SEASON'] = df['GAME_DATE'].apply(
+            lambda x: f"{x.year}-{str(x.year + 1)[-2:]}" if x.month >= 10 else f"{x.year - 1}-{str(x.year)[-2:]}"
+        )
+
+        # Sort by PLAYER and GAME_DATE (ascending) to properly number games chronologically
+        df = df.sort_values(['PLAYER', 'GAME_DATE'], ascending=[True, True])
+
+        # Determine which games are first 5 of season for each player
+        df['SEASON_GAME_NUM'] = df.groupby(['PLAYER', 'SEASON']).cumcount() + 1
+
+        # Calculate FP_PER_MIN based on game number
+        df['FP_PER_MIN'] = np.where(
+            df['SEASON_GAME_NUM'] <= 5,
+            # First 5 games: Career FP/MIN
+            np.where(
+                df['Career_MIN_Avg'] > 0,
+                df['Career_FP_Avg'] / df['Career_MIN_Avg'],
+                0
+            ),
+            # After 5 games: Season FP/MIN
+            np.where(
+                df['Season_MIN_Avg'] > 0,
+                df['Season_FP_Avg'] / df['Season_MIN_Avg'],
+                0
+            )
+        )
+
+        # Handle inf/nan from division
+        df['FP_PER_MIN'] = df['FP_PER_MIN'].replace([np.inf, -np.inf], 0)
+        df['FP_PER_MIN'] = df['FP_PER_MIN'].fillna(0)
+
+        logger.info(f"Calculated FP_PER_MIN feature - mean: {df['FP_PER_MIN'].mean():.3f}, max: {df['FP_PER_MIN'].max():.3f}")
+
+        # Define three feature sets for three models
+        # Note: OPPONENT removed - will be replaced with opponent defensive rating later
+        feature_sets = {
+            'current': ['Last3_FP_Avg', 'Last7_FP_Avg', 'Season_FP_Avg',
                         'Career_FP_Avg', 'Games_Played_Career', 'CLUSTER', 'MIN',
                         'Last7_MIN_Avg', 'Season_MIN_Avg', 'Career_MIN_Avg',
-                        'IS_HOME', 'OPPONENT', 'REST_DAYS']
+                        'IS_HOME', 'REST_DAYS'],
+
+            'fp_per_min': ['Last3_FP_Avg', 'Last7_FP_Avg', 'Season_FP_Avg',
+                           'Career_FP_Avg', 'Games_Played_Career', 'CLUSTER', 'MIN',
+                           'Last7_MIN_Avg', 'Season_MIN_Avg', 'Career_MIN_Avg',
+                           'IS_HOME', 'REST_DAYS', 'FP_PER_MIN'],
+
+            'barebones': ['FP_PER_MIN', 'MIN', 'REST_DAYS', 'CLUSTER']
+        }
+
         label_name = 'FP'
-        
-        # Validate feature columns exist
-        missing_features = [col for col in feature_names if col not in df.columns]
-        if missing_features:
-            error_msg = f"Missing feature columns: {missing_features}"
-            logger.error(error_msg)
-            return {'success': False, 'error': error_msg}
-        
-        # Prepare feature dataframe
-        df_features = df[feature_names].copy()
-        df_labels = df[label_name].copy()
-        
-        # Validate feature data quality
-        numeric_features = ['Last3_FP_Avg', 'Last7_FP_Avg', 'Season_FP_Avg', 'Career_FP_Avg',
-                           'Games_Played_Career', 'MIN', 'Last7_MIN_Avg', 'Season_MIN_Avg', 'Career_MIN_Avg']
-        for feature in numeric_features:
-            if df_features[feature].isna().all():
-                error_msg = f"All values in feature '{feature}' are null"
-                logger.error(error_msg)
-                return {'success': False, 'error': error_msg}
 
-            # Log any remaining NaN or Inf values in numeric features
-            nan_count = df_features[feature].isna().sum()
-            inf_count = np.isinf(df_features[feature]).sum() if df_features[feature].dtype in ['float64', 'int64'] else 0
-            if nan_count > 0 or inf_count > 0:
-                logger.warning(f"Feature '{feature}' has {nan_count} NaN and {inf_count} Inf values")
-        
-        # Check for reasonable data ranges
-        if (df_features['MIN'] < 0).any():
-            logger.warning("Found negative MIN values after preprocessing")
-        
-        logger.info(f"Feature validation passed: {len(df_features)} records with {len(feature_names)} features")
+        # Dictionary to store trained models and results
+        models_results = {}
 
-        # Calculate VIF (Variance Inflation Factor) for multicollinearity detection
-        # Only calculate on numeric features before one-hot encoding
-        logger.info("Calculating VIF for numeric features...")
-        numeric_feature_names = ['Last3_FP_Avg', 'Last7_FP_Avg', 'Season_FP_Avg', 'Career_FP_Avg',
-                                'Games_Played_Career', 'MIN', 'Last7_MIN_Avg', 'Season_MIN_Avg',
-                                'Career_MIN_Avg', 'IS_HOME', 'REST_DAYS']
+        # Train each model variant
+        for model_name, feature_names in feature_sets.items():
+            logger.info(f"\n{'='*60}")
+            logger.info(f"Training {model_name} model")
+            logger.info(f"{'='*60}")
 
-        try:
-            vif_data = pd.DataFrame()
-            vif_data['Feature'] = numeric_feature_names
-            vif_data['VIF'] = [variance_inflation_factor(df_features[numeric_feature_names].values, i)
-                              for i in range(len(numeric_feature_names))]
-            vif_data = vif_data.sort_values('VIF', ascending=False)
+            # Validate features exist
+            missing_features = [col for col in feature_names if col not in df.columns]
+            if missing_features:
+                logger.error(f"{model_name}: Missing features: {missing_features}")
+                continue
 
-            logger.info("VIF Analysis (High VIF >10 suggests multicollinearity - informational only):")
-            for idx, row in vif_data.iterrows():
-                vif_value = row['VIF']
-                if vif_value > 10:
-                    status = "HIGH"
-                elif vif_value > 5:
-                    status = "MODERATE"
+            # Prepare data for this model
+            features = df[feature_names].copy()
+            labels = df[[label_name]].copy()
+
+            # One-hot encode categorical variables (only if they exist in feature set)
+            categorical_cols = []
+            if 'CLUSTER' in features.columns:
+                categorical_cols.append('CLUSTER')
+
+            features_encoded = pd.get_dummies(features, columns=categorical_cols) if categorical_cols else features
+
+            # Get actual feature names after encoding
+            feature_names_list = list(features_encoded.columns)
+
+            # Save feature names to S3
+            feature_names_json = json.dumps({'features': feature_names_list})
+            s3.put_object(
+                Bucket=BUCKET_NAME,
+                Key=f'models/{model_name}_feature_names.json',
+                Body=feature_names_json
+            )
+            logger.info(f"{model_name}: Saved {len(feature_names_list)} feature names")
+
+            # Check for multicollinearity (VIF)
+            logger.info(f"{model_name}: Checking multicollinearity...")
+            try:
+                vif_data = pd.DataFrame()
+                vif_data["feature"] = feature_names_list
+                vif_data["VIF"] = [variance_inflation_factor(features_encoded.values, i)
+                                   for i in range(len(feature_names_list))]
+
+                high_vif = vif_data[vif_data['VIF'] > 10]
+                if not high_vif.empty:
+                    logger.warning(f"{model_name}: High VIF features:\n{high_vif}")
                 else:
-                    status = "OK"
-                logger.info(f"  {row['Feature']:<25} VIF: {vif_value:>8.2f}  ({status})")
-        except Exception as e:
-            logger.warning(f"Could not calculate VIF: {e}")
+                    logger.info(f"{model_name}: No high multicollinearity detected")
+            except Exception as e:
+                logger.warning(f"{model_name}: Could not calculate VIF: {e}")
 
-        # One-hot encode categorical features
-        logger.info("One-hot encoding categorical features")
-        df_features = pd.get_dummies(df_features, columns=['CLUSTER', 'OPPONENT'], drop_first=False)
+            # Split data
+            train, test, train_labels, test_labels = train_test_split(
+                features_encoded, labels, test_size=0.20, random_state=42
+            )
 
-        # Save feature names to S3 for validation/prediction consistency
-        feature_names_list = df_features.columns.tolist()
-        feature_names_json = json.dumps({'features': feature_names_list})
-        s3.put_object(
-            Bucket=BUCKET_NAME,
-            Key='models/RFCluster_feature_names.json',
-            Body=feature_names_json
-        )
-        logger.info(f"Saved {len(feature_names_list)} feature names to S3")
+            logger.info(f"{model_name}: Training set: {len(train)}, Test set: {len(test)}")
 
-        # Convert to numpy arrays
-        features = np.array(df_features)
-        labels = np.array(df_labels)
-        
-        # Validate arrays for training
-        if features.shape[0] == 0:
-            error_msg = "No features available for training"
-            logger.error(error_msg)
-            return {'success': False, 'error': error_msg}
-        
-        if len(labels) == 0:
-            error_msg = "No labels available for training"
-            logger.error(error_msg)
-            return {'success': False, 'error': error_msg}
-        
-        if features.shape[0] != len(labels):
-            error_msg = f"Feature-label mismatch: {features.shape[0]} features vs {len(labels)} labels"
-            logger.error(error_msg)
-            return {'success': False, 'error': error_msg}
-        
-        # Check for sufficient data for train-test split
-        if len(features) < 10:
-            error_msg = f"Insufficient data for training: {len(features)} records (need at least 10)"
-            logger.error(error_msg)
-            return {'success': False, 'error': error_msg}
-        
-        logger.info(f"Training data validation passed: {features.shape[0]} samples with {features.shape[1]} features")
-        
-        # Store additional data for test results
-        players = df['PLAYER']
-        game_dates = df['GAME_DATE']
-        
-        # Train-test split
-        logger.info("Splitting data for training and testing")
-        train, test, train_labels, test_labels, train_players, test_players, train_dates, test_dates = train_test_split(
-            features, labels, players, game_dates, 
-            test_size=0.25, 
-            random_state=30
-        )
-        
-        # Reset indices for test data
-        test_players = test_players.reset_index(drop=True)
-        test_dates = test_dates.reset_index(drop=True)
-        
-        # Train GradientBoosting model
-        logger.info("Training GradientBoosting model")
-        logger.info(f"Training set size: {len(train)}, Test set size: {len(test)}")
-        logger.info(f"Training data shape: {train.shape}")
-        logger.info(f"Training labels shape: {train_labels.shape}")
-        logger.info(f"Feature count: {train.shape[1]}")
-        logger.info(f"Total records being sent to GradientBoosting: {train.shape[0]}")
+            # Train model
+            model = GradientBoostingRegressor(
+                n_estimators=200,
+                learning_rate=0.1,
+                max_depth=5,
+                random_state=42,
+                verbose=1
+            )
 
-        # Final validation check for any remaining NaN/Inf values
-        try:
-            # Convert to float to check for NaN/Inf (handles mixed types)
-            train_float = train.astype(float)
+            logger.info(f"{model_name}: Training GradientBoostingRegressor...")
+            model.fit(train, train_labels.values.ravel())
 
-            # Check for NaN values
-            if np.isnan(train_float).any():
-                nan_cols = np.where(np.isnan(train_float).any(axis=0))[0]
-                nan_col_names = [df_features.columns[i] for i in nan_cols]
-                error_msg = f"Training data contains NaN values in columns: {nan_col_names[:10]}"
-                logger.error(error_msg)
-                return {'success': False, 'error': error_msg}
+            # Save model to S3
+            save_model_to_s3(model, f"models/{model_name}.pkl")
 
-            # Check for Inf values
-            if np.isinf(train_float).any():
-                inf_cols = np.where(np.isinf(train_float).any(axis=0))[0]
-                inf_col_names = [df_features.columns[i] for i in inf_cols]
-                error_msg = f"Training data contains Inf values in columns: {inf_col_names[:10]}"
-                logger.error(error_msg)
-                return {'success': False, 'error': error_msg}
+            # Generate predictions
+            predictions = model.predict(test)
 
-        except (ValueError, TypeError) as e:
-            logger.warning(f"Could not validate NaN/Inf due to data types: {e}")
+            # Calculate R² score
+            r2 = r2_score(test_labels, predictions)
+            logger.info(f"{model_name}: R² Score = {r2:.4f}")
 
-        model = GradientBoostingRegressor(
-            n_estimators=200,
-            learning_rate=0.1,
-            max_depth=3,
-            random_state=42,
-            verbose=0
-        )
-        model.fit(train, train_labels.ravel())
+            # Store results
+            models_results[model_name] = {
+                'model': model,
+                'r2_score': r2,
+                'feature_count': len(feature_names_list),
+                'train_size': len(train),
+                'test_size': len(test)
+            }
 
-        # Save trained model to S3
-        save_model_to_s3(model, "models/RFCluster.sav")
-
-        # Generate predictions
-        logger.info("Generating predictions")
-        train_predictions = model.predict(train)
-        test_predictions = model.predict(test)
-
-        # Calculate R² scores
-        train_r2 = r2_score(train_labels.ravel(), train_predictions)
-        test_r2 = r2_score(test_labels.ravel(), test_predictions)
-
-        logger.info(f"Training R²: {train_r2:.4f}")
-        logger.info(f"Test R²: {test_r2:.4f}")
-
-        # Create results dataframe
-        logger.info("Creating test results dataframe")
-        
-        # Get categorical columns for reverse mapping
-        cluster_columns = [col for col in df_features.columns if col.startswith('CLUSTER_')]
-        opponent_columns = [col for col in df_features.columns if col.startswith('OPPONENT_')]
-        
-        # Create test results dataframe
-        test_df = pd.DataFrame(test, columns=df_features.columns)
-        
-        # Map back to original cluster and opponent values
-        test_df['CLUSTER'] = test_df[cluster_columns].idxmax(axis=1)
-        test_df['OPPONENT'] = test_df[opponent_columns].idxmax(axis=1) if opponent_columns else 'UNKNOWN'
-        
-        def safe_cluster_map(value):
-            if isinstance(value, str) and value.startswith('CLUSTER_'):
-                try:
-                    cluster_value = value.split('_')[-1]
-                    return float(cluster_value) if cluster_value != 'NAN' else np.nan
-                except ValueError:
-                    return np.nan
-            return np.nan
-        
-        def safe_opponent_map(value):
-            if isinstance(value, str) and value.startswith('OPPONENT_'):
-                return value.split('_', 1)[-1]  # Get everything after first underscore
-            return 'UNKNOWN'
-        
-        test_df['CLUSTER'] = test_df['CLUSTER'].map(safe_cluster_map)
-        test_df['OPPONENT'] = test_df['OPPONENT'].map(safe_opponent_map)
-        
-        # Drop one-hot encoded columns
-        test_df = test_df.drop(columns=cluster_columns + opponent_columns)
-        
-        # Add metadata and predictions
-        test_df['PLAYER'] = test_players
-        test_df['GAME_DATE'] = test_dates
-        test_df['ACTUAL'] = test_labels
-        test_df['PREDICTED'] = test_predictions
-        test_df['ERROR'] = abs(test_df['ACTUAL'] - test_df['PREDICTED'])
-        
-        # Reorder columns
-        test_df = test_df[['PLAYER'] + [col for col in test_df.columns if col != 'PLAYER']]
-        
-        # Save test predictions to S3
-        save_dataframe_to_s3(test_df, 'data/test_player_predictions/current.parquet')
-        
-        # Calculate model performance metrics
-        train_error = np.mean(abs(train_predictions - train_labels.ravel()))
-        test_error = np.mean(abs(test_predictions - test_labels.ravel()))
-        
-        # Calculate feature importance
-        feature_importance = dict(zip(df_features.columns, model.feature_importances_))
-        all_features_sorted = sorted(feature_importance.items(), key=lambda x: x[1], reverse=True)
-        top_features = all_features_sorted[:5]
-
-        logger.info("Supervised learning model training completed successfully")
-        logger.info(f"Training error (MAE): {train_error:.3f}")
-        logger.info(f"Test error (MAE): {test_error:.3f}")
-
-        # Log all feature importances for analysis
-        logger.info("All feature importances:")
-        for feat, imp in all_features_sorted:
-            logger.info(f"  {feat}: {imp:.6f}")
+        # Log summary
+        logger.info(f"\n{'='*60}")
+        logger.info("TRAINING SUMMARY")
+        logger.info(f"{'='*60}")
+        for model_name, results in models_results.items():
+            logger.info(f"{model_name}: R²={results['r2_score']:.4f}, Features={results['feature_count']}")
 
         return {
             'success': True,
-            'total_records': len(df),
-            'training_records': len(train),
-            'test_records': len(test),
-            'train_error_mae': float(train_error),
-            'test_error_mae': float(test_error),
-            'train_r2': float(train_r2),
-            'test_r2': float(test_r2),
-            'feature_count': len(df_features.columns),
-            'top_features': [(feat, float(imp)) for feat, imp in top_features],
-            'all_features': [(feat, float(imp)) for feat, imp in all_features_sorted],
-            'players_with_clusters': int((~df['CLUSTER'].str.contains('NAN', na=False)).sum()),
-            'players_without_clusters': int((df['CLUSTER'].str.contains('NAN', na=False)).sum())
+            'models_trained': list(models_results.keys()),
+            'results': {name: {'r2_score': r['r2_score'], 'feature_count': r['feature_count']}
+                        for name, r in models_results.items()}
         }
         
     except Exception as e:
@@ -511,24 +414,17 @@ def run_supervised_learning():
 def lambda_handler(event, context):
     """AWS Lambda handler function"""
     logger.info("Supervised learning Lambda function started")
-    
+
     try:
         result = run_supervised_learning()
-        
+
         if result['success']:
             return {
                 'statusCode': 200,
                 'body': json.dumps({
-                    'message': 'Supervised learning model training completed successfully',
-                    'total_records': result['total_records'],
-                    'training_records': result['training_records'],
-                    'test_records': result['test_records'],
-                    'train_error_mae': result['train_error_mae'],
-                    'test_error_mae': result['test_error_mae'],
-                    'feature_count': result['feature_count'],
-                    'top_features': result['top_features'],
-                    'players_with_clusters': result['players_with_clusters'],
-                    'players_without_clusters': result['players_without_clusters']
+                    'message': 'Supervised learning models training completed successfully',
+                    'models_trained': result['models_trained'],
+                    'results': result['results']
                 })
             }
         else:
@@ -539,7 +435,7 @@ def lambda_handler(event, context):
                     'error': result['error']
                 })
             }
-            
+
     except Exception as e:
         logger.error(f"Lambda handler error: {str(e)}")
         return {

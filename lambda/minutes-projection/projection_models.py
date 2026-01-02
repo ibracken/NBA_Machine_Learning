@@ -470,6 +470,16 @@ def project_minutes_formula_c(player_row, today, games_log):
         # < 4 games this season - UNRELIABLE, use conservative fallback
         baseline = 10
 
+    # Apply starter floor if player is listed as starter (DailyFantasyFuel data)
+    starter_status = player_row.get('STARTER_STATUS')
+    player_name = player_row['PLAYER']
+    if starter_status == 'CONFIRMED' and baseline < 24:
+        logger.info(f"{player_name}: CONFIRMED starter floor applied to Formula C baseline ({baseline:.1f} -> 24.0 MPG)")
+        baseline = 24
+    elif starter_status == 'EXPECTED' and baseline < 20:
+        logger.info(f"{player_name}: EXPECTED starter floor applied to Formula C baseline ({baseline:.1f} -> 20.0 MPG)")
+        baseline = 20
+
     last_7_avg = player_row.get('LAST_7_AVG_MIN', baseline)
     prev_game = player_row.get('PREV_GAME_MIN', baseline)
 

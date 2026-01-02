@@ -27,7 +27,6 @@ from projection_models import (
 from injury_system import transition_beneficiaries_to_ex
 from process_model import process_model
 from lineup_optimizer import optimize_lineup
-from fp_predictor import predict_fantasy_points
 
 # Configure logging
 logger = logging.getLogger()
@@ -214,12 +213,28 @@ def lambda_handler(event, context):
 
                 filled_positions = (player_stats['POSITION'] != 'UNKNOWN').sum()
                 logger.info(f"Loaded positions for {filled_positions}/{len(player_stats)} players from daily predictions")
+
+                # Also load starter status if available
+                if 'STARTER_STATUS' in daily_preds.columns:
+                    starter_map = daily_preds[['PLAYER', 'STARTER_STATUS']].drop_duplicates(subset='PLAYER', keep='last')
+                    if 'STARTER_STATUS' in player_stats.columns:
+                        player_stats = player_stats.drop(columns=['STARTER_STATUS'])
+                    player_stats = player_stats.merge(starter_map, on='PLAYER', how='left')
+
+                    confirmed = (player_stats['STARTER_STATUS'] == 'CONFIRMED').sum()
+                    expected = (player_stats['STARTER_STATUS'] == 'EXPECTED').sum()
+                    logger.info(f"Loaded starter status: {confirmed} confirmed, {expected} expected starters")
+                else:
+                    player_stats['STARTER_STATUS'] = None
+                    logger.warning("No STARTER_STATUS column in daily predictions")
             else:
                 logger.warning("Daily predictions unavailable - using UNKNOWN for positions")
                 player_stats['POSITION'] = 'UNKNOWN'
+                player_stats['STARTER_STATUS'] = None
         except Exception as e:
             logger.warning(f"Could not load positions from daily predictions: {e}")
             player_stats['POSITION'] = player_stats.get('POSITION', 'UNKNOWN')
+            player_stats['STARTER_STATUS'] = None
 
         logger.info(f"Loaded stats for {len(player_stats)} players")
 
@@ -320,13 +335,9 @@ def lambda_handler(event, context):
 
             logger.info(f"Updated PROJECTED_MIN for {len(complex_minutes_df)} players in daily_predictions")
 
-            # ========== Predict Fantasy Points with complex-position minutes ==========
-            logger.info("Predicting fantasy points using complex-position minutes")
-            daily_preds = predict_fantasy_points(daily_preds, box_scores, today)
-
-            # Save updated daily_predictions with both minutes and FP predictions
+            # Save updated daily_predictions with complex-position minutes
             save_to_s3(daily_preds, 'data/daily_predictions/current.parquet')
-            logger.info("Saved daily_predictions with complex-position minutes and FP predictions")
+            logger.info("Saved daily_predictions with complex-position minutes")
 
         # ========== Model 2: Direct Position Exchange ==========
         logger.info("Generating projections: Direct Position Exchange")

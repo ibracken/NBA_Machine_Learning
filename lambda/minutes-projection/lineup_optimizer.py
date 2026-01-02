@@ -25,14 +25,32 @@ def calculate_fp_features(box_scores, daily_predictions, today):
     box_scores = box_scores.copy()
     box_scores['GAME_DATE'] = pd.to_datetime(box_scores['GAME_DATE'])
 
+    # Calculate current season from today's date (match training logic)
+    today_dt = pd.to_datetime(today)
+    current_season = f"{today_dt.year}-{str(today_dt.year + 1)[-2:]}" if today_dt.month >= 10 else f"{today_dt.year - 1}-{str(today_dt.year)[-2:]}"
+
+    # Extract season from box scores GAME_DATE
+    box_scores['SEASON'] = box_scores['GAME_DATE'].apply(
+        lambda x: f"{x.year}-{str(x.year + 1)[-2:]}" if x.month >= 10 else f"{x.year - 1}-{str(x.year)[-2:]}"
+    )
+
+    # Count games played this season for each player
+    current_season_games = box_scores[box_scores['SEASON'] == current_season].copy()
+    current_season_games = current_season_games.sort_values(['PLAYER', 'GAME_DATE'])
+    season_game_count = current_season_games.groupby('PLAYER').size().reset_index(name='SEASON_GAMES_PLAYED')
+
     # Get most recent game for each player (has latest rolling averages)
     box_scores_sorted = box_scores.sort_values(['PLAYER', 'GAME_DATE'], ascending=[True, False])
     latest_stats = box_scores_sorted.groupby('PLAYER').first().reset_index()
 
+    # Merge season game count
+    latest_stats = latest_stats.merge(season_game_count, on='PLAYER', how='left')
+    latest_stats['SEASON_GAMES_PLAYED'] = latest_stats['SEASON_GAMES_PLAYED'].fillna(0).astype(int)
+
     # Extract FP feature columns (match supervised-learning training)
     fp_cols = ['PLAYER', 'Last3_FP_Avg', 'Last7_FP_Avg', 'Season_FP_Avg',
                'Career_FP_Avg', 'Games_Played_Career', 'CLUSTER',
-               'Last7_MIN_Avg', 'Season_MIN_Avg', 'Career_MIN_Avg']
+               'Last7_MIN_Avg', 'Season_MIN_Avg', 'Career_MIN_Avg', 'SEASON_GAMES_PLAYED']
 
     # Only keep columns that exist
     available_cols = [col for col in fp_cols if col in latest_stats.columns]
@@ -83,7 +101,7 @@ def calculate_fp_features(box_scores, daily_predictions, today):
 
 def predict_fantasy_points(projections_df, box_scores, daily_predictions, today):
     """
-    Add PROJECTED_FP column to projections using trained ML model
+    Add PROJECTED_FP columns to projections using 3 trained ML models
     Matches supervised-learning training pipeline with one-hot encoding
 
     Args:
@@ -93,27 +111,40 @@ def predict_fantasy_points(projections_df, box_scores, daily_predictions, today)
         today: Current date
 
     Returns:
-        DataFrame with added PROJECTED_FP column
+        DataFrame with added PROJECTED_FP_current, PROJECTED_FP_fp_per_min, PROJECTED_FP_barebones columns
     """
     logger.info("Predicting fantasy points for projections")
 
-    # Load trained FP model
-    fp_model = load_model_from_s3('models/RFCluster.sav')
+    # Load all 3 trained FP models
+    model_names = ['current', 'fp_per_min', 'barebones']
+    models = {}
+    feature_sets = {}
 
-    if fp_model is None:
-        logger.warning("FP prediction model not found - setting PROJECTED_FP to 0")
-        projections_df['PROJECTED_FP'] = 0
+    for model_name in model_names:
+        # Load model
+        model = load_model_from_s3(f'models/{model_name}.pkl')
+        if model is None:
+            logger.warning(f"{model_name} model not found - will set predictions to 0")
+            continue
+        models[model_name] = model
+
+        # Load expected feature names from S3 (saved during training)
+        try:
+            response = s3_client.get_object(Bucket=BUCKET_NAME, Key=f'models/{model_name}_feature_names.json')
+            feature_names_data = json.loads(response['Body'].read())
+            expected_features = feature_names_data['features']
+            feature_sets[model_name] = expected_features
+            logger.info(f"Loaded {model_name} model with {len(expected_features)} features")
+        except Exception as e:
+            logger.warning(f"Could not load feature names for {model_name}: {e}")
+            feature_sets[model_name] = None
+
+    if not models:
+        logger.warning("No FP prediction models found - setting all PROJECTED_FP columns to 0")
+        projections_df['PROJECTED_FP_current'] = 0
+        projections_df['PROJECTED_FP_fp_per_min'] = 0
+        projections_df['PROJECTED_FP_barebones'] = 0
         return projections_df
-
-    # Load expected feature names from S3 (saved during training)
-    try:
-        response = s3_client.get_object(Bucket=BUCKET_NAME, Key='models/RFCluster_feature_names.json')
-        feature_names_data = json.loads(response['Body'].read())
-        expected_features = feature_names_data['features']
-        logger.info(f"Loaded {len(expected_features)} expected features from S3")
-    except Exception as e:
-        logger.warning(f"Could not load feature names from S3: {e}. Predictions may fail.")
-        expected_features = None
 
     # Calculate FP features from historical data
     fp_features = calculate_fp_features(box_scores, daily_predictions, today)
@@ -124,21 +155,27 @@ def predict_fantasy_points(projections_df, box_scores, daily_predictions, today)
     # Use PROJECTED_MIN as MIN (match training which used actual MIN)
     df['MIN'] = df['PROJECTED_MIN']
 
-    # Prepare features BEFORE one-hot encoding (match training order)
-    base_feature_cols = ['Last3_FP_Avg', 'Last7_FP_Avg', 'Season_FP_Avg',
-                         'Career_FP_Avg', 'Games_Played_Career', 'CLUSTER', 'MIN',
-                         'Last7_MIN_Avg', 'Season_MIN_Avg', 'Career_MIN_Avg',
-                         'IS_HOME', 'OPPONENT', 'REST_DAYS']
+    # Calculate FP_PER_MIN feature (match training pipeline exactly)
+    # First 5 games of season: Use Career_FP_Avg / Career_MIN_Avg
+    # After 5 games: Use Season_FP_Avg / Season_MIN_Avg
+    df['SEASON_GAMES_PLAYED'] = df['SEASON_GAMES_PLAYED'].fillna(0).astype(int)
 
-    # Ensure all feature columns exist before filling
-    for col in base_feature_cols:
-        if col not in df.columns:
-            if col == 'CLUSTER':
-                df[col] = 'CLUSTER_NAN'
-            elif col == 'OPPONENT':
-                df[col] = 'UNKNOWN'
-            else:
-                df[col] = 0
+    df['FP_PER_MIN'] = np.where(
+        df['SEASON_GAMES_PLAYED'] <= 5,
+        # First 5 games: Career FP/MIN
+        np.where(
+            df['Career_MIN_Avg'] > 0,
+            df['Career_FP_Avg'] / df['Career_MIN_Avg'],
+            0
+        ),
+        # After 5 games: Season FP/MIN
+        np.where(
+            df['Season_MIN_Avg'] > 0,
+            df['Season_FP_Avg'] / df['Season_MIN_Avg'],
+            0
+        )
+    )
+    df['FP_PER_MIN'] = df['FP_PER_MIN'].replace([np.inf, -np.inf], 0).fillna(0)
 
     # Fill NaN values (match training pipeline)
     df['Last3_FP_Avg'] = df['Last3_FP_Avg'].fillna(0)
@@ -155,45 +192,85 @@ def predict_fantasy_points(projections_df, box_scores, daily_predictions, today)
     df['CLUSTER'] = df['CLUSTER'].fillna('CLUSTER_NAN')
     df['OPPONENT'] = df['OPPONENT'].fillna('UNKNOWN')
 
-    # Set PROJECTED_FP to 0 for players with no FP history
+    # Set predictions to 0 for players with no FP history
     no_history_mask = (df['Season_FP_Avg'] == 0) & (df['Career_FP_Avg'] == 0)
     if no_history_mask.any():
-        logger.info(f"Found {no_history_mask.sum()} players with no FP history - will set PROJECTED_FP to 0")
+        logger.info(f"Found {no_history_mask.sum()} players with no FP history - will set predictions to 0")
 
-    # Extract features for one-hot encoding
-    df_features = df[base_feature_cols].copy()
+    # Define base feature sets for each model (BEFORE one-hot encoding)
+    # Note: OPPONENT removed - will be replaced with opponent defensive rating later
+    model_base_features = {
+        'current': ['Last3_FP_Avg', 'Last7_FP_Avg', 'Season_FP_Avg',
+                    'Career_FP_Avg', 'Games_Played_Career', 'CLUSTER', 'MIN',
+                    'Last7_MIN_Avg', 'Season_MIN_Avg', 'Career_MIN_Avg',
+                    'IS_HOME', 'REST_DAYS'],
 
-    # One-hot encode CLUSTER and OPPONENT (match training)
-    df_features = pd.get_dummies(df_features, columns=['CLUSTER', 'OPPONENT'], drop_first=False)
+        'fp_per_min': ['Last3_FP_Avg', 'Last7_FP_Avg', 'Season_FP_Avg',
+                       'Career_FP_Avg', 'Games_Played_Career', 'CLUSTER', 'MIN',
+                       'Last7_MIN_Avg', 'Season_MIN_Avg', 'Career_MIN_Avg',
+                       'IS_HOME', 'REST_DAYS', 'FP_PER_MIN'],
 
-    # Align columns with expected features from training
-    if expected_features:
-        # Add missing columns (fill with 0)
-        for col in expected_features:
-            if col not in df_features.columns:
-                df_features[col] = 0
+        'barebones': ['FP_PER_MIN', 'MIN', 'REST_DAYS', 'CLUSTER']
+    }
 
-        # Keep only expected columns in the same order
-        df_features = df_features[expected_features]
-        logger.info(f"Aligned features: {len(df_features.columns)} columns match training")
+    # Run predictions for each model
+    for model_name in model_names:
+        if model_name not in models:
+            df[f'PROJECTED_FP_{model_name}'] = 0
+            continue
+
+        # Get base features for this model
+        base_cols = model_base_features[model_name]
+
+        # Extract and prepare features
+        df_features = df[base_cols].copy()
+
+        # One-hot encode categorical variables (only if they exist in feature set)
+        categorical_cols = []
+        if 'CLUSTER' in df_features.columns:
+            categorical_cols.append('CLUSTER')
+
+        if categorical_cols:
+            df_features = pd.get_dummies(df_features, columns=categorical_cols, drop_first=False)
+
+        # Align columns with expected features from training
+        expected_features = feature_sets.get(model_name)
+        if expected_features:
+            # Add missing columns (fill with 0)
+            for col in expected_features:
+                if col not in df_features.columns:
+                    df_features[col] = 0
+
+            # Keep only expected columns in the same order
+            df_features = df_features[expected_features]
+            logger.info(f"{model_name}: Aligned {len(df_features.columns)} features")
+
+        # Make predictions
+        X = df_features.values
+        predictions = models[model_name].predict(X)
+        df[f'PROJECTED_FP_{model_name}'] = predictions.round(1)
+
+        # Override predictions for players with no history
+        df.loc[no_history_mask, f'PROJECTED_FP_{model_name}'] = 0
+
+        logger.info(f"{model_name}: Predicted FP (avg: {df[f'PROJECTED_FP_{model_name}'].mean():.1f})")
+
+    # Add default PROJECTED_FP column (use current model for backward compatibility)
+    # Other systems can choose which model to use via PROJECTED_FP_current, etc.
+    if 'PROJECTED_FP_current' in df.columns:
+        df['PROJECTED_FP'] = df['PROJECTED_FP_current']
+    elif 'PROJECTED_FP_fp_per_min' in df.columns:
+        df['PROJECTED_FP'] = df['PROJECTED_FP_fp_per_min']
+    elif 'PROJECTED_FP_barebones' in df.columns:
+        df['PROJECTED_FP'] = df['PROJECTED_FP_barebones']
     else:
-        logger.warning("No expected features loaded - prediction may fail if columns don't match")
+        df['PROJECTED_FP'] = 0
 
-    # Make predictions
-    X = df_features.values
-    df['PROJECTED_FP'] = fp_model.predict(X)
-
-    # Round to 1 decimal
-    df['PROJECTED_FP'] = df['PROJECTED_FP'].round(1)
-
-    # Override predictions for players with no history
-    df.loc[no_history_mask, 'PROJECTED_FP'] = 0
-
-    # Keep only original projection columns + PROJECTED_FP
-    result_cols = [col for col in projections_df.columns] + ['PROJECTED_FP']
+    # Keep only original projection columns + all PROJECTED_FP columns
+    result_cols = [col for col in projections_df.columns] + ['PROJECTED_FP'] + [f'PROJECTED_FP_{name}' for name in model_names]
     result_df = df[result_cols].copy()
 
-    logger.info(f"Predicted FP for {len(result_df)} players (avg: {result_df['PROJECTED_FP'].mean():.1f})")
+    logger.info(f"Predicted FP for {len(result_df)} players using {len(models)} models")
 
     return result_df
 

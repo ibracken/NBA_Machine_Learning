@@ -5,6 +5,11 @@ import logging
 import boto3
 import json
 from io import BytesIO
+import os
+from dotenv import load_dotenv
+
+# Load .env file for local testing (Lambda uses environment variables)
+load_dotenv()
 
 # Configure logging
 logger = logging.getLogger()
@@ -316,12 +321,17 @@ def merge_api_dataframes(advanced_df, scoring_df, defense_df):
 def scrape_nba_api():
     """Scrape NBA stats using all three API endpoints"""
     logger.info("Starting comprehensive NBA API scraper")
-    
-    # Setup session with proxy
-    proxy_url = "http://smart-b0ibmkjy90uq_area-US_state-Northcarolina:sU8CQmV8LDmh2mXj@proxy.smartproxy.net:3120"
+
+    # Get proxy URL from environment variable
+    # For Lambda: Set PROXY_URL in Lambda environment variables
+    # For local: Set in .env file or environment
+    PROXY_URL = os.environ.get('PROXY_URL')
+    if not PROXY_URL:
+        raise ValueError("PROXY_URL environment variable must be set")
+
     proxies = {
-        'http': proxy_url,
-        'https': proxy_url
+        'http': PROXY_URL,
+        'https': PROXY_URL
     }
     
     headers = {

@@ -4,9 +4,14 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-# Load environment variables
-load_dotenv(Path(__file__).parent.parent / '.env')
+# Load environment variables from root .env file
+# This script is in lambda/box-score-scraper, so go up 2 levels to root
+env_path = Path(__file__).parent.parent.parent / '.env'
+print(f"Looking for .env at: {env_path}")
+print(f".env exists: {env_path.exists()}")
+load_dotenv(env_path)
 AWS_ACCOUNT_ID = os.getenv('AWS_ACCOUNT_ID')
+print(f"AWS_ACCOUNT_ID loaded: {AWS_ACCOUNT_ID}")
 
 def deploy_container():
     """Deploy Lambda function using container"""
@@ -14,7 +19,7 @@ def deploy_container():
     # Build the image
     print("Building Docker image...")
     subprocess.run([
-        "docker", "buildx", "build", "--platform", "linux/amd64", "--output", "type=docker", "-t", "box-score-scraper", "."
+        "docker", "buildx", "build", "--platform", "linux/amd64", "--provenance=false", "--output", "type=docker", "-t", "box-score-scraper", "."
     ], check=True, shell=True)
     
     # Tag for ECR
