@@ -1,8 +1,8 @@
 """
-Analyze and compare performance of 4 NBA prediction models
+Analyze and compare performance of all lineup models.
 
-This script loads the daily lineups from all 4 models and compares their performance
-by analyzing median FP, mean FP, and top-performing lineups.
+This script loads daily lineups from 3 minutes models x 3 FP models
+plus the DailyFantasyFuel baseline, then compares median/mean/top performance.
 """
 
 import pandas as pd
@@ -28,13 +28,24 @@ def load_dataframe_from_s3(key):
         return pd.DataFrame()
 
 def load_all_model_lineups():
-    """Load daily lineups from all 4 models"""
-    models = {
-        'Complex Position Overlap': 'model_comparison/complex_position_overlap/daily_lineups.parquet',
-        'Direct Position Only': 'model_comparison/direct_position_only/daily_lineups.parquet',
-        'Formula C Baseline': 'model_comparison/formula_c_baseline/daily_lineups.parquet',
-        'DailyFantasyFuel Baseline': 'model_comparison/daily_fantasy_fuel_baseline/daily_lineups.parquet'
+    """Load daily lineups from all minutes+FP model combinations and DFF baseline."""
+    minutes_models = {
+        'Complex Position Overlap': 'complex_position_overlap',
+        'Direct Position Only': 'direct_position_only',
+        'Formula C Baseline': 'formula_c_baseline'
     }
+    fp_models = ['current', 'fp_per_min', 'barebones']
+
+    models = {}
+    for minutes_label, minutes_key in minutes_models.items():
+        for fp_model in fp_models:
+            model_name = f"{minutes_label} (FP: {fp_model})"
+            models[model_name] = (
+                f"model_comparison/{minutes_key}/fp_{fp_model}/daily_lineups.parquet"
+            )
+    models['DailyFantasyFuel Baseline'] = (
+        'model_comparison/daily_fantasy_fuel_baseline/daily_lineups.parquet'
+    )
 
     all_lineups = {}
     for model_name, s3_key in models.items():

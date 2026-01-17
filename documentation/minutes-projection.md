@@ -2,12 +2,20 @@
 
 ## Overview
 
-The minutes-projection lambda generates NBA player minutes predictions using injury-aware modeling. It produces 4 models for comparison:
+The minutes-projection lambda generates NBA player minutes predictions using injury-aware modeling. It produces 3 minutes models and, for each, 3 fantasy point (FP) variants from the supervised-learning models:
 
+Minutes models:
 1. **Complex Position Overlap** - Adjacent positions can substitute (PG/SG, SG/SF, SF/PF, PF/C), 2x multiplier for exact position match
 2. **Direct Position Exchange** - Exact position match only, no multiplier
 3. **Formula C Baseline** - No injury handling, pure statistical formula
-4. **DailyFantasyFuel Baseline** - DFF fantasy projections (lineup optimization only, no minutes projections)
+
+FP variants (applied to each minutes model for lineup optimization):
+- **current**
+- **fp_per_min**
+- **barebones**
+
+Additional lineup-only baseline:
+4. **DailyFantasyFuel Baseline** - DFF fantasy projections (no minutes projections)
 
 ## Data Sources
 
@@ -232,7 +240,17 @@ Models 1-3 save to: `s3://nba-prediction-ibracken/model_comparison/{model_name}/
 - `formula_c_baseline`
 
 ### Daily Lineups
-All 4 models save optimized lineups to: `s3://nba-prediction-ibracken/model_comparison/{model_name}/daily_lineups.parquet`
+For minutes models, each FP variant saves its own lineup to:
+
+`s3://nba-prediction-ibracken/model_comparison/{model_name}/fp_{fp_model}/daily_lineups.parquet`
+
+Where:
+- `{model_name}` is one of: `complex_position_overlap`, `direct_position_only`, `formula_c_baseline`
+- `{fp_model}` is one of: `current`, `fp_per_min`, `barebones`
+
+DailyFantasyFuel remains:
+
+`s3://nba-prediction-ibracken/model_comparison/daily_fantasy_fuel_baseline/daily_lineups.parquet`
 
 **Columns**: DATE, SLOT, PLAYER, TEAM, POSITION, SALARY, PROJECTED_MIN, PROJECTED_FP, ACTUAL_FP
 

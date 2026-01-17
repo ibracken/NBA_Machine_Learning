@@ -14,7 +14,12 @@ def deploy_container():
     # Build the image
     print("Building Docker image...")
     subprocess.run([
-        "docker", "buildx", "build", "--platform", "linux/amd64", "--output", "type=docker", "-t", "supervised-learning", "."
+        "docker", "buildx", "build",
+        "--platform", "linux/amd64",
+        "--provenance=false",
+        "--sbom=false",
+        "--output", "type=docker",
+        "-t", "supervised-learning", "."
     ], check=True, shell=True)
     
     # Tag for ECR

@@ -12,5 +12,5 @@ scikit-learn
 statsmodels
 pulp==2.7.0
 pdfplumber==0.11.0
-awscli
+awscli==1.32.44
 python-dotenv==1.0.0

@@ -11,7 +11,6 @@ COPY projection_models.py ${LAMBDA_TASK_ROOT}
 COPY injury_system.py ${LAMBDA_TASK_ROOT}
 COPY process_model.py ${LAMBDA_TASK_ROOT}
 COPY lineup_optimizer.py ${LAMBDA_TASK_ROOT}
-COPY fp_predictor.py ${LAMBDA_TASK_ROOT}
 
 # Install Python dependencies
 RUN pip install -r requirements.txt

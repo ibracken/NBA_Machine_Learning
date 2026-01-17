@@ -10,7 +10,8 @@ from s3_utils import load_from_s3, save_to_s3
 logger = logging.getLogger()
 
 
-def process_model(model_name, s3_path, projections_data, daily_preds, today, box_scores, injury_context=None):
+def process_model(model_name, s3_path, projections_data, daily_preds, today, box_scores,
+                  injury_context=None, fp_model_names=None):
     """
     Unified model processing pipeline: FP prediction, filtering, lineup optimization, and S3 persistence
 
@@ -52,19 +53,34 @@ def process_model(model_name, s3_path, projections_data, daily_preds, today, box
         df_proj = df_proj[df_proj['PLAYER'].isin(todays_players)]
         logger.info(f"{model_name}: Filtered to {len(df_proj)} players with games on {today}")
 
-    # Optimize lineup
-    lineup = optimize_lineup(df_proj, daily_preds, today)
+    # Optimize lineup(s) for each FP model variant
+    lineups_by_fp = {}
+    fp_model_names = fp_model_names or ['current']
 
-    # Save lineup (merge with existing)
-    if not lineup.empty:
-        lineup_path = f"{s3_path}/daily_lineups.parquet"
-        existing_lineup = load_from_s3(lineup_path)
-        if not existing_lineup.empty:
-            existing_lineup['DATE'] = pd.to_datetime(existing_lineup['DATE']).dt.date
-            existing_lineup = existing_lineup[existing_lineup['DATE'] != today]
-            lineup = pd.concat([existing_lineup, lineup], ignore_index=True)
-        save_to_s3(lineup, lineup_path)
-        logger.info(f"{model_name} lineup saved: {len(lineup[lineup['DATE'] == today])} players")
+    for fp_model in fp_model_names:
+        fp_col = f'PROJECTED_FP_{fp_model}'
+        if fp_col not in df_proj.columns:
+            logger.warning(f"{model_name}: Missing {fp_col} - skipping lineup")
+            lineups_by_fp[fp_model] = pd.DataFrame()
+            continue
+
+        df_lineup = df_proj.copy()
+        df_lineup['PROJECTED_FP'] = df_lineup[fp_col]
+
+        lineup = optimize_lineup(df_lineup, daily_preds, today)
+
+        # Save lineup (merge with existing) in FP-specific folder
+        if not lineup.empty:
+            lineup_path = f"{s3_path}/fp_{fp_model}/daily_lineups.parquet"
+            existing_lineup = load_from_s3(lineup_path)
+            if not existing_lineup.empty:
+                existing_lineup['DATE'] = pd.to_datetime(existing_lineup['DATE']).dt.date
+                existing_lineup = existing_lineup[existing_lineup['DATE'] != today]
+                lineup = pd.concat([existing_lineup, lineup], ignore_index=True)
+            save_to_s3(lineup, lineup_path)
+            logger.info(f"{model_name} ({fp_model}) lineup saved: {len(lineup[lineup['DATE'] == today])} players")
+
+        lineups_by_fp[fp_model] = lineup
 
     # Save projections (merge with existing)
     proj_path = f"{s3_path}/minutes_projections.parquet"
@@ -80,4 +96,4 @@ def process_model(model_name, s3_path, projections_data, daily_preds, today, box
         context_path = f"injury_context/{s3_path.split('/')[-1]}.parquet"
         save_to_s3(injury_context, context_path)
 
-    return df_proj, lineup
+    return df_proj, lineups_by_fp

@@ -306,14 +306,15 @@ def lambda_handler(event, context):
             use_multiplier=True
         )
 
-        df_complex, lineup_complex = process_model(
+        df_complex, lineups_complex = process_model(
             "Complex Position Overlap",
             "model_comparison/complex_position_overlap",
             projections_complex,
             daily_preds,
             today,
             box_scores,
-            injury_context=injury_ctx_complex
+            injury_context=injury_ctx_complex,
+            fp_model_names=['current', 'fp_per_min', 'barebones']
         )
 
         # ========== Update daily_predictions with complex-position minutes ==========
@@ -354,14 +355,15 @@ def lambda_handler(event, context):
             use_multiplier=False
         )
 
-        df_direct, lineup_direct = process_model(
+        df_direct, lineups_direct = process_model(
             "Direct Position Exchange",
             "model_comparison/direct_position_only",
             projections_direct,
             daily_preds,
             today,
             box_scores,
-            injury_context=injury_ctx_direct
+            injury_context=injury_ctx_direct,
+            fp_model_names=['current', 'fp_per_min', 'barebones']
         )
 
         # ========== Model 3: Formula C Baseline ==========
@@ -372,13 +374,14 @@ def lambda_handler(event, context):
             projected_min, confidence = project_minutes_formula_c(player, today, games_log)
             projections_formula_c.append(build_projection_dict(player, projected_min, confidence, today))
 
-        df_formula_c, lineup_formula_c = process_model(
+        df_formula_c, lineups_formula_c = process_model(
             "Formula C Baseline",
             "model_comparison/formula_c_baseline",
             projections_formula_c,
             daily_preds,
             today,
-            box_scores
+            box_scores,
+            fp_model_names=['current', 'fp_per_min', 'barebones']
         )
 
         # ========== Model 4: DailyFantasyFuel Baseline ==========
@@ -427,12 +430,25 @@ def lambda_handler(event, context):
 
         # === NEW: Send Notification ===
         # Collect only today's data for the email
-        lineups_to_send = {
-            "1. Complex Position Overlap": lineup_complex[lineup_complex['DATE'] == today] if not lineup_complex.empty else pd.DataFrame(),
-            "2. Direct Position Only": lineup_direct[lineup_direct['DATE'] == today] if not lineup_direct.empty else pd.DataFrame(),
-            "3. Formula C Baseline": lineup_formula_c[lineup_formula_c['DATE'] == today] if not lineup_formula_c.empty else pd.DataFrame(),
-            "4. DailyFantasyFuel": lineup_dff[lineup_dff['DATE'] == today] if not lineup_dff.empty else pd.DataFrame()
-        }
+        lineups_to_send = {}
+        fp_models = ['current', 'fp_per_min', 'barebones']
+
+        for fp_model in fp_models:
+            lineup_df = lineups_complex.get(fp_model, pd.DataFrame())
+            label = f"1. Complex Position Overlap (FP: {fp_model})"
+            lineups_to_send[label] = lineup_df[lineup_df['DATE'] == today] if not lineup_df.empty else pd.DataFrame()
+
+        for fp_model in fp_models:
+            lineup_df = lineups_direct.get(fp_model, pd.DataFrame())
+            label = f"2. Direct Position Only (FP: {fp_model})"
+            lineups_to_send[label] = lineup_df[lineup_df['DATE'] == today] if not lineup_df.empty else pd.DataFrame()
+
+        for fp_model in fp_models:
+            lineup_df = lineups_formula_c.get(fp_model, pd.DataFrame())
+            label = f"3. Formula C Baseline (FP: {fp_model})"
+            lineups_to_send[label] = lineup_df[lineup_df['DATE'] == today] if not lineup_df.empty else pd.DataFrame()
+
+        lineups_to_send["4. DailyFantasyFuel"] = lineup_dff[lineup_dff['DATE'] == today] if not lineup_dff.empty else pd.DataFrame()
 
         # Send the email
         send_multi_model_notification(lineups_to_send, today)
