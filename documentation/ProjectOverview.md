@@ -1,150 +1,69 @@
-# **NBA_Machine_Learning**
-# OUTDATED RIGHT NOW
-## **Overview**
-This repository contains work for a machine learning (ML) model designed to predict NBA player fantasy points. 
+# NBA_Machine_Learning
 
+## Overview
+This repo is an AWS Lambda-based pipeline that scrapes NBA data, builds clustering + supervised-learning models, and generates DraftKings lineups and minutes projections. Data and models are stored in S3 as Parquet/PKL files (no Postgres in the current codebase).
 
-## **Table of Contents**
-- [Scripts](#scripts)
-- [Postgres](#postgres)
-- [Images](#images)
-- [Models](#models)
-- [Main](#main)
-- [FlowChart](#flowchart)
+## Key directories
+- `lambda/`: All Lambda functions and per-Lambda `requirements.txt`/Dockerfiles.
+- `scripts/`: Local notebooks and utilities (analysis, parsing, S3 inspection).
+- `aws/`: Shared S3 utilities and inspection helpers.
+- `frontend/`: Static UI for viewing lineups from the `lineup-optimizer` API.
+- `documentation/`: Project docs (this file + `minutes-projection.md`).
+- `images/`: Figures used in analysis and docs.
 
----
-## **Scripts**
+## Lambda pipeline (current code)
+The `lambda/game-scheduler` Lambda scrapes the DailyFantasyFuel main slate start time and schedules these functions in sequence (2-minute offsets):
+1. `cluster-scraper` -> `data/advanced_player_stats/current.parquet`
+2. `nba-clustering` -> `data/clustered_players/current.parquet`
+3. `box-score-scraper` -> `data/box_scores/{season}.parquet` and `data/box_scores/current.parquet`
+4. `supervised-learning` -> `models/{current,fp_per_min,barebones}.pkl` and `models/*_feature_names.json`
+5. `daily-predictions` -> `data/daily_predictions/current.parquet` (DFF projections only; no model FP here)
+6. `injury-scraper` -> `data/injuries/current.parquet` (OUT-only from NBA PDF)
+7. `minutes-projection` -> `model_comparison/*` (minutes + lineups) and `injury_context/*`
 
-- [unsupervisedLearningIntro.ipynb](#unsupervisedlearningintropynb)
-- [clusterScraper.py](#clusterscraperpy)
-- [nbaClustering.ipynb](#nbaclusteringipynb)
-- [boxScoreScraper.py](#boxscorescraperpy)
-- [nbaSupervisedLearningFullNBA.ipynb](#nbasupervisedlearningfullnbaipynb)
-- [nbaSupervisedLearningClusters.ipynb](#nbasupervisedlearningclustersipynb)
-- [dailyPredictionsScraper.py](#dailypredictionsscraperpy)
+## What each Lambda does
+- `cluster-scraper`: Pulls advanced/scoring/defense stats from the NBA API and writes `data/advanced_player_stats/current.parquet`.
+- `nba-clustering`: Runs PCA + KMeans on multiple seasons of advanced stats and writes `data/clustered_players/current.parquet`.
+- `box-score-scraper`: Pulls box scores from the NBA API, calculates DraftKings FP, adds rolling/career features, joins clusters, and writes seasonal + current Parquet files.
+- `supervised-learning`: Trains three GradientBoosting FP models (`current`, `fp_per_min`, `barebones`) and saves models + feature lists to S3.
+- `daily-predictions`: Scrapes DailyFantasyFuel projections and writes `data/daily_predictions/current.parquet` (PPG projection, salary, position, starter status).
+- `injury-scraper`: Scrapes the official NBA injury report PDF and writes `data/injuries/current.parquet` with `OUT` players and estimated injury dates.
+- `minutes-projection`: Generates minutes projections (complex overlap, direct position, formula C) + DFF baseline lineups, updates `PROJECTED_MIN` in daily predictions, writes lineups/minutes to `model_comparison/*`, and persists injury context.
+- `lineup-optimizer` (standalone): A separate Lambda that optimizes a lineup from `daily_predictions` using `MY_MODEL_PREDICTED_FP`. It is not part of the game-scheduler pipeline.
 
-### **unsupervisedLearningIntro.ipynb:**
-This notebook contains an introduction to unsupervised learning. It covers the KMeans algorithm and basic clustering. It has no relevance to the NBA beyond serving as an introduction to the techniques used in the project.
+## S3 schemas and inspection
+- `s3_bucket_test_results.txt` is the authoritative schema snapshot for all S3 buckets.
+- `scripts/test_s3_buckets.py` regenerates that file by inspecting bucket keys.
 
----
+## Frontend
+`frontend/index.html` is a lightweight viewer for the `lineup-optimizer` API (see `frontend/README.md`).
 
-### **clusterScraper.py:**
-This script scrapes https://www.nba.com/stats/players/advanced for various player statistics and stores them in a pandas DataFrame. No clustering occurs here; it is a data collection tool that gathers every player's statistics for a given season. This data is stored in PostgreSQL table **advancedPlayerStats** which serves as the primary point of reference for other tables. Info from this table is extracted into `nbaClustering.ipynb`, where player archetype clusters can be formed.
+## Dependency constraints (Lambda)
+Lambda runtimes must stay on NumPy 1.24.x-compatible wheels to avoid sklearn pickle issues.
+Recommended pins for Lambda: numpy==1.24.3, scipy==1.11.4, pandas==2.1.3, scikit-learn==1.5.2.
 
----
-
-### **nbaClustering.ipynb:**
-This notebook contains the code to cluster NBA players into archetypes. It uses the data collected by `clusterScraper.py` in PostgreSQL table **ClusteredPlayers** to form the player archetype clusters. 
-
-#### **Clustering Methodology:**
-- **PCA (Principal Component Analysis):** Dimensions are reduced to balance data representativeness (high variance ratio) and computational efficiency (low rate of change in the variance ratio using the elbow method).
-- **Silhouette Score:** Used to evaluate clustering performance.
-- **KMeans Algorithm:** Clusters are formed to correspond to player archetypes.
-
-#### **Outputs:**
-- Cluster assignments are stored in PostgreSQL table **advancedPlayerStats**.
-- Visualizations are included in the `images` directory.
----
-
-### **boxScoreScraper.py:**
-This script scrapes the NBA website for all the box scores for each player in a given season. It stores the data in a pandas DataFrame and saves it to PostgreSQL table **boxScores**, along with some computations regarding fantasy points. This data is used in the Supervised Learning files.
-
-
----
-
-### **nbaSupervisedLearningFullNBA.ipynb:**
-This notebook applies Decision Tree and Random Forest algorithms to the entire NBA dataset, rather than a single player.
-
-#### **Details:**
-- **Training Dataset:** 75% of NBA player data.
-- **Testing Dataset:** Remaining 25% of NBA player data
-- **Evaluation Metric:** Mean error.
-
----
-
-### **nbaSupervisedLearningClusters.ipynb:**
-This notebook applies Decision Tree and Random Forest models to each cluster of players, calculated in the clustering step. Stored in the PostgreSQL table **testPlayerPredictions**.
-
-#### **Details:**
-- **Training Dataset:** 75% of NBA player data.
-- **Testing Dataset:** Remaining 25% of NBA player data
-- **Evaluation Metric:** Mean error.
-- **Relevancy:** More accurate and relevant than the supervised learning without clusters. Therefore the model generated is being used in the following files.
-
----
-
-### **dailyPredictionsScraper.py:**
-This script scrapes https://www.dailyfantasyfuel.com/nba/projections/draftkings for the daily player matchups and stores them in a pandas DataFrame. It then uses the Random Forest model generated in `nbaSupervisedLearningClusters.ipynb` to predict the fantasy points for each player. The predictions are stored in PostgreSQL table **dailyPlayerPredictions**.
-
-## **Postgres**
-Database models and configuration for storing and querying NBA data.
-
----
-### **config.py:**
-This script contains the configuration settings for the PostgreSQL database. It should be used by all other scripts to connect to the database.
-
----
-### **create_tables.py:**
-This script will build all tables necessary for the project. It should be run before any other scripts outside of config to ensure the database is properly configured.
-
-
-## **Images**
-Visualizations explaining the project workflow and model details.
-
-## **Models**
-Serialized machine learning models (e.g., `.sav` files) for fantasy point predictions.
-
-
-## **FlowChart**
-A visual representation of the data pipeline and machine learning workflow. Updated 2025-12-22.
+## FlowChart (current pipeline)
 ```mermaid
 graph TD;
-    lambda/cluster-scraper-->advanced_player_stats_S3;
-    lambda/box-score-scraper-->box_scores_S3;
-    lambda/injury-scraper-->injuries_S3;
-    advanced_player_stats_S3-->lambda/nba-clustering;
-    lambda/nba-clustering-->clustered_players_S3;
-    box_scores_S3-->lambda/supervised_learning;
-    clustered_players_S3-->lambda/supervised_learning;
-    lambda/supervised_learning-->test_player_predictions_S3;
-    lambda/supervised_learning-->models/RFCluster.sav;
-    clustered_players_S3-->lambda/box-score-scraper;
-    lambda/daily-predictions-->daily_predictions_S3;
-    daily_predictions_S3-->lambda/minutes-projection;
-    box_scores_S3-->lambda/minutes-projection;
-    injuries_S3-->lambda/minutes-projection;
-    models/RFCluster.sav-->lambda/minutes-projection;
-    lambda/minutes-projection-->model_comparison/complex_position_overlap;
-    lambda/minutes-projection-->model_comparison/direct_position_only;
-    lambda/minutes-projection-->model_comparison/formula_c_baseline;
-    lambda/minutes-projection-->model_comparison/daily_fantasy_fuel_baseline;
+    game-scheduler-->cluster-scraper;
+    cluster-scraper-->advanced_player_stats_S3;
+    advanced_player_stats_S3-->nba-clustering;
+    nba-clustering-->clustered_players_S3;
+    box-score-scraper-->box_scores_S3;
+    clustered_players_S3-->box-score-scraper;
+    box_scores_S3-->supervised-learning;
+    supervised-learning-->models_S3;
+    daily-predictions-->daily_predictions_S3;
+    injury-scraper-->injuries_S3;
 
+    daily_predictions_S3-->minutes-projection;
+    box_scores_S3-->minutes-projection;
+    injuries_S3-->minutes-projection;
+    models_S3-->minutes-projection;
+
+    minutes-projection-->model_comparison_complex;
+    minutes-projection-->model_comparison_direct;
+    minutes-projection-->model_comparison_formula_c;
+    minutes-projection-->model_comparison_dff;
+    minutes-projection-->injury_context_S3;
 ```
-
-## **Recent Changes (2025-12-22)**
-
-### Deprecated
-- **`MY_MODEL_PREDICTED_FP` column**: Removed from daily-predictions (was confusing and redundant)
-- **`lambda/lineup-optimizer/`**: No longer triggered by game-scheduler. Minutes-projection handles all lineup generation.
-- **`fp_predictor.py`**: Removed from minutes-projection (duplicate of functionality in lineup_optimizer.py)
-
-### Updated Pipeline
-Now runs 7 lambdas (was 8):
-1. cluster-scraper (t+0)
-2. nba-clustering (t+2)
-3. box-score-scraper (t+4)
-4. supervised-learning (t+6)
-5. daily-predictions (t+9)
-6. injury-scraper (t+11)
-7. minutes-projection (t+13) - **Now generates all lineups**
-
-### Data Schema Changes
-
-**daily_predictions** now has 8 columns (removed 6):
-- PLAYER, GAME_DATE, PPG_PROJECTION, PROJECTED_MIN, SALARY, POSITION, ACTUAL_FP, ACTUAL_MIN
-
-Removed columns:
-- MY_MODEL_PREDICTED_FP
-- MY_MODEL_CLOSER_PREDICTION
-- PREV_FP, PREV_MIN
-- SEASON_AVG_FP, SEASON_AVG_MIN

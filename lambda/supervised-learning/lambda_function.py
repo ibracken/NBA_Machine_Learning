@@ -57,14 +57,10 @@ def save_model_to_s3(model, key):
 def calculate_rest_days(df):
     """Calculate rest days for each player based on their previous game"""
     logger.info("Calculating rest days for players")
-
-    # Create a copy to avoid modifying the original
     df_sorted = df.copy()
-
-    # Ensure GAME_DATE is datetime (will be used later for SEASON calculation too)
     df_sorted['GAME_DATE'] = pd.to_datetime(df_sorted['GAME_DATE'])
-
-    # Sort by player and game date (ascending for proper calculation)
+    
+    # Sort by player and game date ascending
     df_sorted = df_sorted.sort_values(['PLAYER', 'GAME_DATE'])
 
     # Calculate days since last game for each player
@@ -117,7 +113,7 @@ def run_supervised_learning():
         df = pd.concat([df, df2, df3, df4])
         logger.info(f"Loaded {len(df)} box score records from multiple seasons")
         
-        # Validate box scores data structure
+        # Check incoming box scores data structure
         required_box_score_cols = ['PLAYER', 'GAME_DATE', 'FP', 'Last3_FP_Avg', 'Last7_FP_Avg', 'Season_FP_Avg',
                                    'Career_FP_Avg', 'Games_Played_Career', 'MIN', 'MATCHUP',
                                    'Last7_MIN_Avg', 'Season_MIN_Avg', 'Career_MIN_Avg']
@@ -140,7 +136,7 @@ def run_supervised_learning():
 
         logger.info(f"Box scores data validation passed: {len(df)} records with required columns")
 
-        # Filter out players with zero minutes (data validation)
+        # Filter out players with zero minutes
         if 'MIN' in df.columns:
             original_count = len(df)
             df = df[df['MIN'] != 0]
@@ -180,10 +176,6 @@ def run_supervised_learning():
         # Calculate rest days for each player
         df = calculate_rest_days(df)
 
-        # Career features (Career_FP_Avg, Games_Played_Career) are now pre-calculated in box score scraper
-        logger.info(f"Using pre-calculated career features - Career_FP_Avg mean: {df['Career_FP_Avg'].mean():.2f}, "
-                   f"Max games played: {df['Games_Played_Career'].max()}")
-
         # Handle NaN values in rolling averages (from first games of season)
         logger.info("Handling NaN values in rolling averages")
 
@@ -199,7 +191,7 @@ def run_supervised_learning():
         # For first career game, Career_FP_Avg will be NaN - fill with 0
         df['Career_FP_Avg'] = df['Career_FP_Avg'].fillna(0)
 
-        # Games_Played_Career should never be NaN (it's a cumcount), but handle just in case
+        # Games_Played_Career should never be NaN but handle just in case
         df['Games_Played_Career'] = df['Games_Played_Career'].fillna(0)
 
         # Handle minutes rolling averages (same pattern as FP)
@@ -238,8 +230,8 @@ def run_supervised_learning():
         logger.info(f"After NaN handling - Career_MIN_Avg nulls: {df['Career_MIN_Avg'].isna().sum()}")
 
         # Calculate FP_PER_MIN feature
-        # First 5 games of season: Use Career_FP_Avg / Career_MIN_Avg
-        # After 5 games: Use Season_FP_Avg / Season_MIN_Avg
+        # First 2 games of season: Use Career_FP_Avg / Career_MIN_Avg
+        # After 2 games: Use Season_FP_Avg / Season_MIN_Avg
         logger.info("Calculating FP_PER_MIN feature")
 
         # Extract season from GAME_DATE for season-based grouping
@@ -254,19 +246,19 @@ def run_supervised_learning():
         # Sort by PLAYER and GAME_DATE (ascending) to properly number games chronologically
         df = df.sort_values(['PLAYER', 'GAME_DATE'], ascending=[True, True])
 
-        # Determine which games are first 5 of season for each player
+        # Determine which games are first 2 of season for each player
         df['SEASON_GAME_NUM'] = df.groupby(['PLAYER', 'SEASON']).cumcount() + 1
 
         # Calculate FP_PER_MIN based on game number
         df['FP_PER_MIN'] = np.where(
-            df['SEASON_GAME_NUM'] <= 5,
-            # First 5 games: Career FP/MIN
+            df['SEASON_GAME_NUM'] <= 2,
+            # First 2 games: Career FP/MIN
             np.where(
                 df['Career_MIN_Avg'] > 0,
                 df['Career_FP_Avg'] / df['Career_MIN_Avg'],
                 0
             ),
-            # After 5 games: Season FP/MIN
+            # After 2 games: Season FP/MIN
             np.where(
                 df['Season_MIN_Avg'] > 0,
                 df['Season_FP_Avg'] / df['Season_MIN_Avg'],
@@ -378,6 +370,7 @@ def run_supervised_learning():
             predictions = model.predict(test)
 
             # Calculate R² score
+            # 0-1 scale, higher is better
             r2 = r2_score(test_labels, predictions)
             logger.info(f"{model_name}: R² Score = {r2:.4f}")
 
