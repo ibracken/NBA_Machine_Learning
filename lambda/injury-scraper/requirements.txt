@@ -7,3 +7,4 @@ beautifulsoup4==4.12.2
 lxml==5.1.0
 pytz==2024.1
 pdfplumber==0.11.0
+Pillow==10.4.0

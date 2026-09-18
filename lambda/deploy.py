@@ -98,8 +98,16 @@ def main():
     docker = resolve_command("docker", [Path(r"C:\Program Files\Docker\Docker\resources\bin\docker.exe")])
 
     ecr_login(docker, aws)
+    failed = []
     for function_name in targets:
-        deploy(function_name, docker)
+        try:
+            deploy(function_name, docker)
+        except subprocess.CalledProcessError as exc:
+            print(f"=== {function_name}: FAILED (exit {exc.returncode}); continuing with remaining functions")
+            failed.append(function_name)
+    if failed:
+        sys.exit(f"Deploy failed for: {', '.join(failed)}")
+    print(f"Deployed {len(targets)} function(s) successfully")
 
 
 if __name__ == "__main__":
