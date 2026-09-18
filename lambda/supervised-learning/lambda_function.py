@@ -45,6 +45,13 @@ def load_dataframe_from_s3(key):
         logger.error(f"Error loading data from {key}: {e}")
         raise
 
+def s3_key_exists(key):
+    try:
+        s3.head_object(Bucket=BUCKET_NAME, Key=key)
+        return True
+    except s3.exceptions.ClientError:
+        return False
+
 def save_model_to_s3(model, key):
     """Save sklearn model to S3"""
     model_buffer = BytesIO()
@@ -108,12 +115,18 @@ def run_supervised_learning():
     logger.info("Starting supervised learning model training")
     
     try:
-        # Load box scores: current season plus the three before it
+        # Load the current season and the three before it from their season-named files.
+        # current.parquet is only a mirror of the latest season with data, so reading it here would
+        # double-count that season in the offseason and on opening day.
         logger.info("Loading box scores data from S3 (multiple seasons)")
         start_year = season_start_year()
-        frames = [load_dataframe_from_s3('data/box_scores/current.parquet')]
-        for year in range(start_year - 3, start_year):
-            frames.append(load_dataframe_from_s3(f'data/box_scores/{year}-{str(year + 1)[2:]}.parquet'))
+        frames = []
+        for year in range(start_year - 3, start_year + 1):
+            key = f'data/box_scores/{year}-{str(year + 1)[2:]}.parquet'
+            if s3_key_exists(key):
+                frames.append(load_dataframe_from_s3(key))
+            else:
+                logger.info(f"{key} not found (season has not started yet)")
         df = pd.concat(frames)
         logger.info(f"Loaded {len(df)} box score records from multiple seasons")
         

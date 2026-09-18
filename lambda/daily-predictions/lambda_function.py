@@ -63,15 +63,6 @@ def load_dataframe_from_s3(key):
         logger.error(f"Error loading data from {key}: {e}")
         raise
 
-def load_model_from_s3(key):
-    """Load sklearn model from S3"""
-    try:
-        obj = s3.get_object(Bucket=BUCKET_NAME, Key=key)
-        return pickle.load(BytesIO(obj['Body'].read()))
-    except Exception as e:
-        logger.error(f"Error loading model from {key}: {e}")
-        raise
-
 def safe_float(value):
     try:
         return float(value)

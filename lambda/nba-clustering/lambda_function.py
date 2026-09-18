@@ -45,6 +45,13 @@ def load_dataframe_from_s3(key):
         logger.error(f"Error loading data from {key}: {e}")
         raise
 
+def s3_key_exists(key):
+    try:
+        s3.head_object(Bucket=BUCKET_NAME, Key=key)
+        return True
+    except s3.exceptions.ClientError:
+        return False
+
 def season_start_year(now=None):
     now = now or datetime.now()
     return now.year if now.month >= 7 else now.year - 1
@@ -55,16 +62,19 @@ def run_clustering_analysis():
     logger.info("Starting NBA clustering analysis")
     
     try:
-        # Load latest player stats from S3: current season plus the three before it
+        # Load the current season and the three before it from their season-named files
+        # (cluster-scraper writes one per run). The newest file does not exist until the season starts.
         logger.info("Loading player stats from S3")
         start_year = season_start_year()
-        current = load_dataframe_from_s3('data/advanced_player_stats/current.parquet')
-        current['SEASON'] = f"{start_year}-{str(start_year + 1)[2:]}"
-        frames = [current]
-        for year in range(start_year - 3, start_year):
-            prior = load_dataframe_from_s3(f'data/advanced_player_stats/{year}-{year + 1}.parquet')
-            prior['SEASON'] = f"{year}-{str(year + 1)[2:]}"
-            frames.append(prior)
+        frames = []
+        for year in range(start_year - 3, start_year + 1):
+            key = f'data/advanced_player_stats/{year}-{year + 1}.parquet'
+            if not s3_key_exists(key):
+                logger.info(f"{key} not found (season has not started yet)")
+                continue
+            season_df = load_dataframe_from_s3(key)
+            season_df['SEASON'] = f"{year}-{str(year + 1)[2:]}"
+            frames.append(season_df)
         df = pd.concat(frames, ignore_index=True)
         logger.info(f"Loaded {len(df)} player records from {len(df['SEASON'].unique())} seasons")
 

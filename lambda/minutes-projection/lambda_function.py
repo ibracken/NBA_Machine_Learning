@@ -101,7 +101,9 @@ def lambda_handler(event, context):
         # Load LAST season's box scores for players with 0 games this season
         # BUT only for players on the current injury report (filters out free agents/retired players)
         logger.info("Loading previous season box scores for season-long injuries...")
-        prev_start_year = (today.year if today.month >= 7 else today.year - 1) - 1
+        # "Previous" is relative to the season actually in current.parquet, which lags the calendar
+        # in the offseason and on opening day
+        prev_start_year = int(str(box_scores['SEASON'].max()).split('-')[0]) - 1
         prev_season_box_scores = load_from_s3(f'data/box_scores/{prev_start_year}-{str(prev_start_year + 1)[2:]}.parquet')
 
         if not prev_season_box_scores.empty:
