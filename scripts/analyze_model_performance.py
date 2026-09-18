@@ -9,6 +9,7 @@ import pandas as pd
 import boto3
 from io import BytesIO
 import logging
+from pathlib import Path
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -236,6 +237,60 @@ def print_mean_lineups(daily_totals_df, lineups_dict):
 
             print(f"    {slot:4s} {player:25s} ({team:3s})  Actual: {actual_fp:5.1f}  Proj: {projected_fp:5.1f}  Diff: {diff:+6.1f}")
 
+def build_simple_text_report(daily_totals_df):
+    """
+    Build a very simple model comparison report as plain text.
+    """
+    lines = []
+    lines.append("MODEL PERFORMANCE RESULTS")
+    lines.append("=" * 50)
+    lines.append("")
+
+    model_stats = []
+    for model in daily_totals_df['MODEL'].unique():
+        model_data = daily_totals_df[daily_totals_df['MODEL'] == model]
+        model_stats.append({
+            'MODEL': model,
+            'LINEUPS': len(model_data),
+            'MEDIAN_FP': model_data['TOTAL_ACTUAL_FP'].median(),
+            'MEAN_FP': model_data['TOTAL_ACTUAL_FP'].mean(),
+            'BEST_FP': model_data['TOTAL_ACTUAL_FP'].max(),
+            'WORST_FP': model_data['TOTAL_ACTUAL_FP'].min()
+        })
+
+    stats_df = pd.DataFrame(model_stats).sort_values('MEDIAN_FP', ascending=False)
+
+    lines.append("RANKING (by median total FP)")
+    lines.append("-" * 50)
+    for rank, row in enumerate(stats_df.itertuples(index=False), 1):
+        lines.append(
+            f"{rank}. {row.MODEL} | "
+            f"Lineups: {row.LINEUPS} | "
+            f"Median: {row.MEDIAN_FP:.2f} | "
+            f"Mean: {row.MEAN_FP:.2f} | "
+            f"Best: {row.BEST_FP:.2f} | "
+            f"Worst: {row.WORST_FP:.2f}"
+        )
+
+    lines.append("")
+    lines.append("BEST SINGLE-DAY LINEUP PER MODEL")
+    lines.append("-" * 50)
+    for row in stats_df.itertuples(index=False):
+        model_data = daily_totals_df[daily_totals_df['MODEL'] == row.MODEL]
+        best_lineup = model_data.nlargest(1, 'TOTAL_ACTUAL_FP').iloc[0]
+        lines.append(
+            f"{row.MODEL}: {best_lineup['DATE']} | {best_lineup['TOTAL_ACTUAL_FP']:.2f} FP"
+        )
+
+    lines.append("")
+    return "\n".join(lines)
+
+def write_simple_text_report(report_text, output_filename="model_performance_summary.txt"):
+    """Write simple text report to script directory."""
+    output_path = Path(__file__).resolve().parent / output_filename
+    output_path.write_text(report_text, encoding='utf-8')
+    logger.info(f"Saved simple summary to {output_path}")
+
 def main():
     """Main analysis function"""
     logger.info("Starting model performance analysis")
@@ -259,6 +314,10 @@ def main():
     print_median_lineups(daily_totals_df, lineups_dict)
     print_mean_lineups(daily_totals_df, lineups_dict)
     print_top_lineups(daily_totals_df, lineups_dict, top_n=2)
+
+    # Save a simplified text report
+    simple_report = build_simple_text_report(daily_totals_df)
+    write_simple_text_report(simple_report)
 
     print("\n" + "="*80)
     logger.info("Analysis complete!")

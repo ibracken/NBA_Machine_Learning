@@ -47,8 +47,13 @@ def process_model(model_name, s3_path, projections_data, daily_preds, today, box
     # Add fantasy points projections
     df_proj = predict_fantasy_points(df_proj, box_scores, daily_preds, today)
 
+    # Normalize daily prediction dates once
+    if not daily_preds.empty and 'GAME_DATE' in daily_preds.columns:
+        daily_preds = daily_preds.copy()
+        daily_preds['GAME_DATE'] = pd.to_datetime(daily_preds['GAME_DATE']).dt.date
+
     # Filter to today's players only
-    if not daily_preds.empty:
+    if not daily_preds.empty and 'GAME_DATE' in daily_preds.columns:
         todays_players = daily_preds[daily_preds['GAME_DATE'] == today]['PLAYER'].unique()
         df_proj = df_proj[df_proj['PLAYER'].isin(todays_players)]
         logger.info(f"{model_name}: Filtered to {len(df_proj)} players with games on {today}")
@@ -56,8 +61,20 @@ def process_model(model_name, s3_path, projections_data, daily_preds, today, box
     # Optimize lineup(s) for each FP model variant
     lineups_by_fp = {}
     fp_model_names = fp_model_names or ['current']
+    has_games_today = (
+        not daily_preds.empty
+        and 'GAME_DATE' in daily_preds.columns
+        and not daily_preds[daily_preds['GAME_DATE'] == today].empty
+    )
+
+    if not has_games_today:
+        logger.warning(f"{model_name}: No games scheduled for {today}; skipping lineup optimization")
 
     for fp_model in fp_model_names:
+        if not has_games_today:
+            lineups_by_fp[fp_model] = pd.DataFrame()
+            continue
+
         fp_col = f'PROJECTED_FP_{fp_model}'
         if fp_col not in df_proj.columns:
             logger.warning(f"{model_name}: Missing {fp_col} - skipping lineup")
@@ -88,12 +105,19 @@ def process_model(model_name, s3_path, projections_data, daily_preds, today, box
     if not existing_proj.empty:
         existing_proj['DATE'] = pd.to_datetime(existing_proj['DATE']).dt.date
         existing_proj = existing_proj[existing_proj['DATE'] != today]
-        df_proj = pd.concat([existing_proj, df_proj], ignore_index=True)
-    save_to_s3(df_proj, proj_path)
+
+    if df_proj.empty:
+        merged_proj = existing_proj
+    elif existing_proj.empty:
+        merged_proj = df_proj
+    else:
+        merged_proj = pd.concat([existing_proj, df_proj], ignore_index=True)
+
+    save_to_s3(merged_proj, proj_path)
 
     # Save injury context if provided
     if injury_context is not None:
         context_path = f"injury_context/{s3_path.split('/')[-1]}.parquet"
         save_to_s3(injury_context, context_path)
 
-    return df_proj, lineups_by_fp
+    return merged_proj, lineups_by_fp

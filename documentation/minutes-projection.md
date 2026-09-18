@@ -37,14 +37,20 @@ Total lineups per run: 9 (minutes x FP) + 1 (DFF) = 10.
 ## Minutes Modeling
 
 ### complex_position_overlap
-- Allows adjacent position overlap (PG/SG, SG/SF, SF/PF, PF/C).
-- Exact position match gets a multiplier in injury redistribution.
+- Injury-aware redistribution model.
+- Eligible replacements include adjacent positions (PG/SG, SG/SF, SF/PF, PF/C).
+- Exact-position replacements get extra weight.
+- For longer injury windows, it pivots to post-injury observed rotation behavior.
 
 ### direct_position_only
-- Exact position match only.
+- Injury-aware redistribution model.
+- Minutes are redistributed only to exact-position replacements.
+- Uses the same injury-state tracking as the complex model, but without adjacent-position sharing.
 
 ### formula_c_baseline
-- No injury redistribution. Uses the statistical baseline formula only.
+- Non-redistribution baseline.
+- Per-player projection only: `0.5*season_avg + 0.3*last7_avg + 0.2*prev_game`.
+- Useful as a control against injury-aware approaches.
 
 ## Injury-aware logic (high level)
 

@@ -6,6 +6,7 @@ import pandas as pd
 import io
 import pickle
 import logging
+import numpy as np
 from config import s3_client, sns_client, SNS_TOPIC_ARN, BUCKET_NAME
 
 logger = logging.getLogger()
@@ -50,12 +51,38 @@ def load_model_from_s3(key):
     """Load pickled model from S3"""
     try:
         response = s3_client.get_object(Bucket=BUCKET_NAME, Key=key)
-        return pickle.loads(response['Body'].read())
+        model_bytes = response['Body'].read()
+
+        try:
+            return pickle.loads(model_bytes)
+        except ModuleNotFoundError as e:
+            # NumPy 2.x pickles may reference numpy._core; NumPy 1.x expects numpy.core.
+            if "numpy._core" in str(e):
+                logger.warning(
+                    "Model %s was likely pickled with NumPy 2.x. "
+                    "Retrying load with numpy._core -> numpy.core compatibility shim.",
+                    key
+                )
+
+                class _NumpyCompatUnpickler(pickle.Unpickler):
+                    def find_class(self, module, name):
+                        if module.startswith("numpy._core"):
+                            module = module.replace("numpy._core", "numpy.core", 1)
+                        return super().find_class(module, name)
+
+                return _NumpyCompatUnpickler(io.BytesIO(model_bytes)).load()
+
+            raise
     except s3_client.exceptions.NoSuchKey:
         logger.warning(f"Model not found: {key}")
         return None
     except Exception as e:
-        logger.error(f"Error loading model {key}: {str(e)}")
+        logger.error(
+            "Error loading model %s: %s (numpy=%s)",
+            key,
+            str(e),
+            np.__version__,
+        )
         return None
 
 # ==================== Notification Helper ====================

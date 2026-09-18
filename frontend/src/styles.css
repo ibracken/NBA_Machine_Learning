@@ -1,0 +1,133 @@
+:root {
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #172033;
+  background: #f5f7fb;
+  font-synthesis: none;
+  line-height: 1.5;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  --border: #d9e0ea;
+  --muted: #667085;
+  --panel: #fff;
+  --accent: #1f6feb;
+  --danger: #b42318;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; min-height: 100vh; }
+button {
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  padding: 10px 16px;
+  color: #fff;
+  background: var(--accent);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+button:disabled { cursor: wait; opacity: 0.65; }
+
+.app-shell {
+  width: min(1120px, calc(100% - 32px));
+  margin: 0 auto;
+  padding: 32px 0;
+}
+
+.page-header,
+.card-header,
+.header-actions { display: flex; gap: 16px; }
+.page-header,
+.card-header { align-items: flex-start; justify-content: space-between; }
+.page-header { margin-bottom: 24px; }
+.header-actions { align-items: center; }
+
+h1, h2, p { margin: 0; letter-spacing: 0; }
+h1 { font-size: 2.5rem; line-height: 1.1; }
+h2 { font-size: 1.35rem; }
+p, .card-header span, .metric span, .status-pill { color: var(--muted); }
+.page-header p, .card-header p { margin-top: 6px; }
+
+.status-pill {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 8px 12px;
+  background: #fff;
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+.status-pill.ready { color: #067647; }
+.status-pill.error { color: var(--danger); }
+
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.metric,
+.lineup-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.metric { padding: 18px; }
+.metric span { display: block; font-size: 0.88rem; font-weight: 700; }
+.metric strong {
+  display: block;
+  margin-top: 4px;
+  color: #101828;
+  font-size: 1.65rem;
+  line-height: 1.15;
+}
+
+.lineup-card { overflow: hidden; }
+.card-header { padding: 20px; border-bottom: 1px solid var(--border); }
+.card-header span { font-size: 0.92rem; white-space: nowrap; }
+.salary-bar,
+.salary-bar span { height: 6px; }
+.salary-bar { background: #e9eef6; }
+.salary-bar span { display: block; background: var(--accent); }
+
+.table-wrap { overflow-x: auto; }
+table { width: 100%; min-width: 820px; border-collapse: collapse; }
+th, td {
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+}
+th {
+  color: var(--muted);
+  background: #f8fafc;
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+tbody tr:last-child td { border-bottom: 0; }
+.slot {
+  display: inline-flex;
+  min-width: 48px;
+  justify-content: center;
+  border-radius: 6px;
+  padding: 5px 8px;
+  color: var(--accent);
+  background: #eef4ff;
+  font-weight: 800;
+}
+.player-name, .strong { color: #101828; font-weight: 800; }
+
+.state-card { padding: 40px 20px; color: var(--muted); text-align: center; }
+.state-card.error { color: var(--danger); }
+.state-card p { max-width: 720px; margin: 8px auto 0; }
+
+@media (max-width: 760px) {
+  .app-shell { width: min(100% - 20px, 1120px); padding: 20px 0; }
+  .page-header, .card-header { flex-direction: column; }
+  .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  h1 { font-size: 2rem; }
+}
+
+@media (max-width: 520px) {
+  .summary-grid { grid-template-columns: 1fr; }
+  .header-actions { width: 100%; justify-content: space-between; }
+}

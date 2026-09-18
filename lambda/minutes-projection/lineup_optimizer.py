@@ -245,9 +245,8 @@ def predict_fantasy_points(projections_df, box_scores, daily_predictions, today)
             df_features = df_features[expected_features]
             logger.info(f"{model_name}: Aligned {len(df_features.columns)} features")
 
-        # Make predictions
-        X = df_features.values
-        predictions = models[model_name].predict(X)
+        # Make predictions (pass DataFrame to preserve feature names)
+        predictions = models[model_name].predict(df_features)
         df[f'PROJECTED_FP_{model_name}'] = predictions.round(1)
 
         # Override predictions for players with no history
@@ -332,6 +331,10 @@ def optimize_lineup(projections_df, daily_predictions, today):
     df = projections_df.copy()
 
     if not daily_predictions.empty and 'SALARY' in daily_predictions.columns:
+        daily_predictions = daily_predictions.copy()
+        if 'GAME_DATE' in daily_predictions.columns:
+            daily_predictions['GAME_DATE'] = pd.to_datetime(daily_predictions['GAME_DATE']).dt.date
+
         # Filter for only today's games
         todays_games = daily_predictions[daily_predictions['GAME_DATE'] == today]
 

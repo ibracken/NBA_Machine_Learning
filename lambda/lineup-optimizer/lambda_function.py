@@ -16,6 +16,11 @@ s3 = boto3.client('s3')
 sns = boto3.client('sns')
 BUCKET_NAME = 'nba-prediction-ibracken'
 SNS_TOPIC_ARN = 'arn:aws:sns:us-east-1:349928386418:lineup-optimizer-notifications'  # Replace with your SNS topic ARN
+API_LINEUP_KEYS = [
+    'model_comparison/complex_position_overlap/fp_current/daily_lineups.parquet',
+    'model_comparison/complex_position_overlap/daily_lineups.parquet',
+    'data/daily_lineups/current.parquet',
+]
 
 # S3 utility functions
 def load_dataframe_from_s3(key):
@@ -226,11 +231,22 @@ def optimize_lineup(df):
     return lineup_df
 
 def get_saved_lineup():
-    """Just read the existing lineup from S3 without regenerating"""
+    """Read the latest saved lineup from S3 without regenerating."""
     logger.info("Fetching saved lineup from S3")
 
     try:
-        lineup_df = load_dataframe_from_s3('data/daily_lineups/current.parquet')
+        lineup_df = pd.DataFrame()
+        source_key = None
+
+        for key in API_LINEUP_KEYS:
+            try:
+                candidate = load_dataframe_from_s3(key)
+                if not candidate.empty:
+                    lineup_df = candidate
+                    source_key = key
+                    break
+            except Exception as e:
+                logger.warning(f"Could not load lineup candidate {key}: {e}")
 
         if lineup_df.empty:
             logger.warning("No saved lineup found")
@@ -239,16 +255,12 @@ def get_saved_lineup():
                 'error': 'No lineup available'
             }
 
-        # Convert date if needed
-        if 'GAME_DATE' in lineup_df.columns:
-            lineup_df['GAME_DATE'] = lineup_df['GAME_DATE'].apply(
-                lambda x: x.isoformat() if isinstance(x, datetime.date) else str(x)
-            )
+        lineup_df = normalize_lineup_for_api(lineup_df)
 
         total_salary = lineup_df['SALARY'].sum()
         total_fp = lineup_df['PREDICTED_FP'].sum()
 
-        logger.info(f"Successfully loaded lineup: {len(lineup_df)} players, ${total_salary:.0f} salary")
+        logger.info(f"Successfully loaded lineup from {source_key}: {len(lineup_df)} players, ${total_salary:.0f} salary")
 
         return {
             'success': True,
@@ -264,6 +276,42 @@ def get_saved_lineup():
             'success': False,
             'error': f'Could not load lineup: {str(e)}'
         }
+
+def normalize_lineup_for_api(lineup_df):
+    """Map old and new lineup schemas into the frontend API contract."""
+    lineup_df = lineup_df.copy()
+
+    if 'DATE' in lineup_df.columns:
+        lineup_df['DATE'] = pd.to_datetime(lineup_df['DATE']).dt.date
+        latest_date = lineup_df['DATE'].max()
+        lineup_df = lineup_df[lineup_df['DATE'] == latest_date].copy()
+        lineup_df = lineup_df.rename(columns={'DATE': 'GAME_DATE'})
+
+    if 'PROJECTED_FP' in lineup_df.columns and 'PREDICTED_FP' not in lineup_df.columns:
+        lineup_df = lineup_df.rename(columns={'PROJECTED_FP': 'PREDICTED_FP'})
+
+    required_cols = {'SLOT', 'PLAYER', 'POSITION', 'SALARY', 'PREDICTED_FP', 'GAME_DATE'}
+    missing_cols = required_cols - set(lineup_df.columns)
+    if missing_cols:
+        raise ValueError(f'Lineup file missing required columns: {missing_cols}')
+
+    if 'GAME_DATE' in lineup_df.columns:
+        lineup_df['GAME_DATE'] = lineup_df['GAME_DATE'].apply(format_api_value)
+
+    slot_order = {'PG': 0, 'SG': 1, 'SF': 2, 'PF': 3, 'C': 4, 'G': 5, 'F': 6, 'UTIL': 7}
+    lineup_df['slot_order'] = lineup_df['SLOT'].map(slot_order).fillna(99)
+    lineup_df = lineup_df.sort_values('slot_order').drop(columns=['slot_order'])
+
+    return lineup_df.applymap(format_api_value)
+
+def format_api_value(value):
+    if pd.isna(value):
+        return None
+    if isinstance(value, (datetime.datetime, datetime.date)):
+        return value.isoformat()
+    if hasattr(value, 'item'):
+        return value.item()
+    return value
 
 def generate_optimal_lineup():
     """Main function to generate optimal DraftKings lineup"""

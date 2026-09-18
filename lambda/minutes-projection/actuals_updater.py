@@ -50,12 +50,17 @@ def update_actual_minutes(box_scores, target_date=None, today=None):
             'formula_c_baseline',
             'daily_fantasy_fuel_baseline'
         ]
+        fp_models = ['current', 'fp_per_min', 'barebones']
 
         updated_count = 0
         for model in models:
             # Update minutes projections
             key = f'model_comparison/{model}/minutes_projections.parquet'
-            df_proj = load_from_s3(key)
+            # DFF baseline has lineups only (no minutes_projections.parquet by design)
+            if model == 'daily_fantasy_fuel_baseline':
+                df_proj = pd.DataFrame()
+            else:
+                df_proj = load_from_s3(key)
 
             if not df_proj.empty:
                 df_proj['DATE'] = pd.to_datetime(df_proj['DATE']).dt.date
@@ -85,32 +90,40 @@ def update_actual_minutes(box_scores, target_date=None, today=None):
                 logger.info(f"Updated {updated_this_model} projection records for {model} (was {missing_before} missing, now {missing_after} missing)")
 
             # Update lineups
-            lineup_key = f'model_comparison/{model}/daily_lineups.parquet'
-            df_lineup = load_from_s3(lineup_key)
+            if model == 'daily_fantasy_fuel_baseline':
+                lineup_keys = [f'model_comparison/{model}/daily_lineups.parquet']
+            else:
+                lineup_keys = [
+                    f'model_comparison/{model}/fp_{fp_model}/daily_lineups.parquet'
+                    for fp_model in fp_models
+                ]
 
-            if not df_lineup.empty:
-                df_lineup['DATE'] = pd.to_datetime(df_lineup['DATE']).dt.date
+            for lineup_key in lineup_keys:
+                df_lineup = load_from_s3(lineup_key)
 
-                # Track rows with missing actuals before update
-                lineup_missing_before = df_lineup['ACTUAL_FP'].isna().sum()
+                if not df_lineup.empty:
+                    df_lineup['DATE'] = pd.to_datetime(df_lineup['DATE']).dt.date
 
-                # Drop existing ACTUAL_FP to avoid conflicts
-                if 'ACTUAL_FP' in df_lineup.columns:
-                    df_lineup = df_lineup.drop(columns=['ACTUAL_FP'])
+                    # Track rows with missing actuals before update
+                    lineup_missing_before = df_lineup['ACTUAL_FP'].isna().sum()
 
-                # Merge actual FP on (PLAYER, DATE) to match correct game
-                df_lineup = df_lineup.merge(
-                    df_actuals[['PLAYER', 'DATE', 'ACTUAL_FP']],
-                    on=['PLAYER', 'DATE'],
-                    how='left'
-                )
+                    # Drop existing ACTUAL_FP to avoid conflicts
+                    if 'ACTUAL_FP' in df_lineup.columns:
+                        df_lineup = df_lineup.drop(columns=['ACTUAL_FP'])
 
-                # Track rows with missing actuals after update
-                lineup_missing_after = df_lineup['ACTUAL_FP'].isna().sum()
-                lineup_updated = lineup_missing_before - lineup_missing_after
+                    # Merge actual FP on (PLAYER, DATE) to match correct game
+                    df_lineup = df_lineup.merge(
+                        df_actuals[['PLAYER', 'DATE', 'ACTUAL_FP']],
+                        on=['PLAYER', 'DATE'],
+                        how='left'
+                    )
 
-                save_to_s3(df_lineup, lineup_key)
-                logger.info(f"Updated {lineup_updated} lineup records for {model} (was {lineup_missing_before} missing, now {lineup_missing_after} missing)")
+                    # Track rows with missing actuals after update
+                    lineup_missing_after = df_lineup['ACTUAL_FP'].isna().sum()
+                    lineup_updated = lineup_missing_before - lineup_missing_after
+
+                    save_to_s3(df_lineup, lineup_key)
+                    logger.info(f"Updated {lineup_updated} lineup records for {model} ({lineup_key}) (was {lineup_missing_before} missing, now {lineup_missing_after} missing)")
 
         return updated_count
 
