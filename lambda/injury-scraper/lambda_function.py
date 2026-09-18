@@ -8,6 +8,8 @@ Columns: PLAYER, TEAM, STATUS, RETURN_DATE, RETURN_DATE_DT, ESTIMATED_INJURY_DAT
 import boto3
 import pandas as pd
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from bs4 import BeautifulSoup
 from datetime import datetime
 import pytz
@@ -34,6 +36,36 @@ if not logger.handlers:
 # S3 client
 s3 = boto3.client('s3')
 BUCKET_NAME = 'nba-prediction-ibracken'
+REQUEST_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+}
+
+
+def http_session():
+    retry = Retry(total=3, backoff_factor=2, status_forcelist=[429, 500, 502, 503, 504], allowed_methods=['GET'])
+    session = requests.Session()
+    session.mount('https://', HTTPAdapter(max_retries=retry))
+    session.headers.update(REQUEST_HEADERS)
+    # official.nba.com appears to throttle AWS egress IPs; route through the proxy when one is configured
+    proxy_url = os.environ.get('PROXY_URL')
+    if proxy_url:
+        session.proxies.update({'http': proxy_url, 'https': proxy_url})
+    return session
+
+
+def season_start_year(now=None):
+    now = now or datetime.now()
+    return now.year if now.month >= 7 else now.year - 1
+
+
+def current_nba_season():
+    start = season_start_year()
+    return f"{start}-{str(start + 1)[2:]}"
+
+
+def previous_nba_season():
+    start = season_start_year() - 1
+    return f"{start}-{str(start + 1)[2:]}"
 
 # S3 utility functions
 def save_dataframe_to_s3(df, key):
@@ -65,11 +97,17 @@ def get_latest_nba_injury_pdf_url():
     Scrapes the NBA official injury report page to find the most recent PDF link.
     Returns the URL of the latest report.
     """
-    page_url = "https://official.nba.com/nba-injury-report-2025-26-season/"
+    page_url = f"https://official.nba.com/nba-injury-report-{current_nba_season()}-season/"
+    session = http_session()
 
     try:
         logger.info(f"Fetching NBA official injury report page: {page_url}")
-        response = requests.get(page_url, timeout=10)
+        response = session.get(page_url, timeout=30)
+        if response.status_code == 404:
+            # The new season's page may not exist yet during the offseason
+            fallback_url = f"https://official.nba.com/nba-injury-report-{previous_nba_season()}-season/"
+            logger.warning(f"{page_url} returned 404, falling back to {fallback_url}")
+            response = session.get(fallback_url, timeout=30)
         response.raise_for_status()
 
         soup = BeautifulSoup(response.content, 'html.parser')
@@ -316,7 +354,7 @@ def scrape_nba_official_injuries():
         pdf_path = os.path.join(temp_dir, pdf_filename)
 
         logger.info(f"Downloading PDF to: {pdf_path}")
-        response = requests.get(pdf_url, timeout=30)
+        response = http_session().get(pdf_url, timeout=60)
         response.raise_for_status()
 
         with open(pdf_path, 'wb') as f:
@@ -389,7 +427,8 @@ def estimate_injury_dates(df_injuries):
 
             try:
                 # Load previous season box scores
-                response = s3.get_object(Bucket=BUCKET_NAME, Key='data/box_scores/2024-25.parquet')
+                prev_season_key = f'data/box_scores/{previous_nba_season()}.parquet'
+                response = s3.get_object(Bucket=BUCKET_NAME, Key=prev_season_key)
                 prev_box_scores = pd.read_parquet(BytesIO(response['Body'].read()))
                 logger.info(f"Loaded {len(prev_box_scores)} previous season box score records")
 
@@ -415,7 +454,7 @@ def estimate_injury_dates(df_injuries):
                             logger.info(f"{player_name}: Using previous season last game date (season-long injury)")
 
             except s3.exceptions.NoSuchKey:
-                logger.warning("Previous season box scores not found in S3 (data/box_scores/2024-25.parquet)")
+                logger.warning(f"Previous season box scores not found in S3 ({prev_season_key})")
             except Exception as e:
                 logger.warning(f"Could not load previous season box scores: {e}")
 
@@ -505,24 +544,11 @@ def lambda_handler(event, context):
                     'status_breakdown': result.get('status_breakdown', {})
                 }
             }
-        else:
-            return {
-                'statusCode': 500,
-                'body': {
-                    'message': 'Injury scraping (PDF) failed',
-                    'error': result['error']
-                }
-            }
+        raise RuntimeError(f"Injury scraping (PDF) failed: {result['error']}")
 
     except Exception as e:
         logger.error(f"Lambda handler error: {str(e)}")
-        return {
-            'statusCode': 500,
-            'body': {
-                'message': 'Lambda execution failed',
-                'error': str(e)
-            }
-        }
+        raise
 
 # For local testing
 if __name__ == "__main__":

@@ -1,7 +1,6 @@
 import pandas as pd
 import numpy as np
 from sklearn.ensemble import GradientBoostingRegressor
-from sklearn.model_selection import train_test_split
 from sklearn.metrics import r2_score
 from statsmodels.stats.outliers_influence import variance_inflation_factor
 import boto3
@@ -54,6 +53,11 @@ def save_model_to_s3(model, key):
     s3.put_object(Bucket=BUCKET_NAME, Key=key, Body=model_buffer.getvalue())
     logger.info(f"Saved model to s3://{BUCKET_NAME}/{key}")
 
+def season_start_year(now=None):
+    now = now or datetime.now()
+    return now.year if now.month >= 7 else now.year - 1
+
+
 def calculate_rest_days(df):
     """Calculate rest days for each player based on their previous game"""
     logger.info("Calculating rest days for players")
@@ -104,13 +108,13 @@ def run_supervised_learning():
     logger.info("Starting supervised learning model training")
     
     try:
-        # Load box scores data from multiple seasons
+        # Load box scores: current season plus the three before it
         logger.info("Loading box scores data from S3 (multiple seasons)")
-        df = load_dataframe_from_s3('data/box_scores/current.parquet')
-        df2 = load_dataframe_from_s3('data/box_scores/2024-25.parquet')
-        df3 = load_dataframe_from_s3('data/box_scores/2023-24.parquet')
-        df4 = load_dataframe_from_s3('data/box_scores/2022-23.parquet')
-        df = pd.concat([df, df2, df3, df4])
+        start_year = season_start_year()
+        frames = [load_dataframe_from_s3('data/box_scores/current.parquet')]
+        for year in range(start_year - 3, start_year):
+            frames.append(load_dataframe_from_s3(f'data/box_scores/{year}-{str(year + 1)[2:]}.parquet'))
+        df = pd.concat(frames)
         logger.info(f"Loaded {len(df)} box score records from multiple seasons")
         
         # Check incoming box scores data structure
@@ -344,12 +348,13 @@ def run_supervised_learning():
             except Exception as e:
                 logger.warning(f"{model_name}: Could not calculate VIF: {e}")
 
-            # Split data
-            train, test, train_labels, test_labels = train_test_split(
-                features_encoded, labels, test_size=0.20, random_state=42
-            )
+            # Time-based split: rolling-average features leak across a random split
+            cutoff_date = df['GAME_DATE'].sort_values().iloc[int(len(df) * 0.8)]
+            train_mask = df['GAME_DATE'] < cutoff_date
+            train, test = features_encoded[train_mask], features_encoded[~train_mask]
+            train_labels, test_labels = labels[train_mask], labels[~train_mask]
 
-            logger.info(f"{model_name}: Training set: {len(train)}, Test set: {len(test)}")
+            logger.info(f"{model_name}: Training set: {len(train)} (games before {cutoff_date.date()}), Test set: {len(test)}")
 
             # Train model
             model = GradientBoostingRegressor(
@@ -380,7 +385,9 @@ def run_supervised_learning():
                 'r2_score': r2,
                 'feature_count': len(feature_names_list),
                 'train_size': len(train),
-                'test_size': len(test)
+                'test_size': len(test),
+                'feature_names': feature_names_list,
+                'feature_importances': model.feature_importances_.tolist()
             }
 
         # Log summary
@@ -389,6 +396,33 @@ def run_supervised_learning():
         logger.info(f"{'='*60}")
         for model_name, results in models_results.items():
             logger.info(f"{model_name}: R²={results['r2_score']:.4f}, Features={results['feature_count']}")
+        # Presentation-friendly report for the "current" model feature importances
+        if 'current' in models_results:
+            current_results = models_results['current']
+            feature_names = current_results.get('feature_names', [])
+            feature_importances = current_results.get('feature_importances', [])
+
+            if feature_names and feature_importances and len(feature_names) == len(feature_importances):
+                importance_df = pd.DataFrame({
+                    'feature': feature_names,
+                    'importance': feature_importances
+                }).sort_values('importance', ascending=False).reset_index(drop=True)
+
+                total_importance = importance_df['importance'].sum()
+                if total_importance > 0:
+                    importance_df['importance_pct'] = (importance_df['importance'] / total_importance) * 100
+                else:
+                    importance_df['importance_pct'] = 0.0
+
+                logger.info(f"\n{'='*60}")
+                logger.info("CURRENT MODEL FEATURE IMPORTANCE")
+                logger.info("(Relative split importance; not linear coefficients)")
+                logger.info(f"{'='*60}")
+                for _, row in importance_df.iterrows():
+                    logger.info(
+                        f"{row['feature']}: importance={row['importance']:.6f} "
+                        f"({row['importance_pct']:.2f}%)"
+                    )
 
         return {
             'success': True,
@@ -420,24 +454,11 @@ def lambda_handler(event, context):
                     'results': result['results']
                 })
             }
-        else:
-            return {
-                'statusCode': 500,
-                'body': json.dumps({
-                    'message': 'Supervised learning model training failed',
-                    'error': result['error']
-                })
-            }
+        raise RuntimeError(f"Supervised learning model training failed: {result['error']}")
 
     except Exception as e:
         logger.error(f"Lambda handler error: {str(e)}")
-        return {
-            'statusCode': 500,
-            'body': json.dumps({
-                'message': 'Lambda execution failed',
-                'error': str(e)
-            })
-        }
+        raise
 
 # For local testing
 if __name__ == "__main__":

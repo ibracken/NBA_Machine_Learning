@@ -16,3 +16,12 @@ models/*
 !models/
 
 scripts/run_nba_ml_main.bat
+
+frontend/node_modules
+# Local tool settings
+.claude/settings.local.json
+
+# Generated outputs
+*.log
+scripts/model_performance_summary.txt
+frontend/dist

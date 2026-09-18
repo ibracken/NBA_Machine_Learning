@@ -30,7 +30,7 @@ from lineup_optimizer import optimize_lineup
 
 # Configure logging
 logger = logging.getLogger()
-logger.setLevel(logging.DEBUG)  # Set to DEBUG to capture all messages
+logger.setLevel(logging.WARNING)  # Set to DEBUG to capture all messages
 
 # Add console handler for local testing (Lambda provides its own handlers)
 if not logger.handlers:
@@ -82,6 +82,10 @@ def lambda_handler(event, context):
                 'body': f'Updated {updated_count} actual minutes records'
             }
 
+        # Default: Generate projections (and update actuals first)
+        logger.info("Running actuals update before projections")
+        update_actual_minutes(box_scores)
+
         # Default: Generate projections
         logger.info(f"Starting minutes projection for {today}")
 
@@ -97,7 +101,8 @@ def lambda_handler(event, context):
         # Load LAST season's box scores for players with 0 games this season
         # BUT only for players on the current injury report (filters out free agents/retired players)
         logger.info("Loading previous season box scores for season-long injuries...")
-        prev_season_box_scores = load_from_s3('data/box_scores/2024-25.parquet')
+        prev_start_year = (today.year if today.month >= 7 else today.year - 1) - 1
+        prev_season_box_scores = load_from_s3(f'data/box_scores/{prev_start_year}-{str(prev_start_year + 1)[2:]}.parquet')
 
         if not prev_season_box_scores.empty:
             prev_season_box_scores['GAME_DATE'] = pd.to_datetime(prev_season_box_scores['GAME_DATE'])
@@ -198,6 +203,14 @@ def lambda_handler(event, context):
         logger.info("Loading position data from daily predictions...")
         try:
             daily_preds = load_from_s3('data/daily_predictions/current.parquet')
+            if not daily_preds.empty and 'GAME_DATE' in daily_preds.columns:
+                daily_preds['GAME_DATE'] = pd.to_datetime(daily_preds['GAME_DATE']).dt.date
+
+            # Optional projection date override for local/backfill runs
+            if event and event.get('date'):
+                today = datetime.strptime(event['date'], '%Y-%m-%d').date()
+                logger.info(f"Using overridden projection date: {today}")
+
             if not daily_preds.empty and 'POSITION' in daily_preds.columns:
                 # Get most recent position for each player
                 position_map = daily_preds[['PLAYER', 'POSITION']].drop_duplicates(subset='PLAYER', keep='last')
@@ -463,10 +476,7 @@ def lambda_handler(event, context):
 
     except Exception as e:
         logger.error(f"Error in lambda_handler: {str(e)}", exc_info=True)
-        return {
-            'statusCode': 500,
-            'body': f'Error: {str(e)}'
-        }
+        raise
 
 
 # For local testing

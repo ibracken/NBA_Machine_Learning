@@ -365,6 +365,11 @@ def scrape_nba_api():
         logger.info("=== SCRAPING DEFENSE STATS ===")
         defense_df = scrape_single_api_endpoint(session, 'Defense', 'defense')
         
+        missing = [name for name, frame in [('advanced', advanced_df), ('scoring', scoring_df), ('defense', defense_df)] if frame.empty]
+        if missing:
+            logger.error(f"Stat endpoints returned no data: {missing}")
+            return {'success': False, 'error': f"Stat endpoints returned no data: {missing}"}
+
         # Merge all DataFrames
         if not advanced_df.empty:
             merged_df = merge_api_dataframes(advanced_df, scoring_df, defense_df)
@@ -373,8 +378,10 @@ def scrape_nba_api():
                 # Transform to cluster format
                 cluster_df = transform_api_data_to_cluster_format(merged_df)
                 
-                # Save to S3
+                # Save to S3: current.parquet for the pipeline, plus a per-season copy so history survives rollover
                 save_dataframe_to_s3(cluster_df, 'data/advanced_player_stats/current.parquet')
+                start_year = int(get_current_nba_season().split('-')[0])
+                save_dataframe_to_s3(cluster_df, f'data/advanced_player_stats/{start_year}-{start_year + 1}.parquet')
                 logger.info(f"Successfully saved {len(cluster_df)} player records to S3")
                 
                 return {
@@ -419,25 +426,12 @@ def lambda_handler(event, context):
                     'columns_count': result['columns_count']
                 })
             }
-        else:
-            return {
-                'statusCode': 500,
-                'body': json.dumps({
-                    'message': 'NBA API scraper failed',
-                    'error': result['error']
-                })
-            }
-            
+        raise RuntimeError(f"NBA API scraper failed: {result['error']}")
+
     except Exception as e:
         logger.error(f"Lambda handler error: {str(e)}")
-        return {
-            'statusCode': 500,
-            'body': json.dumps({
-                'message': 'Lambda execution failed',
-                'error': str(e)
-            })
-        }
+        raise
     
 if __name__ == "__main__":
     result = scrape_nba_api()
-    print(f"Box score scraper result: {result}")
+    print(f"Cluster scraper result: {result}")

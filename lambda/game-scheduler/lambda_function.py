@@ -9,6 +9,8 @@ from tempfile import mkdtemp
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 import pytz
 
 # Configure logging
@@ -72,11 +74,9 @@ def scrape_main_slate_time():
         import time
         time.sleep(3)
 
-        # Try to find the main slate time element
-        # XPath: /html/body/div[2]/div[1]/div[1]/div[2]/div[2]/div/div[1]/div[1]/div[2]/div[2]/div/span[1]
+        # Try to find the main slate time element (site layout changes often)
         try:
-            slate_element = driver.find_element(By.XPATH, "/html/body/div[2]/div[1]/div[1]/div[2]/div[2]/div/div[1]/div[1]/div[2]/div[2]/div/span[1]")
-            slate_text = slate_element.text
+            slate_text = find_slate_text(driver)
             logger.info(f"Found slate text: {slate_text}")
 
             # Parse format: "SUN 6:00PM ET"
@@ -138,23 +138,61 @@ def scrape_main_slate_time():
     finally:
         driver.quit()
 
+
+def find_slate_text(driver):
+    """Find slate time text like 'THU 7:00PM ET' using resilient selectors."""
+    slate_pattern = re.compile(r'\b(MON|TUE|WED|THU|FRI|SAT|SUN)\s+\d{1,2}:\d{2}(AM|PM)\s+ET\b')
+
+    # Wait until any element containing "ET" appears
+    try:
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.XPATH, "//*[contains(., 'ET')]"))
+        )
+    except Exception:
+        pass
+
+    # Scan common elements first
+    for tag in ["span", "div", "p"]:
+        elements = driver.find_elements(By.TAG_NAME, tag)
+        for el in elements:
+            text = (el.text or "").strip()
+            if slate_pattern.search(text):
+                return slate_pattern.search(text).group(0)
+
+    # Fallback: search full page source
+    page_text = driver.page_source or ""
+    match = slate_pattern.search(page_text)
+    if match:
+        return match.group(0)
+
+    raise ValueError("Could not locate slate time text on page")
+
+def is_nba_season(now_utc=None):
+    """Rough in-season window (mid-Oct to late June) used to decide whether a missing slate is an error."""
+    now_et = (now_utc or datetime.now(timezone.utc)).astimezone(pytz.timezone('America/New_York'))
+    year = now_et.year
+    return now_et.date() >= datetime(year, 10, 15).date() or now_et.date() <= datetime(year, 6, 25).date()
+
+
 def lambda_handler(event, context):
     events_client = boto3.client('events')
-    lambda_client = boto3.client('lambda')
 
     # Check if running locally (mock context)
     is_local = context.invoked_function_arn.startswith("arn:aws:lambda:us-east-1:123456789012")
 
     # === CLEANUP OLD RULES ===
     if not is_local:
-        cleanup_old_rules(events_client, lambda_client)
+        cleanup_old_rules(events_client)
 
     # === SCRAPE MAIN SLATE TIME FROM DAILYFANTASYFUEL ===
     main_slate_time = scrape_main_slate_time()
 
     if not main_slate_time:
-        logger.error("Could not scrape main slate time from DailyFantasyFuel")
-        return {'statusCode': 500, 'body': 'Failed to scrape main slate time'}
+        if is_nba_season():
+            # In season this means the DFF page changed or the scrape broke; surface it to CloudWatch alarms
+            raise RuntimeError("Could not scrape main slate time from DailyFantasyFuel during the season")
+        logger.info("No slate found and it is the offseason; nothing to schedule")
+        return {'statusCode': 200, 'body': 'Offseason: no slate to schedule'}
 
     logger.info(f"Main slate starts at: {main_slate_time}")
 
@@ -226,19 +264,6 @@ def lambda_handler(event, context):
                 })
             }]
 
-            # Grant permission to EventBridge to invoke Lambda
-            try:
-                lambda_client.add_permission(
-                    FunctionName=func_name,
-                    StatementId=f'EventBridge-{rule_name}',
-                    Action='lambda:InvokeFunction',
-                    Principal='events.amazonaws.com',
-                    SourceArn=f"arn:aws:events:{region}:{account_id}:rule/{rule_name}"
-                )
-                logger.info(f"Added permission for {func_name}")
-            except lambda_client.exceptions.ResourceConflictException:
-                pass  # Permission already exists
-
             # Attach target to the rule
             events_client.put_targets(
                 Rule=rule_name,
@@ -249,12 +274,7 @@ def lambda_handler(event, context):
 
     except Exception as e:
         logger.error(f"Error scheduling main slate: {e}")
-        return {
-            'statusCode': 500,
-            'body': json.dumps({
-                'message': f'Failed to schedule main slate: {str(e)}'
-            })
-        }
+        raise
 
     return {
         'statusCode': 200,
@@ -264,7 +284,7 @@ def lambda_handler(event, context):
     }
 
 
-def cleanup_old_rules(events_client, lambda_client):
+def cleanup_old_rules(events_client):
     """Remove EventBridge rules older than 2 days"""
     try:
         # List all rules with our naming patterns (both old nba-game-* and new nba-slate-*)
@@ -291,21 +311,6 @@ def cleanup_old_rules(events_client, lambda_client):
                         # Delete the rule
                         events_client.delete_rule(Name=rule_name)
                         logger.info(f"Cleaned up old rule: {rule_name}")
-
-                        # Remove Lambda permissions (extract function name from rule_name)
-                        # Rule name format: nba-game-{gameId}-{func_name} or nba-slate-{slateId}-{func_name}
-                        for func_name in ['cluster-scraper', 'nba-clustering', 'box-score-scraper',
-                                         'supervised-learning', 'daily-predictions', 'injury-scraper', 'minutes-projection']:
-                            if func_name in rule_name:
-                                try:
-                                    lambda_client.remove_permission(
-                                        FunctionName=func_name,
-                                        StatementId=f'EventBridge-{rule_name}'
-                                    )
-                                    logger.info(f"Removed permission for {func_name}")
-                                except:
-                                    pass  # Permission may not exist
-                                break
 
                     except Exception as e:
                         logger.error(f"Error cleaning up {rule_name}: {e}")

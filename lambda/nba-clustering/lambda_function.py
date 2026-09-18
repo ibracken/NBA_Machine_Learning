@@ -45,22 +45,27 @@ def load_dataframe_from_s3(key):
         logger.error(f"Error loading data from {key}: {e}")
         raise
 
+def season_start_year(now=None):
+    now = now or datetime.now()
+    return now.year if now.month >= 7 else now.year - 1
+
+
 def run_clustering_analysis():
     """Main function to perform NBA player clustering analysis"""
     logger.info("Starting NBA clustering analysis")
     
     try:
-        # Load latest player stats from S3
+        # Load latest player stats from S3: current season plus the three before it
         logger.info("Loading player stats from S3")
-        df = load_dataframe_from_s3('data/advanced_player_stats/current.parquet')
-        df['SEASON'] = 'current'
-        df2 = load_dataframe_from_s3('data/advanced_player_stats/2024-2025.parquet')
-        df2['SEASON'] = '2024-25'
-        df3 = load_dataframe_from_s3('data/advanced_player_stats/2023-2024.parquet')
-        df3['SEASON'] = '2023-24'
-        df4 = load_dataframe_from_s3('data/advanced_player_stats/2022-2023.parquet')
-        df4['SEASON'] = '2022-23'
-        df = pd.concat([df, df2, df3, df4], ignore_index = True)
+        start_year = season_start_year()
+        current = load_dataframe_from_s3('data/advanced_player_stats/current.parquet')
+        current['SEASON'] = f"{start_year}-{str(start_year + 1)[2:]}"
+        frames = [current]
+        for year in range(start_year - 3, start_year):
+            prior = load_dataframe_from_s3(f'data/advanced_player_stats/{year}-{year + 1}.parquet')
+            prior['SEASON'] = f"{year}-{str(year + 1)[2:]}"
+            frames.append(prior)
+        df = pd.concat(frames, ignore_index=True)
         logger.info(f"Loaded {len(df)} player records from {len(df['SEASON'].unique())} seasons")
 
         # Set player as index and filter for meaningful playing time
@@ -69,7 +74,7 @@ def run_clustering_analysis():
         df = df[df['GP'] >= 10]
         df = df[df['MIN'] >= 12]
         filtered_count = len(df)
-        logger.info(f"Filtered from {original_count} to {filtered_count} players (GP>=10, MIN>=15)")
+        logger.info(f"Filtered from {original_count} to {filtered_count} players (GP>=10, MIN>=12)")
 
         # Preserve SEASON column before dropping it (we'll need it for output)
         seasons_filtered = df['SEASON'].copy()
@@ -190,24 +195,11 @@ def lambda_handler(event, context):
                     'cluster_summary': result['cluster_summary']
                 })
             }
-        else:
-            return {
-                'statusCode': 500,
-                'body': json.dumps({
-                    'message': 'NBA clustering analysis failed',
-                    'error': result['error']
-                })
-            }
-            
+        raise RuntimeError(f"NBA clustering analysis failed: {result['error']}")
+
     except Exception as e:
         logger.error(f"Lambda handler error: {str(e)}")
-        return {
-            'statusCode': 500,
-            'body': json.dumps({
-                'message': 'Lambda execution failed',
-                'error': str(e)
-            })
-        }
+        raise
 
 # For local testing
 if __name__ == "__main__":

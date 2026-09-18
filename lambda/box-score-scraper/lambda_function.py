@@ -57,6 +57,11 @@ def get_current_nba_season():
     else:  # July-Dec = new season starting in Oct
         return f"{year}-{str(year+1)[2:]}"
 
+def previous_nba_seasons(current_season, count=3):
+    """Return the `count` seasons before `current_season`, oldest first (e.g. '2026-27' -> ['2023-24', ...])"""
+    start_year = int(current_season.split('-')[0])
+    return [f"{y}-{str(y + 1)[2:]}" for y in range(start_year - count, start_year)]
+
 def normalize_name(name):
     """Normalize player name for matching"""
     return unidecode(name.strip().lower())
@@ -350,14 +355,13 @@ def run_box_score_scraper():
     try:
         # Define seasons to fetch (past 3 years + current season)
         current_season = get_current_nba_season()
-        seasons = ['2022-23', '2023-24', '2024-25', current_season]
-        # Remove duplicates in case current_season is already in the list
-        seasons = list(dict.fromkeys(seasons))
+        seasons = previous_nba_seasons(current_season, count=3) + [current_season]
 
         logger.info(f"Current NBA season: {current_season}")
         logger.info(f"Will fetch seasons: {seasons}")
 
         season_dataframes = {}
+        failed_seasons = []
 
         # Fetch data for each season
         for season in seasons:
@@ -365,6 +369,7 @@ def run_box_score_scraper():
             df = fetch_box_scores_from_api(season)
             if df is None:
                 logger.warning(f"Failed to fetch data for season {season}, skipping")
+                failed_seasons.append(season)
                 continue
 
             # Process the data
@@ -407,14 +412,12 @@ def run_box_score_scraper():
 
             if len(season_df) > 0:
 
-                # Determine S3 key
-                if season == seasons[-1]:  # Latest season is "current"
-                    s3_key = 'data/box_scores/current.parquet'
-                else:
-                    s3_key = f'data/box_scores/{season}.parquet'
-
-                # Save to S3
+                # Every season is saved under its own name so nothing is lost at season rollover;
+                # the latest season is additionally mirrored to current.parquet
+                s3_key = f'data/box_scores/{season}.parquet'
                 save_dataframe_to_s3(season_df, s3_key)
+                if season == seasons[-1]:
+                    save_dataframe_to_s3(season_df, 'data/box_scores/current.parquet')
 
                 # Store results
                 results[season] = {
@@ -430,10 +433,16 @@ def run_box_score_scraper():
         unique_players = len(combined_df['PLAYER'].unique())
         date_range = f"{combined_df['GAME_DATE'].min().strftime('%Y-%m-%d')} to {combined_df['GAME_DATE'].max().strftime('%Y-%m-%d')}"
 
-        logger.info("Box score scraping completed successfully")
+        logger.info("Box score scraping completed")
         logger.info(f"Total records across all seasons: {total_records}")
         logger.info(f"Unique players: {unique_players}")
         logger.info(f"Date range: {date_range}")
+
+        if failed_seasons:
+            return {
+                'success': False,
+                'error': f"Failed to fetch seasons {failed_seasons}; saved {list(season_dataframes)}"
+            }
 
         return {
             'success': True,
@@ -468,24 +477,11 @@ def lambda_handler(event, context):
                     'season_details': result.get('season_details', {})
                 })
             }
-        else:
-            return {
-                'statusCode': 500,
-                'body': json.dumps({
-                    'message': 'Box score scraping failed',
-                    'error': result['error']
-                })
-            }
+        raise RuntimeError(f"Box score scraping failed: {result['error']}")
 
     except Exception as e:
         logger.error(f"Lambda handler error: {str(e)}")
-        return {
-            'statusCode': 500,
-            'body': json.dumps({
-                'message': 'Lambda execution failed',
-                'error': str(e)
-            })
-        }
+        raise
 
 # For local testing
 if __name__ == "__main__":

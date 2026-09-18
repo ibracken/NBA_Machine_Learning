@@ -351,24 +351,11 @@ def lambda_handler(event, context):
                     'scraped_players': result.get('scraped_players')
                 })
             }
-        else:
-            return {
-                'statusCode': 500,
-                'body': json.dumps({
-                    'message': 'DFF scraping failed',
-                    'error': result['error']
-                })
-            }
+        raise RuntimeError(f"DFF scraping failed: {result['error']}")
 
     except Exception as e:
         logger.error(f"Lambda handler error: {str(e)}")
-        return {
-            'statusCode': 500,
-            'body': json.dumps({
-                'message': 'Lambda execution failed',
-                'error': str(e)
-            })
-        }
+        raise
 
 # For local testing
 if __name__ == "__main__":
