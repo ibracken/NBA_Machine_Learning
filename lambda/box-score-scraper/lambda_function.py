@@ -371,6 +371,9 @@ def run_box_score_scraper():
                 logger.warning(f"Failed to fetch data for season {season}, skipping")
                 failed_seasons.append(season)
                 continue
+            if df.empty:
+                logger.info(f"Season {season} has no games yet, skipping")
+                continue
 
             # Process the data
             df = process_box_scores(df)
@@ -407,6 +410,7 @@ def run_box_score_scraper():
 
         # Split back into individual seasons and save
         results = {}
+        latest_season_with_data = [s for s in seasons if s in season_dataframes][-1]
         for season in seasons:
             season_df = combined_df[combined_df['SEASON'] == season].copy()
 
@@ -416,7 +420,7 @@ def run_box_score_scraper():
                 # the latest season is additionally mirrored to current.parquet
                 s3_key = f'data/box_scores/{season}.parquet'
                 save_dataframe_to_s3(season_df, s3_key)
-                if season == seasons[-1]:
+                if season == latest_season_with_data:
                     save_dataframe_to_s3(season_df, 'data/box_scores/current.parquet')
 
                 # Store results

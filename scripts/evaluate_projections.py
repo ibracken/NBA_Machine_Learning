@@ -4,7 +4,8 @@ Evaluate stored minutes projections and lineups against actuals, split by data-f
 Regimes are defined by when upstream inputs went stale during the 2025-26 season:
   A  fresh injuries + fresh box scores   (season start .. 2026-01-19)
   B  stale injuries + fresh box scores   (2026-02-22 .. 2026-03-25)
-  C  stale injuries + stale box scores   (2026-03-26 ..)
+  C  stale injuries + stale box scores   (2026-03-26 .. 2026-04-12, regular-season end)
+Playoff dates have no actuals because box-score-scraper pulls SeasonType=Regular Season only.
 Pass --regimes to override, e.g. --regimes "A:2025-10-01:2026-01-19,B:2026-02-22:2026-03-25".
 """
 
@@ -23,7 +24,7 @@ pd.set_option("display.max_columns", 40)
 BUCKET = "nba-prediction-ibracken"
 MINUTES_MODELS = ["complex_position_overlap", "direct_position_only", "formula_c_baseline"]
 FP_MODELS = ["current", "fp_per_min", "barebones"]
-DEFAULT_REGIMES = "A:2025-10-01:2026-01-19,B:2026-02-22:2026-03-25,C:2026-03-26:2026-12-31"
+DEFAULT_REGIMES = "A:2025-10-01:2026-01-19,B:2026-02-22:2026-03-25,C:2026-03-26:2026-04-12"
 
 s3 = boto3.client("s3")
 
