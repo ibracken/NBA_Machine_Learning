@@ -12,6 +12,40 @@ from config import MAX_MINUTES, BENCH_OPPORTUNITY_CONSTANT, EXACT_POSITION_MULTI
 logger = logging.getLogger()
 
 
+# ==================== Injury Report Trust ====================
+
+def is_out_credible(player_row, games_log):
+    """
+    Decide whether an OUT flag should be believed.
+
+    The injury report only lists who is out; being healthy is the absence of a row, so a stale
+    report keeps asserting an injury that ended long ago. A player who has appeared in box scores
+    since his own estimated injury date contradicts the flag - trust the box scores.
+    """
+    if player_row.get('STATUS') != 'OUT':
+        return False
+
+    injury_date = player_row.get('ESTIMATED_INJURY_DATE')
+    if pd.isna(injury_date) or injury_date is None or games_log is None or games_log.empty:
+        return True
+
+    player_games = games_log[games_log['PLAYER'] == player_row['PLAYER']]
+    if player_games.empty:
+        return True
+
+    games_since = player_games[pd.to_datetime(player_games['GAME_DATE']) > pd.to_datetime(injury_date)]
+    if len(games_since) == 0:
+        return True
+
+    logger.warning(
+        "%s listed OUT since %s but has played %d game(s) since (most recent %s) - "
+        "ignoring stale OUT flag",
+        player_row['PLAYER'], pd.to_datetime(injury_date).date(), len(games_since),
+        pd.to_datetime(games_since['GAME_DATE']).max().date()
+    )
+    return False
+
+
 # ==================== Injury Context Helper Functions ====================
 
 def transition_beneficiaries_to_ex(injury_context, currently_injured, today):
@@ -441,7 +475,7 @@ def redistribute_injury_minutes(injured_player, team_players, injury_context, to
 
     Args:
         box_scores: Full season box scores for baseline calculations
-        position_overlap_func: Either position_overlap_complex or position_overlap_exact
+        position_overlap_func: position-overlap predicate, e.g. position_overlap_complex
         use_multiplier: If True, apply 2x multiplier for exact position (complex model)
     """
     # Skip redistribution for season-long injuries (0 games this season, using prev season data)
@@ -722,7 +756,7 @@ def redistribute_injury_minutes(injured_player, team_players, injury_context, to
 # ==================== Shared Projection Logic ====================
 
 def calculate_team_injury_redistributions(team_players, injury_context, today, box_scores,
-                                          position_overlap_func, use_multiplier):
+                                          position_overlap_func, use_multiplier, games_log=None):
     """
     Calculate injury redistributions for ALL injured players on a team ONCE.
     This avoids redundant calculations when looping through each active player.
@@ -736,6 +770,12 @@ def calculate_team_injury_redistributions(team_players, injury_context, today, b
 
     # Find teammates currently OUT (exclude those returning today - they're playing!)
     team_injuries = team_players[team_players['STATUS'] == 'OUT']
+
+    # Drop OUT flags contradicted by the player's own recent box scores; redistributing a
+    # healthy player's minutes inflates every teammate on the slate.
+    if not team_injuries.empty:
+        credible = team_injuries.apply(lambda r: is_out_credible(r, games_log), axis=1)
+        team_injuries = team_injuries[credible]
     if 'RETURN_DATE_DT' in team_injuries.columns:
         teammates_returning_today = team_injuries['RETURN_DATE_DT'] <= today
         team_injuries = team_injuries[~teammates_returning_today]

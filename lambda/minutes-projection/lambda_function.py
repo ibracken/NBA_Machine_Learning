@@ -1,10 +1,12 @@
 """
-NBA Minutes Projection Lambda - REFACTORED
-Generates projections for 4 models:
-1. Complex Position Overlap (TRUE baseline + 2x multiplier)
-2. Direct Position Exchange (TRUE baseline + exact position only)
-3. Formula C Baseline (no injury handling)
-4. DailyFantasyFuel Baseline (DFF fantasy projections)
+NBA Minutes Projection Lambda
+Generates projections for 3 models:
+1. Complex Position Overlap (injury-aware redistribution, damped)
+2. Formula C Baseline (no injury handling)
+3. DailyFantasyFuel Baseline (DFF fantasy projections)
+
+direct_position_only was removed 2026-09-20: it matched complex_position_overlap on 89.5% of
+rows and was statistically indistinguishable where it differed (MAE 5.833 vs 5.842).
 """
 
 import pandas as pd
@@ -17,10 +19,8 @@ from s3_utils import load_from_s3, send_multi_model_notification, save_to_s3
 from actuals_updater import update_actual_minutes
 from projection_models import (
     project_minutes_complex,
-    project_minutes_direct,
     project_minutes_formula_c,
     position_overlap_complex,
-    position_overlap_exact,
     generate_team_based_projections,
     build_projection_dict
 )
@@ -274,9 +274,8 @@ def lambda_handler(event, context):
 
         logger.info(f"After filtering free agents: {len(player_stats)} players remaining")
 
-        # Load injury context (shared by complex and direct models)
+        # Load injury context for the injury-aware model
         injury_context_complex = load_from_s3('injury_context/complex_position_overlap.parquet')
-        injury_context_direct = load_from_s3('injury_context/direct_position_only.parquet')
 
         # Transition beneficiaries whose injured players have returned: BENEFICIARY → EX_BENEFICIARY
         # If a player was BENEFICIARY_OF someone who's no longer in injury_data, they returned
@@ -286,16 +285,9 @@ def lambda_handler(event, context):
             currently_injured = set()
 
         injury_context_complex = transition_beneficiaries_to_ex(injury_context_complex, currently_injured, today)
-        injury_context_direct = transition_beneficiaries_to_ex(injury_context_direct, currently_injured, today)
 
         if injury_context_complex.empty:
             injury_context_complex = pd.DataFrame(columns=[
-                'PLAYER', 'TEAM', 'STATUS', 'INJURY_DATE', 'RETURN_DATE',
-                'TRUE_BASELINE', 'BENEFICIARY_OF', 'UPDATED_DATE'
-            ])
-
-        if injury_context_direct.empty:
-            injury_context_direct = pd.DataFrame(columns=[
                 'PLAYER', 'TEAM', 'STATUS', 'INJURY_DATE', 'RETURN_DATE',
                 'TRUE_BASELINE', 'BENEFICIARY_OF', 'UPDATED_DATE'
             ])
@@ -355,33 +347,7 @@ def lambda_handler(event, context):
             save_to_s3(daily_preds, 'data/daily_predictions/current.parquet')
             logger.info("Saved daily_predictions with complex-position minutes")
 
-        # ========== Model 2: Direct Position Exchange ==========
-        logger.info("Generating projections: Direct Position Exchange")
-
-        projections_direct, injury_ctx_direct = generate_team_based_projections(
-            player_stats=player_stats,
-            injury_context=injury_context_direct,
-            today=today,
-            box_scores=box_scores,
-            injury_data=injury_data,
-            games_log=games_log,
-            position_overlap_func=position_overlap_exact,
-            project_func=project_minutes_direct,
-            use_multiplier=False
-        )
-
-        df_direct, lineups_direct = process_model(
-            "Direct Position Exchange",
-            "model_comparison/direct_position_only",
-            projections_direct,
-            daily_preds,
-            today,
-            box_scores,
-            injury_context=injury_ctx_direct,
-            fp_model_names=['current', 'fp_per_min', 'barebones']
-        )
-
-        # ========== Model 3: Formula C Baseline ==========
+        # ========== Model 2: Formula C Baseline ==========
         logger.info("Generating projections: Formula C Baseline")
         projections_formula_c = []
 
@@ -399,7 +365,7 @@ def lambda_handler(event, context):
             fp_model_names=['current', 'fp_per_min', 'barebones']
         )
 
-        # ========== Model 4: DailyFantasyFuel Baseline ==========
+        # ========== Model 3: DailyFantasyFuel Baseline ==========
         logger.info("Generating lineup: DailyFantasyFuel Baseline")
 
         # Use already-loaded daily_preds (contains DFF PPG_PROJECTION)
@@ -454,26 +420,21 @@ def lambda_handler(event, context):
             lineups_to_send[label] = lineup_df[lineup_df['DATE'] == today] if not lineup_df.empty else pd.DataFrame()
 
         for fp_model in fp_models:
-            lineup_df = lineups_direct.get(fp_model, pd.DataFrame())
-            label = f"2. Direct Position Only (FP: {fp_model})"
-            lineups_to_send[label] = lineup_df[lineup_df['DATE'] == today] if not lineup_df.empty else pd.DataFrame()
-
-        for fp_model in fp_models:
             lineup_df = lineups_formula_c.get(fp_model, pd.DataFrame())
-            label = f"3. Formula C Baseline (FP: {fp_model})"
+            label = f"2. Formula C Baseline (FP: {fp_model})"
             lineups_to_send[label] = lineup_df[lineup_df['DATE'] == today] if not lineup_df.empty else pd.DataFrame()
 
-        lineups_to_send["4. DailyFantasyFuel"] = lineup_dff[lineup_dff['DATE'] == today] if not lineup_dff.empty else pd.DataFrame()
+        lineups_to_send["3. DailyFantasyFuel"] = lineup_dff[lineup_dff['DATE'] == today] if not lineup_dff.empty else pd.DataFrame()
 
         # Send the email
         send_multi_model_notification(lineups_to_send, today)
         # ==============================
 
-        logger.info(f"Successfully generated projections for all 4 models ({len(projections_complex)} players)")
+        logger.info(f"Successfully generated projections for all 3 models ({len(projections_complex)} players)")
 
         return {
             'statusCode': 200,
-            'body': f'Generated 4 model projections for {len(projections_complex)} players on {today}'
+            'body': f'Generated 3 model projections for {len(projections_complex)} players on {today}'
         }
 
     except Exception as e:

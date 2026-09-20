@@ -46,7 +46,6 @@ def update_actual_minutes(box_scores, target_date=None, today=None):
         # Update all 4 model files
         models = [
             'complex_position_overlap',
-            'direct_position_only',
             'formula_c_baseline',
             'daily_fantasy_fuel_baseline'
         ]

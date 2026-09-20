@@ -4,18 +4,26 @@ Projection models and core projection logic
 
 import pandas as pd
 import logging
-from config import MAX_MINUTES
+from config import MAX_MINUTES, INJURY_ADJUSTMENT_WEIGHT
 from injury_system import (
     get_player_baseline,
     update_confidence_status,
     add_to_injury_context,
-    remove_from_injury_context
+    remove_from_injury_context,
+    is_out_credible
 )
 
 logger = logging.getLogger()
 
 
 # ==================== Helper Functions ====================
+
+def formula_c_projection(baseline, player_row):
+    """Per-player projection with no injury redistribution: 50% baseline, 30% last 7, 20% prev game."""
+    last_7_avg = player_row.get('LAST_7_AVG_MIN', baseline)
+    prev_game = player_row.get('PREV_GAME_MIN', baseline)
+    return min(0.5 * baseline + 0.3 * last_7_avg + 0.2 * prev_game, MAX_MINUTES)
+
 
 def build_projection_dict(player_row, projected_min, confidence, today):
     """
@@ -69,9 +77,9 @@ def generate_team_based_projections(
         box_scores: Box score data
         injury_data: Current injury report
         games_log: Games log for confidence tracking
-        position_overlap_func: position_overlap_complex or position_overlap_exact
-        project_func: project_minutes_complex or project_minutes_direct
-        use_multiplier: Boolean for 2x multiplier (True for complex, False for direct)
+        position_overlap_func: position-overlap predicate, e.g. position_overlap_complex
+        project_func: projection function to apply per player
+        use_multiplier: Boolean for the exact-position 2x multiplier
 
     Returns:
         Tuple of (projections_list, updated_injury_context)
@@ -89,7 +97,8 @@ def generate_team_based_projections(
         team_redistributions, injury_ctx = calculate_team_injury_redistributions(
             team_players, injury_ctx, today, box_scores,
             position_overlap_func=position_overlap_func,
-            use_multiplier=use_multiplier
+            use_multiplier=use_multiplier,
+            games_log=games_log
         )
 
         # Generate projections for each player on the team
@@ -128,14 +137,6 @@ def position_overlap_complex(pos1, pos2):
     return False
 
 
-def position_overlap_exact(pos1, pos2):
-    """
-    Exact position match only
-    Used for: Direct Position Exchange model
-    """
-    return pos1 == pos2
-
-
 # ==================== Core Projection Logic ====================
 
 def project_minutes_with_injuries(player_row, team_players, injury_context, games_log, today, box_scores,
@@ -160,7 +161,7 @@ def project_minutes_with_injuries(player_row, team_players, injury_context, game
     4. Normal play → Use Formula C
 
     Args:
-        position_overlap_func: Either position_overlap_complex or position_overlap_exact
+        position_overlap_func: position-overlap predicate, e.g. position_overlap_complex
         use_multiplier: If True, apply 2x multiplier for exact position (complex model)
         injury_data: DataFrame of current injury report data (to filter out free agents)
 
@@ -197,7 +198,7 @@ def project_minutes_with_injuries(player_row, team_players, injury_context, game
                     logger.info(f"{player_name}: Returning from {games_missed}-game absence - will apply 25% minutes reduction")
 
     # ========== STEP 1: Handle currently injured players (status OUT) ==========
-    if player_row.get('STATUS') == 'OUT':
+    if player_row.get('STATUS') == 'OUT' and is_out_credible(player_row, games_log):
         return 0, 'HIGH', injury_context
 
     # ========== STEP 2: Season-Long Returns (10 MPG for 3 games) ==========
@@ -376,12 +377,15 @@ def project_minutes_with_injuries(player_row, team_players, injury_context, game
                     position_overlap_func, use_multiplier=use_multiplier
                 )
                 if player_name in injury_projections:
-                    projected_min = injury_projections[player_name]
+                    redistributed = injury_projections[player_name]
+                    no_injury = formula_c_projection(baseline, player_row)
+                    projected_min = no_injury + INJURY_ADJUSTMENT_WEIGHT * (redistributed - no_injury)
 
                     # Apply 25% reduction if returning from extended absence (10+ games)
                     if returning_from_absence:
+                        original = projected_min
                         projected_min = projected_min * 0.75
-                        logger.info(f"{player_name}: Returning from {games_missed}-game absence - Applied 25% reduction: {injury_projections[player_name]:.1f} -> {projected_min:.1f} MPG")
+                        logger.info(f"{player_name}: Returning from {games_missed}-game absence - Applied 25% reduction: {original:.1f} -> {projected_min:.1f} MPG")
 
                     return projected_min, confidence, injury_context
     else:
@@ -389,24 +393,28 @@ def project_minutes_with_injuries(player_row, team_players, injury_context, game
         # Check if this player benefits from any injured teammate's minutes
         for _, injury_projections in team_injury_redistributions.items():
             if player_name in injury_projections:
-                # Player benefits from this injury - use redistribution
-                projected_min = injury_projections[player_name]
+                # Player benefits from this injury, but beneficiaries historically realize only
+                # ~35% of the boost, so blend back toward the no-injury projection.
+                redistributed = injury_projections[player_name]
+                no_injury = formula_c_projection(baseline, player_row)
+                projected_min = no_injury + INJURY_ADJUSTMENT_WEIGHT * (redistributed - no_injury)
+                logger.debug(
+                    f"{player_name}: damped injury adjustment {redistributed:.1f} -> {projected_min:.1f} "
+                    f"(no-injury {no_injury:.1f}, weight {INJURY_ADJUSTMENT_WEIGHT})"
+                )
 
                 # Apply 25% reduction if returning from extended absence (10+ games)
                 if returning_from_absence:
+                    original = projected_min
                     projected_min = projected_min * 0.75
-                    logger.info(f"{player_name}: Returning from {games_missed}-game absence - Applied 25% reduction: {injury_projections[player_name]:.1f} -> {projected_min:.1f} MPG")
+                    logger.info(f"{player_name}: Returning from {games_missed}-game absence - Applied 25% reduction: {original:.1f} -> {projected_min:.1f} MPG")
 
                 return projected_min, confidence, injury_context
 
         # Team has injuries but player doesn't benefit - fall through to Formula C
 
     # Use Formula C (either no injuries or player not affected by them)
-    last_7_avg = player_row.get('LAST_7_AVG_MIN', baseline)
-    prev_game = player_row.get('PREV_GAME_MIN', baseline)
-
-    projected = 0.5 * baseline + 0.3 * last_7_avg + 0.2 * prev_game
-    projected = min(projected, MAX_MINUTES)
+    projected = formula_c_projection(baseline, player_row)
 
     # Apply 25% reduction if returning from extended absence (10+ games)
     if returning_from_absence:
@@ -430,25 +438,12 @@ def project_minutes_complex(player_row, team_players, injury_context, games_log,
     )
 
 
-# ==================== Model 2: Direct Position Exchange ====================
-
-def project_minutes_direct(player_row, team_players, injury_context, games_log, today, box_scores, injury_data, team_injury_redistributions=None):
-    """Exact position match only, no 2x multiplier"""
-    return project_minutes_with_injuries(
-        player_row, team_players, injury_context, games_log, today, box_scores,
-        position_overlap_func=position_overlap_exact,
-        use_multiplier=False,
-        injury_data=injury_data,
-        team_injury_redistributions=team_injury_redistributions
-    )
-
-
-# ==================== Model 3: Formula C Baseline (No Injury Handling) ====================
+# ==================== Model 2: Formula C Baseline (No Injury Handling) ====================
 
 def project_minutes_formula_c(player_row, today, games_log):
     """Pure Formula C - no injury redistribution"""
-    # Check if player is currently injured
-    if player_row.get('STATUS') == 'OUT':
+    # Check if player is currently injured (and that the OUT flag is not contradicted by box scores)
+    if player_row.get('STATUS') == 'OUT' and is_out_credible(player_row, games_log):
         return 0, 'HIGH'
 
     # Get baseline with fallbacks (conservative approach)

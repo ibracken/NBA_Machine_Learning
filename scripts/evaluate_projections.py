@@ -22,6 +22,7 @@ pd.set_option("display.width", 220)
 pd.set_option("display.max_columns", 40)
 
 BUCKET = "nba-prediction-ibracken"
+# direct_position_only was retired 2026-09-20; its historical files are still scored here.
 MINUTES_MODELS = ["complex_position_overlap", "direct_position_only", "formula_c_baseline"]
 FP_MODELS = ["current", "fp_per_min", "barebones"]
 DEFAULT_REGIMES = "A:2025-10-01:2026-01-19,B:2026-02-22:2026-03-25,C:2026-03-26:2026-04-12"

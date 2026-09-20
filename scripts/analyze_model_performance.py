@@ -30,9 +30,9 @@ def load_dataframe_from_s3(key):
 
 def load_all_model_lineups():
     """Load daily lineups from all minutes+FP model combinations and DFF baseline."""
+    # direct_position_only was retired 2026-09-20 (duplicate of complex); historical files remain
     minutes_models = {
         'Complex Position Overlap': 'complex_position_overlap',
-        'Direct Position Only': 'direct_position_only',
         'Formula C Baseline': 'formula_c_baseline'
     }
     fp_models = ['current', 'fp_per_min', 'barebones']
