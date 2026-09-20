@@ -7,7 +7,8 @@ import numpy as np
 import logging
 import pytz
 from datetime import datetime
-from config import MAX_MINUTES, BENCH_OPPORTUNITY_CONSTANT, EXACT_POSITION_MULTIPLIER, CONFIDENCE_CLEARANCE_GAMES
+from config import (MAX_MINUTES, BENCH_OPPORTUNITY_CONSTANT, EXACT_POSITION_MULTIPLIER,
+                    CONFIDENCE_CLEARANCE_GAMES, EX_BENEFICIARY_MIN_LIFT)
 
 logger = logging.getLogger()
 
@@ -48,7 +49,42 @@ def is_out_credible(player_row, games_log):
 
 # ==================== Injury Context Helper Functions ====================
 
-def transition_beneficiaries_to_ex(injury_context, currently_injured, today):
+def was_actually_inflated(player_name, box_scores, injury_date, return_date):
+    """
+    Did this player actually play more inside the injury window than outside it?
+
+    Returns True when there is not enough data to tell, so an unverifiable window is still
+    recorded rather than silently dropped.
+    """
+    if box_scores is None or box_scores.empty or pd.isna(injury_date):
+        return True
+
+    games = box_scores[box_scores['PLAYER'] == player_name].copy()
+    if games.empty:
+        return True
+
+    games['GAME_DATE'] = pd.to_datetime(games['GAME_DATE'])
+    injury_date = pd.to_datetime(injury_date)
+    return_date = pd.to_datetime(return_date) if pd.notna(return_date) else games['GAME_DATE'].max()
+
+    inside = games[(games['GAME_DATE'] >= injury_date) & (games['GAME_DATE'] <= return_date)]
+    outside = games[(games['GAME_DATE'] < injury_date) | (games['GAME_DATE'] > return_date)]
+    if inside.empty or len(outside) < 3:
+        return True
+
+    lift = inside['MIN'].mean() - outside['MIN'].mean()
+    if lift < EX_BENEFICIARY_MIN_LIFT:
+        logger.info(
+            "%s: not recording EX_BENEFICIARY for %s-%s (lift %+.1f MPG over %d games, "
+            "below %.1f threshold)",
+            player_name, injury_date.date(), return_date.date(), lift, len(inside),
+            EX_BENEFICIARY_MIN_LIFT
+        )
+        return False
+    return True
+
+
+def transition_beneficiaries_to_ex(injury_context, currently_injured, today, box_scores=None):
     """
     Transition statuses when injured player returns (MID-SEASON INJURIES ONLY):
     - BENEFICIARY → EX_BENEFICIARY (will revert to pre-injury baseline)
@@ -80,20 +116,21 @@ def transition_beneficiaries_to_ex(injury_context, currently_injured, today):
         injured_player = beneficiary['BENEFICIARY_OF']
 
         if injured_player not in currently_injured:
-            # Injured player returned - transition this beneficiary relationship
-            logger.info(f"{beneficiary['PLAYER']}: Transitioning BENEFICIARY -> EX_BENEFICIARY ({injured_player} returned)")
-
-            # Create new EX_BENEFICIARY record
-            injury_context = add_to_injury_context(
-                injury_context,
-                player_name=beneficiary['PLAYER'],
-                team=beneficiary['TEAM'],
-                status='EX_BENEFICIARY',
-                true_baseline=beneficiary['TRUE_BASELINE'],
-                beneficiary_of=beneficiary['BENEFICIARY_OF'],
-                injury_date=beneficiary['INJURY_DATE'],
-                return_date=today
-            )
+            # Injured player returned - close out this beneficiary relationship.
+            # Only record the exclusion window if the player really was inflated during it.
+            if was_actually_inflated(beneficiary['PLAYER'], box_scores,
+                                     beneficiary['INJURY_DATE'], today):
+                logger.info(f"{beneficiary['PLAYER']}: Transitioning BENEFICIARY -> EX_BENEFICIARY ({injured_player} returned)")
+                injury_context = add_to_injury_context(
+                    injury_context,
+                    player_name=beneficiary['PLAYER'],
+                    team=beneficiary['TEAM'],
+                    status='EX_BENEFICIARY',
+                    true_baseline=beneficiary['TRUE_BASELINE'],
+                    beneficiary_of=beneficiary['BENEFICIARY_OF'],
+                    injury_date=beneficiary['INJURY_DATE'],
+                    return_date=today
+                )
 
             # Remove only the specific BENEFICIARY record for this returned player
             injury_context = injury_context[

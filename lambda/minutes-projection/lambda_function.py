@@ -284,7 +284,9 @@ def lambda_handler(event, context):
         else:
             currently_injured = set()
 
-        injury_context_complex = transition_beneficiaries_to_ex(injury_context_complex, currently_injured, today)
+        injury_context_complex = transition_beneficiaries_to_ex(
+            injury_context_complex, currently_injured, today, box_scores=box_scores
+        )
 
         if injury_context_complex.empty:
             injury_context_complex = pd.DataFrame(columns=[
