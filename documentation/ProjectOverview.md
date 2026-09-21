@@ -47,6 +47,9 @@ Each Lambda raises on failure so the `AWS/Lambda Errors` metric fires. CloudWatc
 ## Evaluation
 `scripts/evaluate_projections.py` scores stored minutes projections and lineups against actuals, split by data-freshness regime (see the docstring for the 2025-26 regimes). Run it before judging any model change.
 
+## Roadmap
+`documentation/roadmap.md` holds the open work — LLM integration experiments, model-quality fixes, and operational gaps — ordered by expected value, each with how it gets measured.
+
 ## Frontend
 `frontend/` is a React + Vite app that reads the `lineup-optimizer` API (see `frontend/README.md`).
 
