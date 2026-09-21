@@ -45,15 +45,28 @@ An LLM with web search reads tonight's beat coverage and emits structured adjust
  "source_url": "...", "confidence": "high"}
 ```
 
+The failure mode to design against is not the model being dumb — it is the model being *fluent and
+wrong*. A plausible chain of reasoning over an ambiguous quote ("coach mentioned managing minutes")
+produces a confident adjustment that no downstream check would question. This is the same failure
+that let the injury system run wrong for five months, so it gets the same answer: measure it.
+
 Non-negotiable guardrails:
 
 - **Bounded**: clamp to ±25%. An LLM must never zero a player or invent a starter.
+- **Verbatim quote required**: the adjustment must carry the exact sentence it rests on, not a
+  paraphrase. A paraphrase hides the reasoning step where the error happens; a quote makes a wrong
+  adjustment auditable in seconds.
 - **Sourced**: every adjustment carries a URL. No source, no adjustment.
+- **Shadow mode first**: log adjustments for ≥30 slates *without applying them*. Score adjusted vs
+  unadjusted before a single lineup is affected. If it does not beat its own absence, it never ships.
 - **Logged**: write the pre- and post-adjustment projection so the effect is recoverable.
-- **Scored**: store both, compare adjusted vs unadjusted MAE over ≥30 slates before trusting it.
 
-Model: **Opus 5** with `web_search_20260209`. Bounded nightly extraction over ~30 games; Fable's
-long-horizon reasoning buys nothing and costs 2×.
+Model: **Opus 5** with `web_search_20260209` as the default. Judging whether an ambiguous quote means
+what it appears to mean is the part most likely to fail, so run **Fable 5.1 as an A/B against Opus on
+the same shadow-mode slates** rather than assuming either tier is sufficient. Compare adjustment
+precision (share of adjustments a human would endorse), not just MAE — a tier that is wrong less
+often on the judgment calls may justify 2× on a nightly job, and that is a measurable question, not
+an architectural one.
 
 ### L3. LLM vs. the whole pipeline — head-to-head
 
@@ -86,6 +99,11 @@ consistently over-projected, whether bias is drifting, whether a rule stopped ea
 Model: **Fable 5.1** — the one genuinely Fable-worthy task here. Open-ended multi-step analysis where
 the reasoning is the product and the answer is not known in advance. Weekly cadence makes the 2×
 price irrelevant.
+
+Guard against the same fluency failure: require every claimed pattern to come with the query that
+produced it and the row count behind it, so a confident-sounding finding can be re-run and falsified
+rather than believed. An analysis that cannot be reproduced from its own stated method is noise
+regardless of how well it reads.
 
 ---
 
