@@ -9,7 +9,8 @@ param(
         "supervised-learning",
         "daily-predictions",
         "injury-scraper",
-        "minutes-projection"
+        "minutes-projection",
+        "llm-analyst"
     ),
     [switch]$Apply
 )

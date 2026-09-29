@@ -66,6 +66,67 @@ def normalize_name(name):
     """Normalize player name for matching"""
     return unidecode(name.strip().lower())
 
+# stats.nba.com hangs (read timeout) rather than erroring when this full header set is not sent
+NBA_API_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'application/json, text/plain, */*',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Referer': 'https://www.nba.com/stats/players/advanced',
+    'Origin': 'https://www.nba.com',
+    'Host': 'stats.nba.com',
+    'Connection': 'keep-alive',
+    'Sec-Fetch-Dest': 'empty',
+    'Sec-Fetch-Mode': 'cors',
+    'Sec-Fetch-Site': 'same-site',
+    'Cache-Control': 'no-cache',
+    'Pragma': 'no-cache'
+}
+
+# Preseason (001) and All-Star (003) games do not involve real team matchups
+EXCLUDED_GAME_ID_PREFIXES = ('001', '003')
+
+
+def fetch_season_schedule(season):
+    """
+    Every game of `season` as two rows per game: GAME_DATE (ET), GAME_ID, TEAM, OPPONENT, IS_HOME.
+
+    IS_HOME follows the schedule's designated home team. It agreed with the box-score MATCHUP (which
+    the training feature is built from) on 2455 of 2460 team-games in 2025-26; all 5 disagreements
+    were neutral-site games (Mexico City, Las Vegas, Berlin, London), where neither team is really home.
+    """
+    proxy_url = os.environ.get('PROXY_URL')
+    if not proxy_url:
+        raise ValueError("PROXY_URL environment variable must be set")
+
+    response = requests.get(
+        "https://stats.nba.com/stats/scheduleleaguev2",
+        params={'LeagueID': '00', 'Season': season},
+        headers=NBA_API_HEADERS,
+        proxies={'http': proxy_url, 'https': proxy_url},
+        timeout=60,
+        verify=False
+    )
+    response.raise_for_status()
+
+    rows = []
+    for game_date in response.json()['leagueSchedule']['gameDates']:
+        for game in game_date['games']:
+            home = game['homeTeam'].get('teamTricode')
+            away = game['awayTeam'].get('teamTricode')
+            # Unseeded playoff placeholders have no tricode yet
+            if game['gameId'].startswith(EXCLUDED_GAME_ID_PREFIXES) or not home or not away:
+                continue
+            day = pd.to_datetime(game['gameDateEst']).date()
+            rows.append({'GAME_DATE': day, 'GAME_ID': game['gameId'], 'TEAM': home, 'OPPONENT': away, 'IS_HOME': 1})
+            rows.append({'GAME_DATE': day, 'GAME_ID': game['gameId'], 'TEAM': away, 'OPPONENT': home, 'IS_HOME': 0})
+
+    schedule = pd.DataFrame(rows, columns=['GAME_DATE', 'GAME_ID', 'TEAM', 'OPPONENT', 'IS_HOME'])
+    schedule['GAME_DATE'] = pd.to_datetime(schedule['GAME_DATE'])
+    logger.info(f"Fetched {schedule['GAME_ID'].nunique()} games for the {season} schedule")
+    return schedule
+
+
 def fetch_box_scores_from_api(season=None):
     """Fetch box scores from NBA API for a specific season"""
     if season is None:
@@ -75,21 +136,7 @@ def fetch_box_scores_from_api(season=None):
 
     url = "https://stats.nba.com/stats/leaguegamelog"
 
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'application/json, text/plain, */*',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Referer': 'https://www.nba.com/stats/players/advanced',
-        'Origin': 'https://www.nba.com',
-        'Host': 'stats.nba.com',
-        'Connection': 'keep-alive',
-        'Sec-Fetch-Dest': 'empty',
-        'Sec-Fetch-Mode': 'cors',
-        'Sec-Fetch-Site': 'same-site',
-        'Cache-Control': 'no-cache',
-        'Pragma': 'no-cache'
-    }
+    headers = NBA_API_HEADERS
 
     params = {
         'Counter': '1000',
@@ -442,10 +489,22 @@ def run_box_score_scraper():
         logger.info(f"Unique players: {unique_players}")
         logger.info(f"Date range: {date_range}")
 
+        # Tonight's home/away for minutes-projection. Box scores are already saved, so a schedule
+        # failure is reported without discarding them.
+        errors = []
         if failed_seasons:
+            errors.append(f"Failed to fetch seasons {failed_seasons}; saved {list(season_dataframes)}")
+        try:
+            schedule = fetch_season_schedule(current_season)
+            save_dataframe_to_s3(schedule, 'data/schedule/current.parquet')
+        except Exception as e:
+            logger.error(f"Failed to fetch/save {current_season} schedule: {e}")
+            errors.append(f"Schedule fetch failed: {e}")
+
+        if errors:
             return {
                 'success': False,
-                'error': f"Failed to fetch seasons {failed_seasons}; saved {list(season_dataframes)}"
+                'error': '; '.join(errors)
             }
 
         return {

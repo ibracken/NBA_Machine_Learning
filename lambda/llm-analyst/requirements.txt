@@ -1,0 +1,30 @@
+# Fully pinned, transitive dependencies included (roadmap O3). Resolved 2026-09-22 with
+# pip download --platform manylinux2014_x86_64 --python-version 3.11 --only-binary=:all:
+# so every package has a prebuilt Lambda-compatible wheel.
+anthropic==1.8.0
+pandas==2.1.3
+numpy==1.24.3
+pyarrow==14.0.1
+boto3==1.34.0
+pytz==2024.1
+annotated-types==0.8.0
+anyio==4.15.1
+botocore==1.34.162
+docstring-parser==0.18.0
+h11==0.16.0
+httpcore2==2.13.0
+httpx2==2.13.0
+idna==3.20
+jiter==0.17.0
+jmespath==1.1.0
+pydantic==2.13.5
+pydantic-core==2.46.5
+python-dateutil==2.9.0.post0
+s3transfer==0.9.0
+six==1.17.0
+sniffio==1.3.1
+truststore==0.10.4
+typing-extensions==4.16.0
+typing-inspection==0.4.4
+tzdata==2026.4
+urllib3==2.8.0

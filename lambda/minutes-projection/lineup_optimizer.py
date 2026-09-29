@@ -7,15 +7,16 @@ import numpy as np
 import json
 import logging
 from pulp import LpMaximize, LpProblem, LpVariable, lpSum, value, PULP_CBC_CMD
-from s3_utils import load_model_from_s3
-from config import s3_client, BUCKET_NAME, MAX_MINUTES
+from s3_utils import load_model_from_s3, load_from_s3
+from config import s3_client, BUCKET_NAME, MAX_MINUTES, CAREER_RATE_MAX_PRIOR_GAMES
+from serving_features import latest_rows_as_of_tonight
 
 logger = logging.getLogger()
 
 
 # ==================== Fantasy Points Prediction ====================
 
-def calculate_fp_features(box_scores, daily_predictions, today):
+def calculate_fp_features(box_scores, today):
     """
     Extract FP features from box scores (matches supervised-learning training pipeline)
     """
@@ -39,9 +40,8 @@ def calculate_fp_features(box_scores, daily_predictions, today):
     current_season_games = current_season_games.sort_values(['PLAYER', 'GAME_DATE'])
     season_game_count = current_season_games.groupby('PLAYER').size().reset_index(name='SEASON_GAMES_PLAYED')
 
-    # Get most recent game for each player (has latest rolling averages)
-    box_scores_sorted = box_scores.sort_values(['PLAYER', 'GAME_DATE'], ascending=[True, False])
-    latest_stats = box_scores_sorted.groupby('PLAYER').first().reset_index()
+    # Most recent game for each player, with rolling averages advanced to include it
+    latest_stats = latest_rows_as_of_tonight(box_scores)
 
     # Merge season game count
     latest_stats = latest_stats.merge(season_game_count, on='PLAYER', how='left')
@@ -64,30 +64,6 @@ def calculate_fp_features(box_scores, daily_predictions, today):
     else:
         fp_features['REST_DAYS'] = 3  # Default
 
-    # Merge with daily predictions to get opponent and home/away info
-    if not daily_predictions.empty:
-        todays_games = daily_predictions[daily_predictions['GAME_DATE'] == today].copy()
-
-        if not todays_games.empty and 'OPPONENT' in todays_games.columns:
-            # Get opponent and home/away - KEEP OPPONENT AS STRING for one-hot encoding
-            game_context = todays_games[['PLAYER', 'OPPONENT', 'IS_HOME']].copy()
-            game_context['IS_HOME'] = game_context['IS_HOME'].fillna(0).astype(int)
-
-            # Merge with FP features
-            fp_features = fp_features.merge(game_context, on='PLAYER', how='left')
-
-    # Fill missing OPPONENT with 'UNKNOWN' (match training)
-    if 'OPPONENT' not in fp_features.columns:
-        fp_features['OPPONENT'] = 'UNKNOWN'
-    else:
-        fp_features['OPPONENT'] = fp_features['OPPONENT'].fillna('UNKNOWN')
-
-    # Fill missing IS_HOME with 0
-    if 'IS_HOME' not in fp_features.columns:
-        fp_features['IS_HOME'] = 0
-    else:
-        fp_features['IS_HOME'] = fp_features['IS_HOME'].fillna(0).astype(int)
-
     # Fill missing CLUSTER with 'CLUSTER_NAN' (match training)
     if 'CLUSTER' not in fp_features.columns:
         fp_features['CLUSTER'] = 'CLUSTER_NAN'
@@ -97,6 +73,27 @@ def calculate_fp_features(box_scores, daily_predictions, today):
     logger.info(f"Extracted FP features for {len(fp_features)} players")
 
     return fp_features
+
+
+def home_team_flags(today):
+    """
+    {TEAM: IS_HOME} for games on `today`, from the schedule box-score-scraper saves.
+
+    Returns an empty dict when the schedule has no rows for `today` (backfill dates, or the scraper
+    failed), in which case every player falls back to IS_HOME=0.
+    """
+    schedule = load_from_s3('data/schedule/current.parquet')
+    if schedule.empty:
+        logger.warning("No schedule in S3 - IS_HOME defaults to 0 for every player")
+        return {}
+
+    schedule['GAME_DATE'] = pd.to_datetime(schedule['GAME_DATE']).dt.date
+    todays = schedule[schedule['GAME_DATE'] == today]
+    if todays.empty:
+        logger.warning(f"Schedule has no games for {today} - IS_HOME defaults to 0 for every player")
+        return {}
+
+    return dict(zip(todays['TEAM'], todays['IS_HOME'].astype(int)))
 
 
 def predict_fantasy_points(projections_df, box_scores, daily_predictions, today):
@@ -147,28 +144,35 @@ def predict_fantasy_points(projections_df, box_scores, daily_predictions, today)
         return projections_df
 
     # Calculate FP features from historical data
-    fp_features = calculate_fp_features(box_scores, daily_predictions, today)
+    fp_features = calculate_fp_features(box_scores, today)
 
     # Merge projections with FP features
     df = projections_df.merge(fp_features, on='PLAYER', how='left')
+
+    # Home/away comes from tonight's schedule by team
+    home_flags = home_team_flags(today)
+    df['IS_HOME'] = df['TEAM'].map(home_flags)
+    if home_flags:
+        logger.info(f"IS_HOME set for {df['IS_HOME'].notna().sum()}/{len(df)} players "
+                    f"({int(df['IS_HOME'].sum())} home)")
 
     # Use PROJECTED_MIN as MIN (match training which used actual MIN)
     df['MIN'] = df['PROJECTED_MIN']
 
     # Calculate FP_PER_MIN feature (match training pipeline exactly)
-    # First 5 games of season: Use Career_FP_Avg / Career_MIN_Avg
-    # After 5 games: Use Season_FP_Avg / Season_MIN_Avg
+    # Career FP/MIN until the player has more than CAREER_RATE_MAX_PRIOR_GAMES games this season,
+    # then Season FP/MIN
     df['SEASON_GAMES_PLAYED'] = df['SEASON_GAMES_PLAYED'].fillna(0).astype(int)
 
     df['FP_PER_MIN'] = np.where(
-        df['SEASON_GAMES_PLAYED'] <= 5,
-        # First 5 games: Career FP/MIN
+        df['SEASON_GAMES_PLAYED'] <= CAREER_RATE_MAX_PRIOR_GAMES,
+        # Early season: Career FP/MIN
         np.where(
             df['Career_MIN_Avg'] > 0,
             df['Career_FP_Avg'] / df['Career_MIN_Avg'],
             0
         ),
-        # After 5 games: Season FP/MIN
+        # Otherwise: Season FP/MIN
         np.where(
             df['Season_MIN_Avg'] > 0,
             df['Season_FP_Avg'] / df['Season_MIN_Avg'],
@@ -190,7 +194,6 @@ def predict_fantasy_points(projections_df, box_scores, daily_predictions, today)
     df['IS_HOME'] = df['IS_HOME'].fillna(0).astype(int)
     df['REST_DAYS'] = df['REST_DAYS'].fillna(3).clip(0, 30)
     df['CLUSTER'] = df['CLUSTER'].fillna('CLUSTER_NAN')
-    df['OPPONENT'] = df['OPPONENT'].fillna('UNKNOWN')
 
     # Set predictions to 0 for players with no FP history
     no_history_mask = (df['Season_FP_Avg'] == 0) & (df['Career_FP_Avg'] == 0)

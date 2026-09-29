@@ -4,10 +4,9 @@
 
 The minutes-projection Lambda generates NBA minutes projections and then builds DraftKings lineups using multiple fantasy-point (FP) models. It produces:
 
-Minutes models (3):
+Minutes models (2; direct_position_only was retired 2026-09-20):
 1. complex_position_overlap
-2. direct_position_only
-3. formula_c_baseline
+2. formula_c_baseline
 
 FP models (3) applied to each minutes model for lineup optimization:
 - current
@@ -17,7 +16,14 @@ FP models (3) applied to each minutes model for lineup optimization:
 Additional lineup-only baseline:
 - daily_fantasy_fuel_baseline (DFF)
 
-Total lineups per run: 9 (minutes x FP) + 1 (DFF) = 10.
+Total lineups per run: 6 (minutes x FP) + 1 (DFF) = 7.
+
+## Early-season pause
+
+`serving_features.projection_gate` pauses in-house projections until all 30 teams have played
+`PROJECTION_START_MIN_TEAM_GAMES` (4) games of the current season (about 10 days; Oct 30 in 2025-26).
+While paused the default action updates actuals, builds and emails only the DFF lineup, and
+`llm_lineups` is skipped. See roadmap "Early-season pause".
 
 ## Inputs (S3)
 
@@ -27,8 +33,10 @@ Total lineups per run: 9 (minutes x FP) + 1 (DFF) = 10.
   - data/injuries/current.parquet
 - Box scores (current season):
   - data/box_scores/current.parquet
-- Box scores (previous season, for season-long returns):
-  - data/box_scores/2024-25.parquet
+- Box scores (previous season, for season-long returns; season is relative to the one in current.parquet):
+  - data/box_scores/{previous season}.parquet
+- Season schedule (home/away for the IS_HOME feature):
+  - data/schedule/current.parquet
 - Supervised-learning FP models (pickled sklearn models):
   - models/current.pkl
   - models/fp_per_min.pkl
@@ -41,11 +49,6 @@ Total lineups per run: 9 (minutes x FP) + 1 (DFF) = 10.
 - Eligible replacements include adjacent positions (PG/SG, SG/SF, SF/PF, PF/C).
 - Exact-position replacements get extra weight.
 - For longer injury windows, it pivots to post-injury observed rotation behavior.
-
-### direct_position_only
-- Injury-aware redistribution model.
-- Minutes are redistributed only to exact-position replacements.
-- Uses the same injury-state tracking as the complex model, but without adjacent-position sharing.
 
 ### formula_c_baseline
 - Non-redistribution baseline.
@@ -77,14 +80,16 @@ DFF lineups are built from scraped DFF projections (no minutes model).
 
 model_name is one of:
 - complex_position_overlap
-- direct_position_only
 - formula_c_baseline
+- llm_head_to_head (minutes written by llm-analyst L3; this Lambda's `llm_lineups` action adds FP + lineups)
+
+direct_position_only files remain from before 2026-09-20 and are still scored by the evaluation scripts.
 
 ### Lineups
 - model_comparison/{model_name}/fp_{fp_model}/daily_lineups.parquet
 
 Where:
-- model_name is one of the three minutes models above
+- model_name is one of the minutes models above
 - fp_model is one of: current, fp_per_min, barebones
 
 DFF lineups:
@@ -93,7 +98,7 @@ DFF lineups:
 ### Injury context
 - injury_context/{model_name}.parquet
 
-Saved for complex_position_overlap and direct_position_only.
+Saved for complex_position_overlap.
 
 ## Columns (key outputs)
 

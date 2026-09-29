@@ -47,6 +47,7 @@ def update_actual_minutes(box_scores, target_date=None, today=None):
         models = [
             'complex_position_overlap',
             'formula_c_baseline',
+            'llm_head_to_head',  # written by llm-analyst (roadmap L3)
             'daily_fantasy_fuel_baseline'
         ]
         fp_models = ['current', 'fp_per_min', 'barebones']

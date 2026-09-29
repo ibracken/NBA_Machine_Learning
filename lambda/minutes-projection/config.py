@@ -29,3 +29,16 @@ INJURY_ADJUSTMENT_WEIGHT = 0.35
 # excluding those biased baselines in both directions. Require this much lift (MPG inside the
 # window minus outside) before recording one.
 EX_BENEFICIARY_MIN_LIFT = 3.0
+
+# FP_PER_MIN uses the career rate until a player has more than this many games this season, then
+# the season rate. Must match supervised-learning, which uses the career rate for a player's first
+# 2 games of a season (SEASON_GAME_NUM <= 2, i.e. at most 1 prior game).
+CAREER_RATE_MAX_PRIOR_GAMES = 1
+
+# Early-season pause: in-house projections (and their lineups) are skipped until every NBA team has
+# played this many games this season. Before that, most players have no or <4 current-season games,
+# so they are dropped or fall to the 10 MPG fallback, and offseason movers sit on their old team.
+# 4 matches the "reliable baseline" cutoff in projection_models/injury_system. The DFF lineup still runs.
+# Mirrored in llm-analyst/config.py - keep in sync.
+PROJECTION_START_MIN_TEAM_GAMES = 4
+NBA_TEAM_COUNT = 30

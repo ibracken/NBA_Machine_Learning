@@ -365,6 +365,17 @@ def scrape_nba_official_injuries():
         # Parse PDF
         df = parse_nba_injury_pdf(pdf_path)
 
+        # Record which report this is, so staleness can be judged by report date rather than by when
+        # the file was last written (a stale PDF re-scraped today still looks fresh by write time).
+        # URLs look like .../Injury-Report_2025-12-14_10AM.pdf
+        report_match = re.search(r'Injury-Report_(\d{4}-\d{2}-\d{2})_(\d{1,2}(?:_\d{2})?[AP]M)\.pdf', pdf_url)
+        if not df.empty:
+            df['REPORT_URL'] = pdf_url
+            df['REPORT_DATE'] = pd.to_datetime(report_match.group(1)).date() if report_match else None
+            df['REPORT_TIME'] = report_match.group(2) if report_match else None
+            if not report_match:
+                logger.warning(f"Could not parse report date from {pdf_url}")
+
         # Clean up temp file
         try:
             os.remove(pdf_path)

@@ -8,8 +8,7 @@ import json
 import pickle
 from io import BytesIO
 import logging
-from datetime import datetime, timezone, timedelta
-import pytz
+from datetime import datetime
 
 # Configure logging
 logger = logging.getLogger()
@@ -80,29 +79,11 @@ def calculate_rest_days(df):
     
     # For first games (no previous game), set rest days to 3 (reasonable default)
     df_sorted['REST_DAYS'] = df_sorted['REST_DAYS'].fillna(3).astype(int)
-    
-    # For predictions (current games), calculate rest days from most recent game to today
-    # Get current date in ET timezone
-    et_tz = pytz.timezone('America/New_York')
-    today = datetime.now(et_tz).date()
-    
-    # Get most recent game for each player
-    most_recent_games = df_sorted.groupby('PLAYER')['GAME_DATE'].max().reset_index()
-    most_recent_games['MOST_RECENT_DATE'] = most_recent_games['GAME_DATE']
-    
-    # Merge back and update REST_DAYS for prediction cases
-    df_sorted = df_sorted.merge(most_recent_games[['PLAYER', 'MOST_RECENT_DATE']], on='PLAYER', how='left')
-    
-    # Calculate rest days from most recent game to today for predictions
-    current_rest_days = (pd.Timestamp(today) - df_sorted['MOST_RECENT_DATE']).dt.days
-    
-    # For the most recent games, use the calculated rest days from today
-    is_most_recent = df_sorted['GAME_DATE'] == df_sorted['MOST_RECENT_DATE']
-    df_sorted.loc[is_most_recent, 'REST_DAYS'] = current_rest_days[is_most_recent]
-    
-    # Clean up temporary columns
-    df_sorted = df_sorted.drop(columns=['PREV_GAME_DATE', 'MOST_RECENT_DATE'])
-    
+
+    # Every row here is a completed game, so its rest days is the gap to the previous game.
+    # Serving-time rest days (last game to tonight) is computed in minutes-projection.
+    df_sorted = df_sorted.drop(columns=['PREV_GAME_DATE'])
+
     # Ensure REST_DAYS is non-negative and reasonable (cap at 30 days for outliers)
     df_sorted['REST_DAYS'] = df_sorted['REST_DAYS'].clip(0, 30)
     
@@ -110,9 +91,13 @@ def calculate_rest_days(df):
     
     return df_sorted
 
-def run_supervised_learning():
-    """Main function to train supervised learning model for fantasy point prediction"""
-    logger.info("Starting supervised learning model training")
+def run_supervised_learning(publish=True):
+    """
+    Main function to train supervised learning model for fantasy point prediction
+
+    publish=False trains and reports R2/importances without writing models or feature names to S3.
+    """
+    logger.info(f"Starting supervised learning model training (publish={publish})")
     
     try:
         # Load the current season and the three before it from their season-named files.
@@ -266,7 +251,8 @@ def run_supervised_learning():
         # Determine which games are first 2 of season for each player
         df['SEASON_GAME_NUM'] = df.groupby(['PLAYER', 'SEASON']).cumcount() + 1
 
-        # Calculate FP_PER_MIN based on game number
+        # Calculate FP_PER_MIN based on game number. minutes-projection mirrors this cutoff as
+        # CAREER_RATE_MAX_PRIOR_GAMES = 1 (prior games this season); change both together.
         df['FP_PER_MIN'] = np.where(
             df['SEASON_GAME_NUM'] <= 2,
             # First 2 games: Career FP/MIN
@@ -337,13 +323,14 @@ def run_supervised_learning():
             feature_names_list = list(features_encoded.columns)
 
             # Save feature names to S3
-            feature_names_json = json.dumps({'features': feature_names_list})
-            s3.put_object(
-                Bucket=BUCKET_NAME,
-                Key=f'models/{model_name}_feature_names.json',
-                Body=feature_names_json
-            )
-            logger.info(f"{model_name}: Saved {len(feature_names_list)} feature names")
+            if publish:
+                feature_names_json = json.dumps({'features': feature_names_list})
+                s3.put_object(
+                    Bucket=BUCKET_NAME,
+                    Key=f'models/{model_name}_feature_names.json',
+                    Body=feature_names_json
+                )
+                logger.info(f"{model_name}: Saved {len(feature_names_list)} feature names")
 
             # Check for multicollinearity (VIF)
             logger.info(f"{model_name}: Checking multicollinearity...")
@@ -382,7 +369,8 @@ def run_supervised_learning():
             model.fit(train, train_labels.values.ravel())
 
             # Save model to S3
-            save_model_to_s3(model, f"models/{model_name}.pkl")
+            if publish:
+                save_model_to_s3(model, f"models/{model_name}.pkl")
 
             # Generate predictions
             predictions = model.predict(test)
@@ -473,7 +461,8 @@ def lambda_handler(event, context):
         logger.error(f"Lambda handler error: {str(e)}")
         raise
 
-# For local testing
+# For local testing. Local runs never publish: production pickles must come from the Lambda's pinned
+# environment (see AGENTS.md), so this reports R2 and importances only.
 if __name__ == "__main__":
-    result = run_supervised_learning()
+    result = run_supervised_learning(publish=False)
     print(f"Supervised learning result: {result}")

@@ -132,7 +132,8 @@ def send_multi_model_notification(lineups_dict, date):
         # Publish to SNS
         sns_client.publish(
             TopicArn=SNS_TOPIC_ARN,
-            Subject=f"NBA Projections ({date}): {len(lineups_dict)} Lineups Generated",
+            Subject=f"NBA Projections ({date}): "
+                    f"{sum(df is not None and not df.empty for df in lineups_dict.values())} Lineups Generated",
             Message=full_message
         )
         logger.info("SNS notification sent successfully")

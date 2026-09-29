@@ -26,6 +26,7 @@ from projection_models import (
 )
 from injury_system import transition_beneficiaries_to_ex
 from process_model import process_model
+from serving_features import latest_rows_as_of_tonight, projection_gate
 from lineup_optimizer import optimize_lineup
 
 # Configure logging
@@ -46,6 +47,90 @@ if not logger.handlers:
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
+
+
+LLM_HEAD_TO_HEAD_PATH = 'model_comparison/llm_head_to_head'
+
+
+def build_llm_lineups(box_scores, today):
+    """Run the FP models and lineup optimizer on llm-analyst's head-to-head minutes for `today`."""
+    h2h = load_from_s3(f'{LLM_HEAD_TO_HEAD_PATH}/minutes_projections.parquet')
+    if h2h.empty:
+        logger.warning("No LLM head-to-head projections in S3")
+        return {'statusCode': 200, 'body': 'No LLM head-to-head projections'}
+    h2h['DATE'] = pd.to_datetime(h2h['DATE']).dt.date
+    todays = h2h[h2h['DATE'] == today].copy()
+    if todays.empty:
+        logger.warning(f"No LLM head-to-head projections for {today}")
+        return {'statusCode': 200, 'body': f'No LLM head-to-head projections for {today}'}
+
+    daily_preds = load_from_s3('data/daily_predictions/current.parquet')
+    if not daily_preds.empty:
+        daily_preds['GAME_DATE'] = pd.to_datetime(daily_preds['GAME_DATE']).dt.date
+
+    # Recomputed below; drop any from an earlier run today
+    fp_cols = [c for c in todays.columns if c.startswith('PROJECTED_FP')]
+    todays = todays.drop(columns=fp_cols)
+
+    _, lineups = process_model(
+        "LLM Head-to-Head",
+        LLM_HEAD_TO_HEAD_PATH,
+        todays,
+        daily_preds,
+        today,
+        box_scores,
+        fp_model_names=['current', 'fp_per_min', 'barebones']
+    )
+    built = {fp: int((lineup['DATE'] == today).sum()) if not lineup.empty else 0 for fp, lineup in lineups.items()}
+    logger.info(f"LLM head-to-head lineups for {today}: {built}")
+    return {'statusCode': 200, 'body': f'LLM head-to-head lineups for {today}: {built}'}
+
+
+def build_dff_lineup(daily_preds, today, team_mapping):
+    """Optimize and save today's lineup from DFF's own FP projections. Returns all saved rows."""
+    logger.info("Generating lineup: DailyFantasyFuel Baseline")
+    if daily_preds.empty:
+        return pd.DataFrame()
+
+    todays_dff = daily_preds[daily_preds['GAME_DATE'] == today].copy()
+    logger.info(f"Found {len(todays_dff)} DailyFantasyFuel projections for {today}")
+
+    # daily-predictions has no TEAM column
+    team_mapping = team_mapping.drop_duplicates(subset='PLAYER', keep='last')
+    todays_dff = todays_dff.merge(team_mapping, on='PLAYER', how='left')
+    todays_dff['TEAM'] = todays_dff['TEAM'].fillna('UNKNOWN')
+
+    todays_dff['PROJECTED_FP'] = todays_dff['PPG_PROJECTION']
+    todays_dff['PROJECTED_MIN'] = 0  # DFF doesn't provide minutes - placeholder only
+
+    # No SALARY here: optimize_lineup merges it from daily_preds
+    dff_projections = todays_dff[['PLAYER', 'TEAM', 'POSITION', 'PROJECTED_MIN', 'PROJECTED_FP']].copy()
+    lineup_dff = optimize_lineup(dff_projections, daily_preds, today)
+    if not lineup_dff.empty:
+        existing_lineup = load_from_s3('model_comparison/daily_fantasy_fuel_baseline/daily_lineups.parquet')
+        if not existing_lineup.empty:
+            existing_lineup['DATE'] = pd.to_datetime(existing_lineup['DATE']).dt.date
+            existing_lineup = existing_lineup[existing_lineup['DATE'] != today]
+            lineup_dff = pd.concat([existing_lineup, lineup_dff], ignore_index=True)
+        save_to_s3(lineup_dff, 'model_comparison/daily_fantasy_fuel_baseline/daily_lineups.parquet')
+        logger.info(f"DailyFantasyFuel lineup saved: {len(lineup_dff[lineup_dff['DATE'] == today])} players")
+    return lineup_dff
+
+
+def run_paused(box_scores, today, reason):
+    """Early-season pause: DFF lineup and email only; no in-house projections or lineups."""
+    logger.warning(f"In-house projections paused for {today}: {reason}")
+    daily_preds = load_from_s3('data/daily_predictions/current.parquet')
+    if not daily_preds.empty:
+        daily_preds['GAME_DATE'] = pd.to_datetime(daily_preds['GAME_DATE']).dt.date
+    latest = box_scores.sort_values('GAME_DATE').groupby('PLAYER').tail(1)
+    team_mapping = latest[['PLAYER', 'TEAM_ABBREVIATION']].rename(columns={'TEAM_ABBREVIATION': 'TEAM'})
+
+    lineup_dff = build_dff_lineup(daily_preds, today, team_mapping)
+    todays = lineup_dff[lineup_dff['DATE'] == today] if not lineup_dff.empty else pd.DataFrame()
+    send_multi_model_notification(
+        {f"In-house projections paused ({reason})": pd.DataFrame(), "DailyFantasyFuel": todays}, today)
+    return {'statusCode': 200, 'body': f'Projections paused ({reason}); DFF lineup {len(todays)} players'}
 
 
 # ==================== Main Lambda Handler ====================
@@ -82,6 +167,17 @@ def lambda_handler(event, context):
                 'body': f'Updated {updated_count} actual minutes records'
             }
 
+        # Roadmap L3: FP + lineups for the LLM head-to-head minutes, so they are scored on realized
+        # lineup FP with the same FP models and optimizer as every other minutes model. Not emailed.
+        if action == 'llm_lineups':
+            if event.get('date'):
+                today = datetime.strptime(event['date'], '%Y-%m-%d').date()
+            paused, reason = projection_gate(box_scores, today)
+            if paused:
+                logger.warning(f"LLM head-to-head lineups skipped for {today}: {reason}")
+                return {'statusCode': 200, 'body': f'Projections paused ({reason})'}
+            return build_llm_lineups(box_scores, today)
+
         # Default: Generate projections (and update actuals first)
         logger.info("Running actuals update before projections")
         update_actual_minutes(box_scores)
@@ -93,10 +189,14 @@ def lambda_handler(event, context):
             logger.error("No box scores data available")
             return {'statusCode': 400, 'body': 'No box scores data available'}
 
-        # Get each player's most recent game for current stats
+        gate_date = datetime.strptime(event['date'], '%Y-%m-%d').date() if event and event.get('date') else today
+        paused, reason = projection_gate(box_scores, gate_date)
+        if paused:
+            return run_paused(box_scores, gate_date, reason)
+
+        # Get each player's most recent game, with rolling averages that include that game
         box_scores['GAME_DATE'] = pd.to_datetime(box_scores['GAME_DATE'])
-        box_scores_sorted = box_scores.sort_values(['PLAYER', 'GAME_DATE'], ascending=[True, False])
-        player_stats = box_scores_sorted.groupby('PLAYER').first().reset_index()
+        player_stats = latest_rows_as_of_tonight(box_scores)
 
         # Load LAST season's box scores for players with 0 games this season
         # BUT only for players on the current injury report (filters out free agents/retired players)
@@ -108,8 +208,7 @@ def lambda_handler(event, context):
 
         if not prev_season_box_scores.empty:
             prev_season_box_scores['GAME_DATE'] = pd.to_datetime(prev_season_box_scores['GAME_DATE'])
-            prev_season_sorted = prev_season_box_scores.sort_values(['PLAYER', 'GAME_DATE'], ascending=[True, False])
-            prev_season_stats = prev_season_sorted.groupby('PLAYER').first().reset_index()
+            prev_season_stats = latest_rows_as_of_tonight(prev_season_box_scores)
 
             # Mark these as previous season data
             prev_season_stats['FROM_PREV_SEASON'] = True
@@ -200,6 +299,7 @@ def lambda_handler(event, context):
         else:
             logger.warning("No injury data available in S3 - all players treated as healthy")
             logger.warning("Make sure injury-scraper lambda has run successfully")
+            player_stats['STATUS'] = None
 
         # Load position data from daily-predictions (has salary/position from DraftKings)
         logger.info("Loading position data from daily predictions...")
@@ -368,48 +468,7 @@ def lambda_handler(event, context):
         )
 
         # ========== Model 3: DailyFantasyFuel Baseline ==========
-        logger.info("Generating lineup: DailyFantasyFuel Baseline")
-
-        # Use already-loaded daily_preds (contains DFF PPG_PROJECTION)
-        dff_data = daily_preds
-        lineup_dff = pd.DataFrame()
-
-        if not dff_data.empty:
-            # Filter for today's games
-            todays_dff = dff_data[dff_data['GAME_DATE'] == today].copy()
-
-            logger.info(f"Found {len(todays_dff)} DailyFantasyFuel projections for {today}")
-
-            # Merge with player_stats to get TEAM (daily-predictions doesn't have TEAM column)
-            if not player_stats.empty:
-                team_mapping = player_stats[['PLAYER', 'TEAM']].drop_duplicates(subset='PLAYER', keep='last')
-                todays_dff = todays_dff.merge(team_mapping, on='PLAYER', how='left')
-                todays_dff['TEAM'] = todays_dff['TEAM'].fillna('UNKNOWN')
-
-                matched = todays_dff['TEAM'].notna().sum()
-                logger.info(f"Matched {matched}/{len(todays_dff)} DFF players with teams")
-            else:
-                todays_dff['TEAM'] = 'UNKNOWN'
-
-            # Prepare for lineup optimization - DFF already has fantasy points (PPG_PROJECTION)
-            todays_dff['PROJECTED_FP'] = todays_dff['PPG_PROJECTION']  # Use DFF's fantasy projection
-            todays_dff['PROJECTED_MIN'] = 0  # DFF doesn't provide minutes - placeholder only
-
-            # Select only required columns (optimize_lineup will merge SALARY from daily_preds)
-            # Don't include SALARY here to avoid conflict when optimize_lineup merges it
-            dff_projections = todays_dff[['PLAYER', 'TEAM', 'POSITION', 'PROJECTED_MIN', 'PROJECTED_FP']].copy()
-
-            # Optimize lineup using DFF projections
-            lineup_dff = optimize_lineup(dff_projections, daily_preds, today)
-            if not lineup_dff.empty:
-                existing_lineup = load_from_s3('model_comparison/daily_fantasy_fuel_baseline/daily_lineups.parquet')
-                if not existing_lineup.empty:
-                    # Convert DATE to date type for proper comparison
-                    existing_lineup['DATE'] = pd.to_datetime(existing_lineup['DATE']).dt.date
-                    existing_lineup = existing_lineup[existing_lineup['DATE'] != today]
-                    lineup_dff = pd.concat([existing_lineup, lineup_dff], ignore_index=True)
-                save_to_s3(lineup_dff, 'model_comparison/daily_fantasy_fuel_baseline/daily_lineups.parquet')
-                logger.info(f"DailyFantasyFuel lineup saved: {len(lineup_dff[lineup_dff['DATE'] == today])} players")
+        lineup_dff = build_dff_lineup(daily_preds, today, player_stats[['PLAYER', 'TEAM']])
 
         # === NEW: Send Notification ===
         # Collect only today's data for the email

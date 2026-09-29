@@ -196,16 +196,26 @@ def lambda_handler(event, context):
 
     logger.info(f"Main slate starts at: {main_slate_time}")
 
-    # === LAMBDA FUNCTION PIPELINE (sequential execution with 2-minute delays) ===
+    # === LAMBDA FUNCTION PIPELINE (offsets in minutes from slate time - 30) ===
+    # (function, offset, extra event input). llm-analyst actions that depend on an upstream output
+    # poll for it for up to 5 minutes, so an overrunning upstream step delays them rather than
+    # silently skipping them.
     lambda_pipeline = [
-        ('cluster-scraper', 0),       # Start at game time - 30 min
-        ('nba-clustering', 2),         # +2 minutes
-        ('box-score-scraper', 4),      # +4 minutes
-        ('supervised-learning', 6),    # +6 minutes
-        ('daily-predictions', 9),      # +9 minutes (DFF scraping only)
-        ('injury-scraper', 11),        # +11 minutes
-        ('minutes-projection', 13)     # +13 minutes (minutes + FP predictions + lineup optimization)
+        ('cluster-scraper', 0, {}),
+        ('nba-clustering', 2, {}),
+        ('box-score-scraper', 4, {}),       # also writes the season schedule
+        ('supervised-learning', 6, {}),
+        ('daily-predictions', 9, {}),       # DFF slate
+        ('injury-scraper', 11, {}),
+        ('llm-analyst', 12, {'action': 'research'}),      # L3 + research for L2 (needs the DFF slate)
+        ('minutes-projection', 13, {}),     # minutes + FP predictions + lineups + email
+        ('llm-analyst', 16, {'action': 'adjustments'}),   # L2 shadow mode (needs research + projections)
+        ('llm-analyst', 18, {'action': 'preflight'}),     # L1 email, ~12 minutes before lock
+        ('minutes-projection', 22, {'action': 'llm_lineups'}),  # L3 lineups, scored but never emailed
     ]
+    # L4 weekly post-mortem on Mondays, covering the previous 7 days
+    if main_slate_time.astimezone(pytz.timezone('America/New_York')).weekday() == 0:
+        lambda_pipeline.append(('llm-analyst', 0, {'action': 'postmortem'}))
 
     # === CREATE RULES FOR MAIN SLATE ===
     try:
@@ -229,7 +239,7 @@ def lambda_handler(event, context):
             }
 
         # Create a separate rule for each Lambda function with time offset
-        for func_name, delay_minutes in lambda_pipeline:
+        for func_name, delay_minutes, extra_input in lambda_pipeline:
             trigger_time = base_trigger_time + timedelta(minutes=delay_minutes)
 
             # Skip if trigger time is in the past
@@ -237,7 +247,9 @@ def lambda_handler(event, context):
                 logger.info(f"Skipping {func_name} for slate {slate_id} - trigger time in past")
                 continue
 
-            rule_name = f"nba-slate-{slate_id}-{func_name}"
+            # One function can run several actions per slate; each needs its own rule
+            action = extra_input.get('action')
+            rule_name = f"nba-slate-{slate_id}-{func_name}" + (f"-{action}" if action else "")
 
             # Create EventBridge cron expression
             cron_expr = (f"cron({trigger_time.minute} {trigger_time.hour} "
@@ -248,7 +260,7 @@ def lambda_handler(event, context):
                 Name=rule_name,
                 ScheduleExpression=cron_expr,
                 State='ENABLED',
-                Description=f"{func_name}: Main Slate at {main_slate_time.strftime('%Y-%m-%d %H:%M UTC')}"
+                Description=f"{func_name}{f' ({action})' if action else ''}: Main Slate at {main_slate_time.strftime('%Y-%m-%d %H:%M UTC')}"
             )
 
             logger.info(f"Created rule: {rule_name} at {trigger_time}")
@@ -260,7 +272,8 @@ def lambda_handler(event, context):
                 'Input': json.dumps({
                     'slateId': slate_id,
                     'slateTime': main_slate_time.isoformat(),
-                    'triggerTime': trigger_time.isoformat()
+                    'triggerTime': trigger_time.isoformat(),
+                    **extra_input
                 })
             }]
 
