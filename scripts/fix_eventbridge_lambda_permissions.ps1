@@ -34,11 +34,16 @@ function Get-LambdaPolicyDocument {
         [string]$RegionName
     )
 
-    $policyText = & $AwsCmd lambda get-policy `
-        --function-name $FunctionName `
-        --region $RegionName `
-        --query Policy `
-        --output text 2>$null
+    # A function with no resource policy yet (newly created) makes get-policy fail; treat as empty
+    try {
+        $policyText = & $AwsCmd lambda get-policy `
+            --function-name $FunctionName `
+            --region $RegionName `
+            --query Policy `
+            --output text 2>$null
+    } catch {
+        return $null
+    }
 
     if (-not $policyText) {
         return $null
@@ -114,7 +119,7 @@ foreach ($fn in $Functions) {
     $beforeLen = if ($beforePolicy) { ($beforePolicy | ConvertTo-Json -Depth 20 -Compress).Length } else { 0 }
     Write-Host "Policy size (approx chars): $beforeLen"
 
-    $toRemove = Get-StatementsToRemove -PolicyDoc $beforePolicy
+    $toRemove = @(Get-StatementsToRemove -PolicyDoc $beforePolicy)
     if ($toRemove.Count -eq 0) {
         Write-Host "No stale EventBridge statements found."
     } else {

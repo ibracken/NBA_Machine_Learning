@@ -21,32 +21,31 @@ Everything else can be done and backtested now.
 
 ## To do before opening night (Ian)
 
-The 2026-09-22 and 2026-09-28 work is committed (2026-09-28) but **not deployed**. In order:
+**Everything is committed and deployed (2026-09-29 UTC).** Nothing is required before opening night.
 
-1. ~~Review and commit~~ Done. Full lists under "Done 2026-09-22" and "Done 2026-09-28".
-2. ~~Fix the opening-night blocker~~ **Done 2026-09-28** as the early-season pause (next section).
-3. **Create the `llm-analyst` Lambda.** It's a one-time step; `deploy.py` only updates existing functions.
-   - Settings: PackageType Image, role `lambda-execution-role`, timeout **900 s**, memory **1024 MB**.
-   - Environment variable **`CLAUDE_API_KEY`** (same value as in your local `.env`). `deploy.py` does not set
-     Lambda environment variables, so add it in the console/CLI like `PROXY_URL`. No live call has been
-     made yet.
-   - The role must allow S3 `ListBucket` on the bucket for `scripts/evaluate_llm.py`'s usage report. The
-     Lambda itself never lists.
-4. **Deploy:**
-   `python lambda/deploy.py box-score-scraper minutes-projection supervised-learning injury-scraper game-scheduler llm-analyst`
-   - O3 is worth doing before this rebuild. `llm-analyst` is already fully pinned; the others are not.
-5. **EventBridge permission:** run `scripts/fix_eventbridge_lambda_permissions.ps1 -Apply`.
-   `llm-analyst` has been added to its function list.
-6. **Error alarm:** create a CloudWatch alarm `nba-lambda-errors-llm-analyst` on the same SNS topic as the
-   others.
-7. **Smoke-test with real API calls** on the first live slate, or locally:
-   `python lambda/llm-analyst/lambda_function.py research` (local runs read `CLAUDE_API_KEY` from `.env`).
-   - The local `.venv` does **not** have `anthropic` installed; install `lambda/llm-analyst/requirements.txt`
-     into a separate env first rather than disturbing `.venv`.
-   - A local run writes to the real S3 bucket, like the Lambda would.
-   - Check `llm/usage/{date}.json` for actual cost.
-   - Offline tests pass (59 checks). The offline test script is not in the repo; ask Claude to re-create it
-     if wanted.
+- **Deployed:** box-score-scraper, minutes-projection, supervised-learning, injury-scraper, game-scheduler,
+  and the new `llm-analyst` (image, 900 s, 1024 MB, `CLAUDE_API_KEY` set from `.env`).
+- **Also done:** created the ECR repo, applied EventBridge invoke permissions to all 8 pipeline functions,
+  and created the alarm `nba-lambda-errors-llm-analyst`.
+- **Live smoke test passed:** `preflight` on 2026-01-15 made one Opus 5.5 call for **$0.11** and emailed a
+  report. Its first run crashed on a real bug (the missing schedule file); that is fixed and redeployed.
+
+**Watch on opening night (10/20), the first live run of the new steps:**
+- `data/schedule/current.parquet` exists after box-score-scraper runs. It isn't in S3 yet, because the
+  scraper hasn't run since deploy.
+- `llm/research/2026-10-20.json` and L3 rows in `model_comparison/llm_head_to_head/` are written. This is
+  the first live web-search call.
+- The lineup email says "In-house projections paused" and still contains the DFF lineup.
+- `llm/usage/2026-10-20.json`, for the real nightly cost.
+- Any `nba-lambda-errors-*` alarm email.
+
+**Still open:** how many minutes before lock you need the preflight email. It lands around T−12; it can be
+moved earlier by not waiting for L2.
+
+**Redeploying later:** `python lambda/deploy.py <function>` needs `.venv/Scripts` on PATH first
+(PowerShell: `$env:PATH = "$PWD\.venv\Scripts;$env:PATH"`). Otherwise the `aws.cmd` it finds runs the
+system Python, which has no `awscli`, and the ECR login fails. A new function needs its ECR repo created
+first; deploy.py neither creates repos nor creates functions.
 
 ---
 
@@ -105,6 +104,12 @@ L2 skipped, L1 input-only (no email unless critical), and research + L3 still ru
 - The API key is read from **`CLAUDE_API_KEY`** (not the SDK default `ANTHROPIC_API_KEY`); local runs load
   it from `.env`.
 - Email subject now counts only lineups actually built (it counted every entry, including failed ones).
+- **Deployment** (see the checklist above). Fixes made along the way:
+  - `slate.tonight()` crashed preflight when the schedule file was missing (no `OPPONENT` column). It
+    now degrades, and preflight reports a new `no_schedule` warning. The live smoke test caught this; the
+    offline suite is now 60/60.
+  - `scripts/fix_eventbridge_lambda_permissions.ps1` crashed under strict mode when exactly one statement
+    matched, and on a function with no policy yet. Both are fixed.
 
 ## Done 2026-09-22
 

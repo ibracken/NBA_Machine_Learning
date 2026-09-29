@@ -68,6 +68,10 @@ def input_checks(today, current, schedule_today_teams):
     """Content-based staleness: box scores missing completed games, injury feed not refreshed."""
     out = []
     schedule = load_parquet('data/schedule/current.parquet')
+    if schedule.empty:
+        out.append(finding('warning', 'no_schedule', 'schedule',
+                           "data/schedule/current.parquet missing: IS_HOME is blank, research/L3 have no games, "
+                           "and the stale-box-score check is skipped"))
     if not current.empty and not schedule.empty:
         schedule['GAME_DATE'] = pd.to_datetime(schedule['GAME_DATE']).dt.date
         latest_box = current['GAME_DATE'].max().date()

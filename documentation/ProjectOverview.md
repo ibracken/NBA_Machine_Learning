@@ -47,10 +47,10 @@ Early-season pause: until all 30 teams have played 4 games, minutes-projection b
 Every Lambda derives the current season from the date (July onward = new season) and reads the three prior seasons by name; nothing is hardcoded to a year. Injury reports come from `official.nba.com/nba-injury-report-{season}-season/` with a fallback to the prior season's page.
 
 ## Deployment
-Docker Desktop must be running. `python lambda/deploy.py <function> [...]` or `--all` builds each image for `linux/amd64`, pushes it to ECR tagged with a UTC timestamp (and `:latest`), updates the function, and waits for it to become active. The AWS CLI is resolved from `.venv/Scripts/` if not on PATH. Functions are created once by hand; the script only updates code.
+Docker Desktop must be running. `python lambda/deploy.py <function> [...]` or `--all` builds each image for `linux/amd64`, pushes it to ECR tagged with a UTC timestamp (and `:latest`), updates the function, and waits for it to become active. The AWS CLI is resolved from `.venv/Scripts/` if not on PATH; put `.venv/Scripts` first on PATH before running, because `aws.cmd` otherwise runs the system Python, which lacks `awscli`. Functions (and their ECR repos) are created once by hand; the script only updates code. The llm-analyst function also needs the `CLAUDE_API_KEY` environment variable, set by hand.
 
 ## Monitoring
-Each Lambda raises on failure so the `AWS/Lambda Errors` metric fires. CloudWatch alarms `nba-lambda-errors-<function>` publish to the `lineup-optimizer-notifications` SNS topic (email). `game-scheduler` treats a missing DailyFantasyFuel slate as an error only between Oct 15 and Jun 25.
+Each Lambda raises on failure so the `AWS/Lambda Errors` metric fires. CloudWatch alarms `nba-lambda-errors-<function>` (all nine pipeline functions, including `llm-analyst`) publish to the `lineup-optimizer-notifications` SNS topic (email). `game-scheduler` treats a missing DailyFantasyFuel slate as an error only between Oct 15 and Jun 25.
 
 ## Evaluation
 `scripts/evaluate_projections.py` scores stored minutes projections and lineups against actuals, split by data-freshness regime (see the docstring for the 2025-26 regimes). Run it before judging any model change. `scripts/evaluate_llm.py` scores L2 and L3 and reports LLM spend.

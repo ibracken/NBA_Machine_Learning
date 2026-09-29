@@ -83,7 +83,7 @@ def tonight(today):
     schedule = load_parquet('data/schedule/current.parquet')
     if schedule.empty:
         logger.warning("No schedule file - cannot group the slate into games")
-        return slate.assign(TEAM='UNKNOWN'), []
+        return slate.assign(TEAM='UNKNOWN', OPPONENT=None, IS_HOME=None), []
     schedule['GAME_DATE'] = pd.to_datetime(schedule['GAME_DATE']).dt.date
     todays_games = schedule[schedule['GAME_DATE'] == today]
     opponent = dict(zip(todays_games['TEAM'], todays_games['OPPONENT']))
