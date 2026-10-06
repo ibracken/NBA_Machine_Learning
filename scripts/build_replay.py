@@ -15,10 +15,11 @@ the season, career advanced from the box-score career columns):
   FC_MIN                               production Formula C (no DFF starter floor - no history)
   FREED_NEW_MIN, FREED_ALL_MIN         season-avg minutes of rotation teammates (S_MIN >= 15) absent tonight:
                                        NEW = played the team's previous game (fresh absence), ALL = missed <= 10
-  POSITION, POS_SOURCE                 DraftKings eligibility from the DFF scrape (most common listing, POS_SOURCE
-                                       'dff'); otherwise the NBA player index's coarse position mapped to DK slots
-                                       ('nba_coarse': G -> PG/SG, F -> SF/PF, C, G-F -> SG/SF, F-C -> PF/C). Coarse
-                                       positions can't separate PG from SG, so re-check findings on 'dff' rows.
+  POSITION, POS_SOURCE                 single position as DFF lists it (PG/SG/SF/PF/C; production's overlap logic
+                                       expects single positions). 'dff' = the player's most common DFF listing;
+                                       'nba_coarse' = NBA player index group (G, F, C, G-F, F-C), resolved to one
+                                       position by a classifier trained on DFF-labeled players' per-minute stats.
+                                       Re-check findings on 'dff' rows.
 Outcome columns: ACT_MIN, ACT_FP (0 when he did not play), PLAYED.
 
 Needs PROXY_URL (from .env) for the NBA player index.
@@ -42,7 +43,10 @@ SEASONS = ["2022-23", "2023-24", "2024-25", "2025-26"]
 OUT = Path(__file__).resolve().parents[1] / "data" / "replay" / "replay.parquet"
 MAX_MINUTES = 37           # minutes-projection config.MAX_MINUTES
 ROTATION_MIN = 15          # season-avg minutes for a teammate's absence to count as freed minutes
-COARSE_TO_DK = {'G': 'PG/SG', 'F': 'SF/PF', 'C': 'C', 'G-F': 'SG/SF', 'F-G': 'SG/SF', 'F-C': 'PF/C', 'C-F': 'PF/C'}
+# Positions each NBA coarse group can resolve to
+COARSE_CHOICES = {'G': ['PG', 'SG'], 'F': ['SF', 'PF'], 'C': ['C'], 'G-F': ['SG', 'SF'], 'F-G': ['SG', 'SF'],
+                  'F-C': ['PF', 'C'], 'C-F': ['PF', 'C']}
+STYLE_STATS = ['AST', 'REB', 'BLK', 'FG3A', 'STL', 'OREB']
 
 
 def load(key):
@@ -73,19 +77,51 @@ def nba_player_positions():
 
 
 def player_positions(box):
-    """PLAYER -> (POSITION, POS_SOURCE): DFF's DraftKings eligibility first, NBA coarse position otherwise."""
+    """
+    PLAYER -> (POSITION, POS_SOURCE). DFF's listing when we have one; otherwise the NBA coarse group, resolved to
+    one position by a per-minute-stats classifier trained on DFF-labeled players (restricted to the group's
+    choices, e.g. a 'G' is PG or SG).
+    """
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.model_selection import cross_val_predict
+
     daily = load("data/daily_predictions/current.parquet").dropna(subset=["POSITION"])
     dff = daily.groupby("PLAYER")["POSITION"].agg(lambda s: s.value_counts().index[0])
     coarse = nba_player_positions()
+    totals = box[box["MIN"] > 0].groupby("PLAYER")[STYLE_STATS + ["MIN"]].sum()
+    style = totals[STYLE_STATS].div(totals["MIN"], axis=0) * 36
     ids = box.drop_duplicates("PLAYER").set_index("PLAYER")["PLAYER_ID"]
+
+    labeled = style.loc[style.index.isin(dff.index)]
+    clf = LogisticRegression(max_iter=2000)
+    y = dff[labeled.index]
+    # Honest accuracy: cross-validated, scored only among each player's own coarse-group choices
+    proba = cross_val_predict(clf, labeled, y, cv=5, method="predict_proba")
+    classes = sorted(y.unique())
+    hits = total = 0
+    for player, row in zip(labeled.index, proba):
+        choices = COARSE_CHOICES.get(coarse.get(ids.get(player)))
+        if choices and len(choices) > 1:
+            pick = max(choices, key=lambda c: row[classes.index(c)])
+            hits += pick == y[player]
+            total += 1
+    print(f"Position classifier: {hits}/{total} = {hits / max(total, 1):.0%} correct within the NBA coarse group "
+          f"(cross-validated on DFF-labeled players)")
+    clf.fit(labeled, y)
+
     out = {}
     for player, pid in ids.items():
         if player in dff.index:
             out[player] = (dff[player], "dff")
-        elif coarse.get(pid) in COARSE_TO_DK:
-            out[player] = (COARSE_TO_DK[coarse[pid]], "nba_coarse")
-        else:
+            continue
+        choices = COARSE_CHOICES.get(coarse.get(pid))
+        if not choices:
             out[player] = (None, None)
+        elif len(choices) == 1 or player not in style.index:
+            out[player] = (choices[0], "nba_coarse")
+        else:
+            row = clf.predict_proba(style.loc[[player]])[0]
+            out[player] = (max(choices, key=lambda c: row[list(clf.classes_).index(c)]), "nba_coarse")
     return out
 
 
