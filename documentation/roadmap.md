@@ -22,11 +22,15 @@ L4 (a week of data), and the O1 re-fit (fresh injury data). Everything else can 
 
 ## Next up (in order)
 
-1. **Training fixes A and B: awaiting Ian's approval** (details under M1).
-   - **A.** Refit on all data, and seed the minutes noise.
-   - **B.** Retire the `current` and `fp_per_min` FP models, keeping barebones.
-2. **M1b:** train the FP model on the kind of minutes it is served (replaces the ±8 noise if it wins).
-3. **M2:** shrink projections before optimizing.
+1. **Fix A: DONE and deployed 2026-10-06.** The Lambda trains on all data (231 s, unchanged), with per-game
+   deterministic noise (identical models locally and in AWS), and publishes feature names together with the
+   model. New models were published and verified to load and predict through minutes-projection's serving
+   code.
+   - **Fix B** (retire `current` / `fp_per_min`) is still awaiting Ian.
+2. **M2: fix lineup selection. TOP PRIORITY** (Ian, 2026-10-05). The repeat-pick / optimizer's-curse
+   problem is the biggest measured lineup loss, about 40 FP per lineup.
+3. **M1b: fit the shared minutes baseline to data.** This improves complex minutes. Complex is the target,
+   and Formula C is only the control.
 4. **Opening night (10/20):** run through the watch list below.
 5. **About Oct 30:** the pause lifts, and L2 starts collecting.
 6. **About mid-December:** the L2 go/no-go, and the X/Grok check (under L2).
@@ -41,9 +45,7 @@ before the first tip on 10/20, when 2026-27 stats are empty, and fails the same 
 **Open questions for Ian**
 - How many minutes before lock do you need the preflight email? It lands around T−12. It can come earlier
   if it stops waiting for L2.
-- Approve fix A (refit on all data, seed the noise)?
 - Approve fix B (retire two FP models)?
-- Approve the M1b experiment (backtest only; no production change)?
 
 ---
 
@@ -120,9 +122,26 @@ Baseball's [Marcel](https://library.fangraphs.com/the-projection-rundown-the-bas
 builds regression to the mean *into* the projection, and is hard to beat. Post-hoc recalibration is what ML
 reaches for when retraining isn't possible
 ([overview](https://www.emergentmind.com/topics/post-hoc-calibration-methods)).
-- **Next experiment:** fit Formula C's weights, plus a regression-toward-the-player's-baseline term, by least
-  squares on 2022-23..2024-25. Score minutes MAE and calibration slope on 2025-26 against today's
-  Formula C. Then rerun the M1 harness with those minutes.
+- **Complex is the target.** Complex uses this same formula (`formula_c_projection`) as every player's
+  no-injury baseline, then adds injury redistribution. Formula C is the one version that can be recomputed
+  for past seasons (complex needs injury reports, which only exist from 2025-26). It is therefore the
+  training proxy, and results are reported on complex.
+- **Approved idea (Ian):** fit the baseline's weights, plus a pull toward the player's baseline, by least
+  squares on 2022-23..2024-25 (78,307 games; plenty for about 4–6 numbers). Score minutes MAE and the
+  calibration slope on the held-out 2025-26 (about 26k games), for both the base formula and complex
+  minutes. Then rerun the M1 harness with those minutes.
+- **The streak test shows why fitting beats guessing** (2025-26, 21,167 games of players with 10+ prior
+  games):
+
+  | Recent streak (last-7 avg vs season avg) | Error (formula − actual) |
+  |---|---|
+  | Hot, more than +4 | −2.2 |
+  | Steady | −0.1 |
+  | Cold, more than −4 | +0.4 |
+
+  - The formula trusts recent minutes *too little*: role jumps mostly stick.
+  - The overshoot on projections of 33+ minutes (about +0.8) is separate, and appears whatever the streak.
+  - (An earlier claim in this session that it "trusts hot streaks too much" was wrong.)
 - **The earlier ideas below are kept for reference.**
 
 #### Earlier M1b idea: train on the minutes we actually serve

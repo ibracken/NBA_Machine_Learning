@@ -144,9 +144,12 @@ def run_supervised_learning(publish=True):
             df = df[df['MIN'] != 0]
             logger.info(f"Filtered from {original_count} to {len(df)} records (MIN != 0)")
 
-        # Data preprocessing for MIN column (convert to numeric and add minutes noise)
+        # Minutes noise: serving feeds projected minutes, so training sees actual minutes +-8. The noise
+        # for each game is derived from its player and game ids, so it is identical on every nightly run
+        # (an unseeded draw moved projected-minutes MAE by up to 0.13 FP between runs).
         df['MIN'] = pd.to_numeric(df['MIN'], errors='coerce')
-        df['MIN'] = df['MIN'] + np.random.uniform(-8, 8, size=len(df))
+        game_key = pd.util.hash_pandas_object(df[['PLAYER_ID', 'GAME_ID']].astype(str), index=False).values
+        df['MIN'] = df['MIN'] + (game_key % 1_000_000) / 1_000_000 * 16 - 8
         df['MIN'] = df['MIN'].clip(lower=0)
         
         # Handle missing clusters with placeholder
@@ -322,16 +325,6 @@ def run_supervised_learning(publish=True):
             # Get actual feature names after encoding
             feature_names_list = list(features_encoded.columns)
 
-            # Save feature names to S3
-            if publish:
-                feature_names_json = json.dumps({'features': feature_names_list})
-                s3.put_object(
-                    Bucket=BUCKET_NAME,
-                    Key=f'models/{model_name}_feature_names.json',
-                    Body=feature_names_json
-                )
-                logger.info(f"{model_name}: Saved {len(feature_names_list)} feature names")
-
             # Check for multicollinearity (VIF)
             logger.info(f"{model_name}: Checking multicollinearity...")
             try:
@@ -348,15 +341,9 @@ def run_supervised_learning(publish=True):
             except Exception as e:
                 logger.warning(f"{model_name}: Could not calculate VIF: {e}")
 
-            # Time-based split: rolling-average features leak across a random split
-            cutoff_date = df['GAME_DATE'].sort_values().iloc[int(len(df) * 0.8)]
-            train_mask = df['GAME_DATE'] < cutoff_date
-            train, test = features_encoded[train_mask], features_encoded[~train_mask]
-            train_labels, test_labels = labels[train_mask], labels[~train_mask]
-
-            logger.info(f"{model_name}: Training set: {len(train)} (games before {cutoff_date.date()}), Test set: {len(test)}")
-
-            # Train model
+            # Train on every game, newest included. Out-of-sample evaluation (on projected minutes, which
+            # is what serving feeds the model) lives in scripts/backtest_fp_rate.py; publishing the model
+            # trained on only the oldest 80% cost 0.064 FP MAE there.
             model = GradientBoostingRegressor(
                 n_estimators=200,
                 learning_rate=0.1,
@@ -365,28 +352,29 @@ def run_supervised_learning(publish=True):
                 verbose=1
             )
 
-            logger.info(f"{model_name}: Training GradientBoostingRegressor...")
-            model.fit(train, train_labels.values.ravel())
+            logger.info(f"{model_name}: Training GradientBoostingRegressor on {len(features_encoded)} games...")
+            model.fit(features_encoded, labels.values.ravel())
 
-            # Save model to S3
+            # Feature names and model are published together, right after the fit
             if publish:
+                s3.put_object(
+                    Bucket=BUCKET_NAME,
+                    Key=f'models/{model_name}_feature_names.json',
+                    Body=json.dumps({'features': feature_names_list})
+                )
                 save_model_to_s3(model, f"models/{model_name}.pkl")
+                logger.info(f"{model_name}: Saved model and {len(feature_names_list)} feature names")
 
-            # Generate predictions
-            predictions = model.predict(test)
-
-            # Calculate R² score
-            # 0-1 scale, higher is better
-            r2 = r2_score(test_labels, predictions)
-            logger.info(f"{model_name}: R² Score = {r2:.4f}")
+            # In-sample R² only confirms training worked; it is not an accuracy estimate
+            r2 = r2_score(labels, model.predict(features_encoded))
+            logger.info(f"{model_name}: in-sample R² = {r2:.4f}")
 
             # Store results
             models_results[model_name] = {
                 'model': model,
                 'r2_score': r2,
                 'feature_count': len(feature_names_list),
-                'train_size': len(train),
-                'test_size': len(test),
+                'train_size': len(features_encoded),
                 'feature_names': feature_names_list,
                 'feature_importances': model.feature_importances_.tolist()
             }
