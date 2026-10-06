@@ -299,6 +299,27 @@ overlap):
   4. Per-minute rate regression.
 - The redistribution emulator is `scratchpad/redistribution.py`; it will move into `scripts/` with the fix.
 
+**DNP-aware baseline: tested 2026-10-06; NOT shipping. Production's pool is already DNP-filtered.**
+- **Method:** walk-forward on the replay table (fit 2022-23 → test 2023-24; 22-24 → 24-25; 22-25 → 25-26),
+  not a random split. Random splits leak through the rolling features, and production always predicts
+  forward. "Chance he plays" excludes likely-injury absences (a rotation player in a 2+ game absence
+  streak), since the injury report zeroes those in production.
+- **All non-injured roster players, every test season:** P(plays) × fitted minutes wins. MAE 4.96 / 5.19 /
+  5.31 vs Formula C 6.04 / 6.08 / 6.17; bias about 0 vs +1.7.
+- **Production pool (2025-26 players complex projected >0 and on the DFF slate, n=10,513): no gain.**
+  MAE 5.66 vs 5.61, bias −0.82 vs +0.34.
+  - **Why:** daily-predictions drops every player DFF projects at 0.0 (`data-ppg_proj != "0.0"`), so chronic
+    DNPs never reach us. Pool DNP rate is 5.9%, vs 69% for the replay's lowest band.
+  - **So the "DNP-blind baseline explains 39% + 15% + 40%" conclusion holds for the full roster, not for
+    our pool.**
+  - Even players who missed 2–3 team games: Formula C +2.95, P×fitted −1.26 (equal MAE). It over-corrects.
+- **What survives:** the fitted minutes-if-plays weights are stable across all three folds: season
+  0.23–0.28, last-7 0.38–0.45, previous game 0.24, plus a +2.2–2.6 return term (the ×0.75 return cut points
+  the wrong way). On the production pool: MAE 5.573 vs 5.612, but bias +0.90 vs +0.34. Needs the lineup
+  test.
+- **Lesson:** decisions must be scored on the **production pool**, which exists only for 2025-26. Use the
+  replay walk-forward for stability checks and fitting, and the lineup harness on 2025-26 to decide.
+
 ### M3. Model DNP risk explicitly
 5.5% of players projected over 10 minutes log zero; this was verified as real, not name mismatches.
 - Last season's lineups started a player who didn't play 0.3–0.4 times per slate (DFF: 0.1–0.2). Most of ours
