@@ -15,7 +15,13 @@ the season, career advanced from the box-score career columns):
   FC_MIN                               production Formula C (no DFF starter floor - no history)
   FREED_NEW_MIN, FREED_ALL_MIN         season-avg minutes of rotation teammates (S_MIN >= 15) absent tonight:
                                        NEW = played the team's previous game (fresh absence), ALL = missed <= 10
+  POSITION, POS_SOURCE                 DraftKings eligibility from the DFF scrape (most common listing, POS_SOURCE
+                                       'dff'); otherwise the NBA player index's coarse position mapped to DK slots
+                                       ('nba_coarse': G -> PG/SG, F -> SF/PF, C, G-F -> SG/SF, F-C -> PF/C). Coarse
+                                       positions can't separate PG from SG, so re-check findings on 'dff' rows.
 Outcome columns: ACT_MIN, ACT_FP (0 when he did not play), PLAYED.
+
+Needs PROXY_URL (from .env) for the NBA player index.
 
 Usage: python scripts/build_replay.py
 """
@@ -23,15 +29,20 @@ Usage: python scripts/build_replay.py
 import io
 from pathlib import Path
 
+import importlib.util
+import sys
+
 import boto3
 import numpy as np
 import pandas as pd
+from dotenv import load_dotenv
 
 BUCKET = "nba-prediction-ibracken"
 SEASONS = ["2022-23", "2023-24", "2024-25", "2025-26"]
 OUT = Path(__file__).resolve().parents[1] / "data" / "replay" / "replay.parquet"
 MAX_MINUTES = 37           # minutes-projection config.MAX_MINUTES
 ROTATION_MIN = 15          # season-avg minutes for a teammate's absence to count as freed minutes
+COARSE_TO_DK = {'G': 'PG/SG', 'F': 'SF/PF', 'C': 'C', 'G-F': 'SG/SF', 'F-G': 'SG/SF', 'F-C': 'PF/C', 'C-F': 'PF/C'}
 
 
 def load(key):
@@ -44,6 +55,38 @@ def formula_c(gp, s_min, l7_min, prev_min, missed):
     baseline = np.where(gp >= 4, s_min, 10.0)
     proj = np.minimum(0.5 * baseline + 0.3 * l7_min + 0.2 * prev_min, MAX_MINUTES)
     return np.where(missed >= 10, proj * 0.75, proj)
+
+
+def nba_player_positions():
+    """PERSON_ID -> coarse position for every player in NBA history (stats.nba.com playerindex)."""
+    root = Path(__file__).resolve().parents[1]
+    load_dotenv(root / ".env")
+    spec = importlib.util.spec_from_file_location("bss", root / "lambda" / "box-score-scraper" / "lambda_function.py")
+    bss = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bss)
+    params = {'LeagueID': '00', 'Season': SEASONS[-1], 'Historical': '1', 'TeamID': '0', 'Active': '',
+              'AllStar': '', 'College': '', 'Country': '', 'DraftPick': '', 'DraftRound': '', 'DraftYear': '',
+              'Height': '', 'Weight': ''}
+    data = bss.nba_api_get('https://stats.nba.com/stats/playerindex', params).json()['resultSets'][0]
+    df = pd.DataFrame(data['rowSet'], columns=data['headers'])
+    return dict(zip(df['PERSON_ID'], df['POSITION']))
+
+
+def player_positions(box):
+    """PLAYER -> (POSITION, POS_SOURCE): DFF's DraftKings eligibility first, NBA coarse position otherwise."""
+    daily = load("data/daily_predictions/current.parquet").dropna(subset=["POSITION"])
+    dff = daily.groupby("PLAYER")["POSITION"].agg(lambda s: s.value_counts().index[0])
+    coarse = nba_player_positions()
+    ids = box.drop_duplicates("PLAYER").set_index("PLAYER")["PLAYER_ID"]
+    out = {}
+    for player, pid in ids.items():
+        if player in dff.index:
+            out[player] = (dff[player], "dff")
+        elif coarse.get(pid) in COARSE_TO_DK:
+            out[player] = (COARSE_TO_DK[coarse[pid]], "nba_coarse")
+        else:
+            out[player] = (None, None)
+    return out
 
 
 def main():
@@ -107,7 +150,12 @@ def main():
     cand["FREED_NEW_MIN"] -= np.where(new, cand["S_MIN"], 0)
     cand["FREED_ALL_MIN"] -= np.where(recent, cand["S_MIN"], 0)
 
-    cols = ["SEASON", "D", "GAME_ID", "TEAM", "OPP", "IS_HOME", "TEAM_GAME_NO", "PLAYER", "GP", "S_MIN", "L7_MIN",
+    positions = player_positions(box)
+    cand["POSITION"] = cand["PLAYER"].map(lambda p: positions.get(p, (None, None))[0])
+    cand["POS_SOURCE"] = cand["PLAYER"].map(lambda p: positions.get(p, (None, None))[1])
+
+    cols = ["SEASON", "D", "GAME_ID", "TEAM", "OPP", "IS_HOME", "TEAM_GAME_NO", "PLAYER", "POSITION", "POS_SOURCE",
+            "GP", "S_MIN", "L7_MIN",
             "PREV_MIN", "S_FP", "L7_FP", "L3_FP", "C_MIN", "C_FP", "CG", "TEAM_GAMES_MISSED", "DAYS_OFF", "FC_MIN",
             "FREED_NEW_MIN", "FREED_ALL_MIN", "ACT_MIN", "ACT_FP", "PLAYED"]
     cand = cand[cols].sort_values(["D", "TEAM", "PLAYER"]).reset_index(drop=True)
