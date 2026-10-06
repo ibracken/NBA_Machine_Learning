@@ -174,6 +174,40 @@ def is_nba_season(now_utc=None):
     return now_et.date() >= datetime(year, 10, 15).date() or now_et.date() <= datetime(year, 6, 25).date()
 
 
+GAME_DATES_BUCKET = 'nba-prediction-ibracken'
+GAME_DATES_KEY = 'data/schedule/game_dates.json'  # written by box-score-scraper
+
+
+def no_games_today(now_utc=None):
+    """
+    (skip, reason). Skip days with no regular-season (or scheduled playoff) games, e.g. preseason and the
+    All-Star break, whose DFF slates would otherwise run the whole pipeline. When the game-dates file is
+    missing, from an earlier season, or today is past its last game, schedule as before: the first run of a
+    new season then saves that season's dates.
+    """
+    today = (now_utc or datetime.now(timezone.utc)).astimezone(pytz.timezone('America/New_York')).date()
+    season_start = today.year if today.month >= 7 else today.year - 1
+    season = f"{season_start}-{str(season_start + 1)[-2:]}"
+    try:
+        body = boto3.client('s3').get_object(Bucket=GAME_DATES_BUCKET, Key=GAME_DATES_KEY)['Body'].read()
+        game_dates = json.loads(body)
+    except Exception as e:
+        logger.warning(f"No game-dates file ({e}); scheduling from the DFF slate alone")
+        return False, ''
+    if game_dates.get('season') != season:
+        logger.warning(f"Game-dates file is for {game_dates.get('season')}, not {season}; "
+                       "scheduling from the DFF slate alone")
+        return False, ''
+    today_str = today.strftime('%Y-%m-%d')
+    if today_str < game_dates['first_game']:
+        return True, f"Preseason: the first {season} regular-season game is {game_dates['first_game']}"
+    if today_str > game_dates['last_game']:
+        return False, ''
+    if today_str not in game_dates['dates']:
+        return True, f"No NBA games scheduled on {today_str}"
+    return False, ''
+
+
 def lambda_handler(event, context):
     events_client = boto3.client('events')
 
@@ -183,6 +217,12 @@ def lambda_handler(event, context):
     # === CLEANUP OLD RULES ===
     if not is_local:
         cleanup_old_rules(events_client)
+
+    # === SKIP DAYS WITHOUT REAL GAMES (preseason, All-Star break) ===
+    skip, reason = no_games_today()
+    if skip:
+        logger.info(f"{reason}; nothing scheduled")
+        return {'statusCode': 200, 'body': reason}
 
     # === SCRAPE MAIN SLATE TIME FROM DAILYFANTASYFUEL ===
     main_slate_time = scrape_main_slate_time()

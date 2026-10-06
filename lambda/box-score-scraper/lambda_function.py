@@ -7,6 +7,7 @@ from datetime import datetime
 from io import BytesIO
 from unidecode import unidecode
 import os
+import time
 from dotenv import load_dotenv
 
 # Load .env file for local testing (Lambda uses environment variables)
@@ -86,6 +87,43 @@ NBA_API_HEADERS = {
 # Preseason (001) and All-Star (003) games do not involve real team matchups
 EXCLUDED_GAME_ID_PREFIXES = ('001', '003')
 
+# Read by game-scheduler to skip days with no regular-season games (preseason, All-Star break)
+GAME_DATES_KEY = 'data/schedule/game_dates.json'
+
+# The proxy drops roughly 1 request in 6 (timeouts, TLS EOFs; measured 2026-10-05); NBA responses are fine
+NBA_API_ATTEMPTS = 3
+NBA_API_BACKOFF_SECONDS = (5, 15)
+
+
+def nba_api_get(url, params):
+    """GET a stats.nba.com endpoint through the proxy, retrying dropped connections and non-200s."""
+    proxy_url = os.environ.get('PROXY_URL')
+    if not proxy_url:
+        raise ValueError("PROXY_URL environment variable must be set")
+    for attempt in range(1, NBA_API_ATTEMPTS + 1):
+        try:
+            response = requests.get(url, headers=NBA_API_HEADERS, params=params,
+                                    proxies={'http': proxy_url, 'https': proxy_url}, timeout=60, verify=False)
+            if response.status_code == 200:
+                return response
+            problem = f"HTTP {response.status_code}"
+        except requests.RequestException as e:
+            problem = f"{type(e).__name__}: {e}"
+        if attempt == NBA_API_ATTEMPTS:
+            raise RuntimeError(f"{url} failed after {attempt} attempts: {problem}")
+        wait = NBA_API_BACKOFF_SECONDS[attempt - 1]
+        logger.warning(f"{url} attempt {attempt} failed ({problem}); retrying in {wait}s")
+        time.sleep(wait)
+
+
+def save_game_dates(schedule, season):
+    """Save the season's game dates (regular season, plus playoffs once scheduled) for game-scheduler."""
+    dates = sorted({d.strftime('%Y-%m-%d') for d in pd.to_datetime(schedule['GAME_DATE'])})
+    s3.put_object(Bucket=BUCKET_NAME, Key=GAME_DATES_KEY, ContentType='application/json',
+                  Body=json.dumps({'season': season, 'first_game': dates[0], 'last_game': dates[-1],
+                                   'dates': dates}))
+    logger.info(f"Saved {len(dates)} {season} game dates ({dates[0]} to {dates[-1]})")
+
 
 def fetch_season_schedule(season):
     """
@@ -95,19 +133,7 @@ def fetch_season_schedule(season):
     the training feature is built from) on 2455 of 2460 team-games in 2025-26; all 5 disagreements
     were neutral-site games (Mexico City, Las Vegas, Berlin, London), where neither team is really home.
     """
-    proxy_url = os.environ.get('PROXY_URL')
-    if not proxy_url:
-        raise ValueError("PROXY_URL environment variable must be set")
-
-    response = requests.get(
-        "https://stats.nba.com/stats/scheduleleaguev2",
-        params={'LeagueID': '00', 'Season': season},
-        headers=NBA_API_HEADERS,
-        proxies={'http': proxy_url, 'https': proxy_url},
-        timeout=60,
-        verify=False
-    )
-    response.raise_for_status()
+    response = nba_api_get("https://stats.nba.com/stats/scheduleleaguev2", {'LeagueID': '00', 'Season': season})
 
     rows = []
     for game_date in response.json()['leagueSchedule']['gameDates']:
@@ -136,8 +162,6 @@ def fetch_box_scores_from_api(season=None):
 
     url = "https://stats.nba.com/stats/leaguegamelog"
 
-    headers = NBA_API_HEADERS
-
     params = {
         'Counter': '1000',
         'DateFrom': '',
@@ -151,45 +175,27 @@ def fetch_box_scores_from_api(season=None):
         'Sorter': 'DATE'
     }
 
-    # Get proxy URL from environment variable
-    # For Lambda: Set PROXY_URL in Lambda environment variables
-    # For local: Set in .env file or environment
-    PROXY_URL = os.environ.get('PROXY_URL')
-    if not PROXY_URL:
-        raise ValueError("PROXY_URL environment variable must be set")
-
-    proxies = {
-        'http': PROXY_URL,
-        'https': PROXY_URL
-    }
-
     try:
         logger.info(f"Making request to NBA API for season {season}...")
-        response = requests.get(url, headers=headers, params=params, proxies=proxies, timeout=60, verify=False)
+        data = nba_api_get(url, params).json()
 
-        if response.status_code == 200:
-            data = response.json()
+        if 'resultSets' in data and len(data['resultSets']) > 0:
+            result_set = data['resultSets'][0]
+            headers_list = result_set['headers']
+            rows = result_set['rowSet']
 
-            if 'resultSets' in data and len(data['resultSets']) > 0:
-                result_set = data['resultSets'][0]
-                headers_list = result_set['headers']
-                rows = result_set['rowSet']
+            logger.info(f"Successfully fetched {len(rows)} box score records for season {season}")
 
-                logger.info(f"Successfully fetched {len(rows)} box score records for season {season}")
+            # Create DataFrame
+            df = pd.DataFrame(rows, columns=headers_list)
 
-                # Create DataFrame
-                df = pd.DataFrame(rows, columns=headers_list)
+            # Drop FANTASY_PTS immediately (we calculate DraftKings FP ourselves)
+            if 'FANTASY_PTS' in df.columns:
+                df = df.drop(columns=['FANTASY_PTS'])
 
-                # Drop FANTASY_PTS immediately (we calculate DraftKings FP ourselves)
-                if 'FANTASY_PTS' in df.columns:
-                    df = df.drop(columns=['FANTASY_PTS'])
-
-                return df
-            else:
-                logger.error(f"No resultSets found in NBA API response for season {season}")
-                return None
+            return df
         else:
-            logger.error(f"NBA API request failed with status {response.status_code}: {response.text}")
+            logger.error(f"No resultSets found in NBA API response for season {season}")
             return None
 
     except Exception as e:
@@ -497,6 +503,7 @@ def run_box_score_scraper():
         try:
             schedule = fetch_season_schedule(current_season)
             save_dataframe_to_s3(schedule, 'data/schedule/current.parquet')
+            save_game_dates(schedule, current_season)
         except Exception as e:
             logger.error(f"Failed to fetch/save {current_season} schedule: {e}")
             errors.append(f"Schedule fetch failed: {e}")

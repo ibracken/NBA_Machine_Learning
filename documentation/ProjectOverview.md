@@ -15,7 +15,7 @@ This repo is an AWS Lambda-based pipeline that scrapes NBA data, builds clusteri
 The `lambda/game-scheduler` Lambda scrapes the DailyFantasyFuel main slate start time and schedules these functions at fixed offsets from 30 minutes before the slate (minutes in brackets):
 1. [+0] `cluster-scraper` -> `data/advanced_player_stats/current.parquet`
 2. [+2] `nba-clustering` -> `data/clustered_players/current.parquet`
-3. [+4] `box-score-scraper` -> `data/box_scores/{season}.parquet` for the current and three prior seasons; the current season is mirrored to `data/box_scores/current.parquet`; also writes the current season's schedule to `data/schedule/current.parquet`
+3. [+4] `box-score-scraper` -> `data/box_scores/{season}.parquet` for the current and three prior seasons; the current season is mirrored to `data/box_scores/current.parquet`; also writes the current season's schedule to `data/schedule/current.parquet` and its game dates to `data/schedule/game_dates.json`
 4. [+6] `supervised-learning` -> `models/{current,fp_per_min,barebones}.pkl` and `models/*_feature_names.json`
 5. [+9] `daily-predictions` -> `data/daily_predictions/current.parquet` (DFF projections only; no model FP here)
 6. [+11] `injury-scraper` -> `data/injuries/current.parquet` (OUT-only from NBA PDF)
@@ -50,7 +50,7 @@ Every Lambda derives the current season from the date (July onward = new season)
 Docker Desktop must be running. `python lambda/deploy.py <function> [...]` or `--all` builds each image for `linux/amd64`, pushes it to ECR tagged with a UTC timestamp (and `:latest`), updates the function, and waits for it to become active. The AWS CLI is resolved from `.venv/Scripts/` if not on PATH; put `.venv/Scripts` first on PATH before running, because `aws.cmd` otherwise runs the system Python, which lacks `awscli`. Functions (and their ECR repos) are created once by hand; the script only updates code. The llm-analyst function also needs the `CLAUDE_API_KEY` environment variable, set by hand.
 
 ## Monitoring
-Each Lambda raises on failure so the `AWS/Lambda Errors` metric fires. CloudWatch alarms `nba-lambda-errors-<function>` (all nine pipeline functions, including `llm-analyst`) publish to the `lineup-optimizer-notifications` SNS topic (email). `game-scheduler` treats a missing DailyFantasyFuel slate as an error only between Oct 15 and Jun 25.
+Each Lambda raises on failure so the `AWS/Lambda Errors` metric fires. CloudWatch alarms `nba-lambda-errors-<function>` (all nine pipeline functions, including `llm-analyst`) publish to the `lineup-optimizer-notifications` SNS topic (email). `game-scheduler` treats a missing DailyFantasyFuel slate as an error only between Oct 15 and Jun 25, and schedules nothing on days with no regular-season games per `data/schedule/game_dates.json` (preseason, All-Star break).
 
 ## Evaluation
 `scripts/evaluate_projections.py` scores stored minutes projections and lineups against actuals, split by data-freshness regime (see the docstring for the 2025-26 regimes). Run it before judging any model change. `scripts/evaluate_llm.py` scores L2 and L3 and reports LLM spend.
