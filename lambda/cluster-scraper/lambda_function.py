@@ -6,6 +6,7 @@ import boto3
 import json
 from io import BytesIO
 import os
+import time
 from dotenv import load_dotenv
 
 # Load .env file for local testing (Lambda uses environment variables)
@@ -26,6 +27,10 @@ if not logger.handlers:
 # S3 client
 s3 = boto3.client('s3')
 BUCKET_NAME = 'nba-prediction-ibracken'
+
+# The proxy drops roughly 1 request in 6 (measured 2026-10-05); retry each stats endpoint
+NBA_API_ATTEMPTS = 3
+NBA_API_BACKOFF_SECONDS = (5, 15)
 
 # S3 utility functions
 def save_dataframe_to_s3(df, key):
@@ -250,35 +255,31 @@ def scrape_single_api_endpoint(session, measure_type, stat_type):
         'Weight': ''
     }
     
-    try:
-        response = session.get(base_url, params=params, timeout=30, verify=False)
-        
-        if response.status_code == 200:
-            logger.info(f"{stat_type} API request successful")
-            data = response.json()
-            
-            if 'resultSets' in data and len(data['resultSets']) > 0:
-                result_set = data['resultSets'][0]
-                headers_list = result_set['headers']
-                rows = result_set['rowSet']
-                
-                logger.info(f"Retrieved {len(rows)} players with {len(headers_list)} columns for {stat_type}")
-                
-                # Create DataFrame
-                df = pd.DataFrame(rows, columns=headers_list)
-                df['STAT_TYPE'] = stat_type
-                
-                return df
+    # Returns None when the request fails, and an empty DataFrame when the season has no stats yet
+    for attempt in range(1, NBA_API_ATTEMPTS + 1):
+        try:
+            response = session.get(base_url, params=params, timeout=30, verify=False)
+            if response.status_code == 200:
+                data = response.json()
+                if 'resultSets' in data and len(data['resultSets']) > 0:
+                    result_set = data['resultSets'][0]
+                    headers_list = result_set['headers']
+                    rows = result_set['rowSet']
+                    logger.info(f"Retrieved {len(rows)} players with {len(headers_list)} columns for {stat_type}")
+                    df = pd.DataFrame(rows, columns=headers_list)
+                    df['STAT_TYPE'] = stat_type
+                    return df
+                problem = "no resultSets in response"
             else:
-                logger.error(f"No resultSets found in {stat_type} API response")
-                return pd.DataFrame()
-        else:
-            logger.error(f"{stat_type} API request failed with status {response.status_code}")
-            return pd.DataFrame()
-            
-    except Exception as e:
-        logger.error(f"Error scraping {stat_type}: {str(e)}")
-        return pd.DataFrame()
+                problem = f"HTTP {response.status_code}"
+        except Exception as e:
+            problem = f"{type(e).__name__}: {e}"
+        if attempt < NBA_API_ATTEMPTS:
+            wait = NBA_API_BACKOFF_SECONDS[attempt - 1]
+            logger.warning(f"{stat_type} attempt {attempt} failed ({problem}); retrying in {wait}s")
+            time.sleep(wait)
+    logger.error(f"Error scraping {stat_type} after {NBA_API_ATTEMPTS} attempts: {problem}")
+    return None
 
 def merge_api_dataframes(advanced_df, scoring_df, defense_df):
     """Merge all API DataFrames together"""
@@ -365,7 +366,20 @@ def scrape_nba_api():
         logger.info("=== SCRAPING DEFENSE STATS ===")
         defense_df = scrape_single_api_endpoint(session, 'Defense', 'defense')
         
-        missing = [name for name, frame in [('advanced', advanced_df), ('scoring', scoring_df), ('defense', defense_df)] if frame.empty]
+        frames = [('advanced', advanced_df), ('scoring', scoring_df), ('defense', defense_df)]
+        failed = [name for name, frame in frames if frame is None]
+        if failed:
+            return {'success': False, 'error': f"Stat endpoints failed: {failed}"}
+
+        # Before a season's first game (opening night runs before tip) every endpoint answers with zero
+        # players. Keep the existing stats so nba-clustering and box-score-scraper use last season's.
+        if all(frame.empty for _, frame in frames):
+            season = get_current_nba_season()
+            logger.warning(f"No {season} regular-season stats yet; keeping the existing advanced stats")
+            return {'success': True, 'records_scraped': 0, 'columns_count': 0,
+                    'skipped': f"no {season} stats yet"}
+
+        missing = [name for name, frame in frames if frame.empty]
         if missing:
             logger.error(f"Stat endpoints returned no data: {missing}")
             return {'success': False, 'error': f"Stat endpoints returned no data: {missing}"}

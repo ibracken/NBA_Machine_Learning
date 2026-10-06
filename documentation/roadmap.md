@@ -104,7 +104,28 @@ real projected minutes, minutes-projection's serving features, and the productio
   fp_per_min 234.2 / 236.1.
 - Retiring `current` and `fp_per_min` cuts in-house lineups from 6 to 2, with no measured loss.
 
-### M1b. Train on the minutes we actually serve (replacement for the ±8 noise)
+### M1b. Fix the minutes model at the root (supersedes "train on served minutes")
+**Finding (2026-10-05): our projected minutes are overconfident.** Over 2025-26:
+- actual ≈ 5.4 + 0.79 × complex projection, and 4.7 + 0.83 × Formula C (a calibrated model would be
+  0 + 1.0×);
+- players projected about 36 minutes played 33.7; players projected about 13 played 15.0.
+
+That is why rate × minutes lost: it multiplies by the overconfident number. Calibrating minutes first improved
+a simple rate × minutes from 8.30 to 8.24 FP MAE, about a third of the gap to barebones.
+
+**Calibrating after the fact would be a patch.** The root cause is that the minutes models are hand-built, not
+fit to outcomes. Formula C's 0.5 / 0.3 / 0.2 weights are constants in the code, and complex adds a
+redistribution known to overshoot about 3×. A model fit to actual minutes is calibrated by construction.
+Baseball's [Marcel](https://library.fangraphs.com/the-projection-rundown-the-basics-on-marcels-zips-cairo-oliver-and-the-rest/)
+builds regression to the mean *into* the projection, and is hard to beat. Post-hoc recalibration is what ML
+reaches for when retraining isn't possible
+([overview](https://www.emergentmind.com/topics/post-hoc-calibration-methods)).
+- **Next experiment:** fit Formula C's weights, plus a regression-toward-the-player's-baseline term, by least
+  squares on 2022-23..2024-25. Score minutes MAE and calibration slope on 2025-26 against today's
+  Formula C. Then rerun the M1 harness with those minutes.
+- **The earlier ideas below are kept for reference.**
+
+#### Earlier M1b idea: train on the minutes we actually serve
 **How others do it** (researched 2026-10-02):
 - DFS projection sites build projections as **projected minutes × FP per minute**
   ([RotoGrinders](https://rotogrinders.com/fantasy/lessons/accurately-predicting-minutes-nba-dfs),
@@ -136,6 +157,18 @@ real projected minutes, minutes-projection's serving features, and the productio
   noise (seeded, per fix A).
 
 ### M2. Shrink projections before optimizing
+**The repeat-pick pattern (checked 2026-10-05).** Our lineups reuse the same players far more than DFF's do:
+- barebones lineups: Kel'el Ware 30% of slates, Mikal Bridges 26%; DFF's most-picked player is at 15%.
+- (Davion Mitchell specifically was in only 2–10% of slates in every lineup set, archive included.)
+- The repeat picks are players we project 1.5–5 FP above DFF: Ware +4.5, Keldon Johnson +3.9, Derik Queen
+  +3.9, Schröder +5.0.
+- They then fall short of our projection by about as much as everyone else (+3.4 vs +3.3 FP per slot). DFF's
+  repeat picks *beat* DFF's projection (−2.5).
+- This is the [optimizer's curse](https://jimsmith.host.dartmouth.edu/wp-content/uploads/2022/04/The_Optimizers_Curse.pdf):
+  picking the maximum of noisy estimates selects the most over-estimated ones. A player whose features keep
+  producing the same optimistic error gets picked night after night. The standard fix is shrinking estimates
+  toward a prior, which is what M2 is.
+
 Our lineups project about 262 FP and realize about 242 (+20). DFF projects 272 and realizes 265 (+7). Most of
 the gap is projection bias amplified by picking the maximum.
 - The M1 backtest showed the same thing. Barebones lineups projected 265 vs 238 realized, and the rate model
