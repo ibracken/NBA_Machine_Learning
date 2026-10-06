@@ -320,6 +320,30 @@ overlap):
 - **Lesson:** decisions must be scored on the **production pool**, which exists only for 2025-26. Use the
   replay walk-forward for stability checks and fitting, and the lineup harness on 2025-26 to decide.
 
+**Selection-aware shrinkage toward the player's own season average: tested 2026-10-06; no lineup gain.**
+`scripts/backtest_shrinkage.py`, 2025-26 production pool, 101 slates. Barebones FP is regenerated (trained on
+2022-25), because production only stored FP projections from January. The fractions are cross-fitted by
+time halves.
+
+| Variant | What picking adds | Player MAE | Realized lineup FP |
+|---|---|---|---|
+| No shrink | +3.53 / slot | 8.51 | 238.8 |
+| One fraction (k ≈ 0.55–0.65) | **+2.73** | **8.44** | 238.8 (Δ 0.0, CI −5.1..+4.8) |
+| Fraction per risk group | +3.34 | 8.49 | 238.9 (Δ +0.1) |
+
+- **Shrinking makes projections more honest** (smaller overshoot, better MAE) **but the lineups don't score
+  more.** It changes the lineup on 82% of slates and simply picks a different set of over-projected
+  players. The per-group fractions are unstable between halves.
+- **Realized lineup FP depends on ranking, not calibration.** The lineup gains points only if we're better at
+  telling which players will beat their price. Shrinking toward a player's own average adds no new
+  information about that.
+- DFF's lineups realize about 265 vs our 239. That gap is ranking quality.
+- Detectable effect size: across 101 slates the 95% CI on a lineup-FP difference is about ±5 FP, so smaller
+  real gains can't be confirmed from one season.
+- **Next:** candidates that add information or accuracy rather than calibration. Re-test the minutes ×
+  FP-per-minute split with the fitted minutes; the fitted minutes weights; the injury boost weight.
+  Separately, study the slates where our lineup and DFF's diverge: who was right, and what we got wrong.
+
 ### M3. Model DNP risk explicitly
 5.5% of players projected over 10 minutes log zero; this was verified as real, not name mismatches.
 - Last season's lineups started a player who didn't play 0.3–0.4 times per slate (DFF: 0.1–0.2). Most of ours
