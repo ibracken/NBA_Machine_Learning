@@ -266,6 +266,39 @@ overlap):
   for bumped players; (2) count missed team games in the minutes features; (3) M1b fitted baseline,
   including a games-played term; (4) regress the season FP/min rate toward career (Marcel-style, fitted).
 
+**Fix #1 investigation on the replay table (2026-10-06): the root cause is DNP-blind baselines, not the boost.**
+- **Setup:** 4 seasons; 5,853 team-games with a fresh rotation absence (S_MIN ≥ 15, played the previous team
+  game); 65,743 eligible teammates. Complex's fresh-injury redistribution was emulated exactly (position
+  overlap, 2× exact position, caps, first-absence-only, ×0.35 damping).
+- **Raw comparison:** boosted teammates were predicted +1.54 min over Formula C and gained +0.90. A single
+  weight scan (fit 2022-25, test 2025-26) prefers 0.20 over 0.35 (test MAE 5.707 vs 5.756; bias −0.05 vs
+  +0.62).
+- **But against normal nights (no absence), the boost is not too big.** Teammates truly gained +2.09 vs +1.54
+  predicted: same position +2.65 (pred 2.04), adjacent +1.75 (1.24), no overlap +0.34 (0). The raw
+  "overshoot" comes from the baseline the boost sits on.
+- **The baseline over-projects bench players, and 94% of that is DNP nights.** On normal nights:
+
+  | Formula C projected | DNP rate | Error, all nights | Error, nights played |
+  |---|---|---|---|
+  | 0–8 min | 64% | +3.64 | +0.04 |
+  | 8–14 min | 35% | +3.96 | +0.16 |
+  | 14–20 min | 4% | +0.20 | −0.42 |
+
+  Formula C averages only the games a player appeared in, so it ignores how often he doesn't play.
+  Players who appeared in ≤50% of team games: projected 7.2, actual 2.9, 61% DNP.
+- **This one cause links three diagnostic flags:** bench picks (39%), frozen projections after missed
+  games (15%), and much of the "redistribution" excess (40%), because boosted players are often bench
+  players.
+- **Revised fix order:**
+  1. **DNP-aware baseline:** projected minutes = P(plays) × minutes-if-plays. P(plays) is fit on 2022-25 from
+     appearance rate, team games missed and recent DNPs; minutes-if-plays is the current formula, which is
+     accurate. Test on 2025-26 by FC band.
+  2. **Re-tune the redistribution weight on top of that baseline.** The 0.20-vs-0.35 answer above is
+     contaminated by the baseline bias.
+  3. M1b weight fit (mid/high-minute shape: 20–26 under by 0.85, 26+ over by 0.5–0.8).
+  4. Per-minute rate regression.
+- The redistribution emulator is `scratchpad/redistribution.py`; it will move into `scripts/` with the fix.
+
 ### M3. Model DNP risk explicitly
 5.5% of players projected over 10 minutes log zero; this was verified as real, not name mismatches.
 - Last season's lineups started a player who didn't play 0.3–0.4 times per slate (DFF: 0.1–0.2). Most of ours
