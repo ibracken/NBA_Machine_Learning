@@ -12,6 +12,18 @@ and features alike. Every item below says how it gets measured, and what result 
 - `scripts/evaluate_projections.py` scores minutes and lineups by data-freshness regime.
 - `scripts/evaluate_llm.py` scores L2 and L3 and reports LLM spend.
 - `scripts/backtest_fp_rate.py` replays 2025-26 slates against FP models trained on earlier seasons.
+- **`scripts/build_replay.py` builds the historical replay table** (`data/replay/replay.parquet`, local,
+  gitignored): **163,879 rows**, one per rotation player per team-game, 2022-23..2025-26, **including players
+  who didn't play**. Each row has pre-game features (season / last-7 / previous minutes, games played, FP
+  averages, career averages, team games missed, days off), production Formula C, minutes freed by absent
+  teammates, and actual minutes and FP.
+  - Validated 2026-10-06: the pre-game averages match the box-score files' own columns on 100% of rows, and
+    `FC_MIN` matches production `project_minutes_formula_c` on 400 of 400 sampled rows (including the
+    return and <4-game rules).
+  - Use it to fit on 2022-25 and test on 2025-26 for every projection fix. Salaries exist only for 2025-26
+    (from 10/24), so the lineup harness remains the final check.
+  - Absences are realized (who didn't play), standing in for the injury report. That's right for measuring
+    how many minutes teammates actually gain. Positions aren't in box scores.
 - Stored 2025-26 history: minutes projections for **101 slates (Nov 29 – Apr 12)**, plus lineups for each
   model.
 
@@ -195,6 +207,64 @@ the gap is projection bias amplified by picking the maximum.
 - Shrink each projection toward the positional mean in proportion to its uncertainty; optionally optimize
   `proj_FP - λ·σ`.
 - Backtestable now on the 100 stored slates with the M1 harness. Pass if realized lineup FP improves.
+
+**Diagnostic (2026-10-06): where the lineup over-projection comes from.** Complex minutes + barebones FP,
+54 slates, DFF-slate players only. Projected-minus-actual FP is split exactly into a **minutes** part
+(projected minutes too high) and a **per-minute** part (projected FP per minute too high):
+
+| | Players | Proj − actual | Minutes part | Per-minute part | DNP |
+|---|---|---|---|---|---|
+| Whole slate pool | 5,566 | −0.40 | +0.34 | −0.75 | 6.8% |
+| Picked for lineups | 432 | **+3.35** | +2.33 | +1.02 | 4.2% |
+| **Selection effect** | | **+3.76 per slot (~30 per lineup)** | **+1.98** | **+1.77** | |
+
+- **The projections themselves are fine on average** (pool −0.4). The optimizer then picks the players whose
+  errors happen to be positive, and it picks them on **both** parts, about half each. With Formula C minutes:
+  +1.49 minutes, +1.95 per minute.
+- **Cheap picks (<$4k): mostly minutes.** +4.6 FP from minutes, and a 21% DNP rate (15% with Formula C).
+- **$5.5k+ picks: mostly per-minute** (+2.2 to +2.4).
+- **Picks we projected 2+ minutes above their season average** overshoot more (+3.9 to +4.6, few players).
+  Hypothesis, not yet tested: many are injury-redistribution beneficiaries.
+- **Implication:** no single model fix removes it. Selection always finds whatever error remains, so the fix
+  must make the projections less confident where they are least reliable. Priors come from **our own data**
+  (no DFF; salary only if Ian OKs it):
+  - **(2a) minutes:** shrink toward the player's season average, more strongly for big projected jumps,
+    cheap players and few games;
+  - **(2b) per minute:** shrink the season rate toward the career rate, by games played and volatility;
+  - shrink strength fit on 2022-25, the standard empirical-Bayes setup.
+- **Pass rule:** cut the selection effect clearly in the harness, and don't lower realized lineup FP.
+
+**Root causes (2026-10-06).** All 432 picks (complex minutes + barebones FP, 54 slates) over-shoot the pool by
+1,622 FP in total (+3.76 per slot). Share of that excess carried by picks with each condition (conditions
+overlap):
+
+| Condition | Picks | Avg error | Share of excess |
+|---|---|---|---|
+| **Injury-redistribution bump ≥0.5 min** (complex − Formula C) | 113 | +5.3 | **40%** |
+| No DFF starter flag (bench) | 133 | +4.3 | 39% |
+| Missed 1+ team games since last appearance | 42 | +5.4 | 15% |
+| Thin sample (<10 games this season) | 21 | +8.5 | 12% |
+| Returning after 8+ days | 16 | +10.4 | 11% |
+| Hot season rate (season FP/min ≥ career +0.10) | 82 | +1.8 | 11% |
+| **No condition at all** (pure selection noise) | 156 | +1.8 | 21% |
+
+1. **Injury redistribution still overshoots, and the optimizer feeds on it.** Even at
+   `INJURY_ADJUSTMENT_WEIGHT` 0.35, bumped players are over-projected across the whole pool: +1.2 min for
+   0.5–3 min bumps, +3.0 for 3+. A bump raises the projection while the salary stays put, which is exactly
+   what the optimizer looks for. Bumped picks: +3.9 / +7.9 min. This is the complex model's own
+   redistribution.
+2. **Frozen projections for players falling out of the rotation.** A DNP has no box-score row, so a benched or
+   unlisted-injured player keeps his old averages. Pool players who missed 2+ team games are over-projected
+   by about 3 min, with a 25% DNP rate. Example: Julian Reese was picked 4 times at 29.8 projected minutes
+   (from 5 games), and didn't play any of them.
+3. **Thin samples and returns from absence** (12% / 11%): small-sample averages and minutes restrictions.
+4. **Per minute: season rates don't regress.** Picks' actual FP/min ran 0.034 below their season rate (pool:
+   +0.009). The FP model tracks the season rate faithfully (+0.008); the season rate itself is the inflated
+   input, picked when hot.
+- Checked and ruled out: stars being under-projected. Pool error is −0.3 to +0.3 in every salary band.
+- **Fix order (each tested in the harness on the selection-effect metric):** (1) the redistribution size
+  for bumped players; (2) count missed team games in the minutes features; (3) M1b fitted baseline,
+  including a games-played term; (4) regress the season FP/min rate toward career (Marcel-style, fitted).
 
 ### M3. Model DNP risk explicitly
 5.5% of players projected over 10 minutes log zero; this was verified as real, not name mismatches.
