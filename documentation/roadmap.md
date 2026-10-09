@@ -343,6 +343,39 @@ time halves.
   FP-per-minute split with the fitted minutes; the fitted minutes weights; the injury boost weight.
   Separately, study the slates where our lineup and DFF's diverge: who was right, and what we got wrong.
 
+**Where the points go vs DFF (2026-10-09, `scripts/compare_lineups_dff.py`): injury minutes go to the wrong
+players.**
+- **Setup:** 101 slates of 2025-26. Our lineup comes from our pool (regenerated barebones on complex minutes);
+  DFF's from their full slate. Same optimizer. Shared players cancel, so the swaps *are* the gap.
+- **DFF realized 259.0 vs our 238.8: +20.2 per slate (95% CI +12.1..+28.8).** DFF wins 64% of slates. The
+  lineups share only 1.7 of 8 players.
+- **Both sides of the swap hurt:**
+  - Our-only picks were projected 32.7 and scored 28.9. DFF had them at 29.3, i.e. right.
+  - DFF-only picks scored 32.2, but **we projected them at only 27.0**.
+  - The under-projection of good players (−5.2) is bigger than the over-projection of ours (+3.8). The
+    earlier work only looked at the over-projection side.
+- **It's injury situations.** 518 of 565 DFF-only picks (who played) came on nights when 25+ minutes of their
+  team's rotation was out. On those slates, at the same salary (~$6k):
+
+  | Swapped player | Complex injury boost | Our min → actual | Our FP → actual |
+  |---|---|---|---|
+  | DFF picked, we didn't | **+0.5** | 26.8 → **29.2** | 26.6 → **32.3** |
+  | We picked, DFF didn't | **+2.2** | 29.0 → **25.8** | 32.0 → **28.1** |
+
+  Complex's allocation rule (position overlap, 2× exact position, proportional to baseline) gives the freed
+  minutes to the wrong teammates. The real absorbers also get a **per-minute (usage) bump** that we don't
+  model at all: DFF-only picks' actual rate was 1.102 FP/min, vs our implied 0.989 and their own season rate
+  1.057.
+- **9% of DFF's swaps (59) weren't in our pool at all:** Jokić on 10 slates (Feb 27 – Apr 8), Avdija 5,
+  Barrett 3, Vassell 3. These were healthy players held OUT by the stale injury feed (the Feb–Apr outage).
+  Already addressed by the 2026-09-20 stale-OUT fix; re-check once live.
+- **Next: learn the injury response from the 4-season replay instead of the hand rules.**
+  1. **Who absorbs the minutes:** model each teammate's minutes gain given who is out. Features: role
+     (season minutes, starter), position relationship, recent trend, and (likely strongest) how minutes moved
+     the last times this same player sat.
+  2. **Usage bump:** each teammate's per-minute FP change given the absent players' minutes and usage.
+  Fit walk-forward on the replay; decide on the 2025-26 lineup comparison (does the DFF gap shrink?).
+
 ### M3. Model DNP risk explicitly
 5.5% of players projected over 10 minutes log zero; this was verified as real, not name mismatches.
 - Last season's lineups started a player who didn't play 0.3–0.4 times per slate (DFF: 0.1–0.2). Most of ours
