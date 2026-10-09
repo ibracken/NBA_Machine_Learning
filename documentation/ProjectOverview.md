@@ -18,7 +18,7 @@ The `lambda/game-scheduler` Lambda scrapes the DailyFantasyFuel main slate start
 3. [+4] `box-score-scraper` -> `data/box_scores/{season}.parquet` for the current and three prior seasons; the current season is mirrored to `data/box_scores/current.parquet`; also writes the current season's schedule to `data/schedule/current.parquet` and its game dates to `data/schedule/game_dates.json`
 4. [+6] `supervised-learning` -> `models/{current,fp_per_min,barebones}.pkl` and `models/*_feature_names.json`
 5. [+9] `daily-predictions` -> `data/daily_predictions/current.parquet` (DFF projections only; no model FP here)
-6. [+11] `injury-scraper` -> `data/injuries/current.parquet` (OUT-only from NBA PDF)
+6. [+11] `injury-scraper` -> `data/injuries/current.parquet` (Out + Doubtful from NBA PDF) and `report_statuses.parquet` (every status)
 7. [+12] `llm-analyst` `research` -> `llm/research/{date}.json` and L3 minutes in `model_comparison/llm_head_to_head/`
 8. [+13] `minutes-projection` -> `model_comparison/*` (minutes + lineups), `injury_context/*`, and the lineup email
 9. [+16] `llm-analyst` `adjustments` -> `llm/adjustments/` (L2, shadow mode)
@@ -34,7 +34,7 @@ Early-season pause: until all 30 teams have played 4 games, minutes-projection b
 - `box-score-scraper`: Pulls box scores from the NBA API, calculates DraftKings FP, adds rolling/career features, joins clusters, and writes seasonal + current Parquet files. Also saves the season schedule (`GAME_DATE`, `GAME_ID`, `TEAM`, `OPPONENT`, `IS_HOME`) that minutes-projection uses for the `IS_HOME` feature.
 - `supervised-learning`: Trains three GradientBoosting FP models (`current`, `fp_per_min`, `barebones`) and saves models + feature lists to S3.
 - `daily-predictions`: Scrapes DailyFantasyFuel projections and writes `data/daily_predictions/current.parquet` (PPG projection, salary, position, starter status).
-- `injury-scraper`: Scrapes the official NBA injury report PDF and writes `data/injuries/current.parquet` with `OUT` players and estimated injury dates.
+- `injury-scraper`: Scrapes the official NBA injury report PDF and writes `data/injuries/current.parquet` with `OUT` players (Out and Doubtful) and estimated injury dates, and `data/injuries/report_statuses.parquet` with every listed status.
 - `minutes-projection`: Generates minutes projections (complex overlap, formula C) + DFF baseline lineups, updates `PROJECTED_MIN` in daily predictions, writes lineups/minutes to `model_comparison/*`, and persists injury context.
 - `llm-analyst`: Claude (Opus 5.5) components L1–L4: nightly per-game web research, LLM head-to-head minutes (L3), shadow-mode minutes adjustments (L2), the preflight check (L1), and the weekly post-mortem (L4). Reads the API key from the `CLAUDE_API_KEY` environment variable; spend is capped at $25/day and logged to `llm/usage/{date}.json`.
 - `lineup-optimizer` (standalone): A separate Lambda that optimizes a lineup from `daily_predictions` using `MY_MODEL_PREDICTED_FP`. It is not part of the game-scheduler pipeline.

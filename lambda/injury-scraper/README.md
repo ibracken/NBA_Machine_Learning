@@ -1,6 +1,7 @@
 # injury-scraper
 
-Parses the NBA's official injury report PDF and writes `OUT` players to S3 for `minutes-projection`.
+Parses the NBA's official injury report PDF and writes `OUT` players (Doubtful counted as Out) to S3 for
+`minutes-projection`, plus every listed status for models that use them.
 
 ## Source
 
@@ -14,15 +15,24 @@ routed through it — the NBA's CDN has throttled AWS egress IPs before (10s tim
 
 ## Output
 
-`s3://nba-prediction-ibracken/data/injuries/current.parquet`
+`s3://nba-prediction-ibracken/data/injuries/current.parquet` (minutes-projection treats every row as injured)
 
 | Column | Meaning |
 |---|---|
-| `PLAYER` | normalized name (`first last`, lowercase, unidecode; suffixes spaced: `nance jr.`) |
+| `PLAYER` | normalized name (`first last`, lowercase, unidecode; suffixes spaced: `nance jr.`; hyphens kept: `shai gilgeous-alexander`) |
 | `TEAM` | 3-letter abbreviation inferred from the game matchup |
-| `STATUS` | always `OUT` (Questionable/Probable/Available and G League assignments are dropped) |
+| `STATUS` | always `OUT`: Out and Doubtful (Doubtful players sat 98.8% of the time, 2022-26). Other statuses and G League assignments are dropped |
 | `RETURN_DATE`, `RETURN_DATE_DT` | `None` — the PDF has no return dates |
 | `ESTIMATED_INJURY_DATE` | day after the player's last box-score game (current season, then previous season); players with no NBA games are dropped |
+
+`s3://nba-prediction-ibracken/data/injuries/report_statuses.parquet`: every listed player (G League excluded) with
+`STATUS` in `OUT` / `DOUBTFUL` / `QUESTIONABLE` / `PROBABLE` / `AVAILABLE`, plus `PLAYER`, `TEAM` and the report columns.
+
+Before 2026-10-09 hyphenated names were never parsed, and the suffix rule split names containing "ii" or "iv"
+(`joel emb iid`, `trey murphy i ii`), so those players were never matched as injured.
+
+Historical reports for backtests: `scripts/fetch_injury_history.py` (the PDFs stay online by URL; the season
+page lists none in the offseason).
 
 ## Running
 

@@ -11,6 +11,7 @@ Pre-game columns use only games before tip, the way minutes-projection serves th
 the season, career advanced from the box-score career columns):
   S_MIN, L7_MIN, PREV_MIN, GP          season avg / last-7 avg / last game minutes, games played this season
   S_FP, L7_FP, L3_FP, C_MIN, C_FP, CG  FP equivalents and career averages / career games
+  S_USG                                season usage per minute: (FGA + 0.44*FTA + TOV) / MIN
   TEAM_GAMES_MISSED, DAYS_OFF          team games since his last appearance, days since it
   FC_MIN                               production Formula C (no DFF starter floor - no history)
   FREED_NEW_MIN, FREED_ALL_MIN         season-avg minutes of rotation teammates (S_MIN >= 15) absent tonight:
@@ -148,6 +149,9 @@ def main():
     app["S_FP"] = g["FP"].transform(lambda s: s.expanding().mean())
     app["L7_FP"] = g["FP"].transform(lambda s: s.rolling(7, min_periods=1).mean())
     app["L3_FP"] = g["FP"].transform(lambda s: s.rolling(3, min_periods=1).mean())
+    app["USG_EVENTS"] = app["FGA"] + 0.44 * app["FTA"] + app["TOV"]
+    app["S_USG"] = (app.groupby(["PLAYER", "SEASON"])["USG_EVENTS"].cumsum()
+                    / app.groupby(["PLAYER", "SEASON"])["MIN"].cumsum().replace(0, np.nan))
     app["GP"] = g.cumcount() + 1
     prior = app["Games_Played_Career"].fillna(0)
     app["C_MIN"] = (app["Career_MIN_Avg"].fillna(0) * prior + app["MIN"]) / (prior + 1)
@@ -156,7 +160,7 @@ def main():
     state = app.rename(columns={"MIN": "PREV_MIN", "D": "LAST_DATE", "TEAM": "LAST_TEAM", "SEASON": "LAST_SEASON",
                                 "TEAM_GAME_NO": "LAST_TEAM_GAME_NO"})[
         ["PLAYER", "LAST_DATE", "LAST_TEAM", "LAST_SEASON", "LAST_TEAM_GAME_NO", "S_MIN", "L7_MIN", "PREV_MIN",
-         "S_FP", "L7_FP", "L3_FP", "GP", "C_MIN", "C_FP", "CG"]]
+         "S_FP", "L7_FP", "L3_FP", "GP", "C_MIN", "C_FP", "CG", "S_USG"]]
 
     # Candidate rows: every team-game x every player who appeared for that team that season
     roster = app[["SEASON", "TEAM", "PLAYER"]].drop_duplicates()
@@ -192,7 +196,7 @@ def main():
 
     cols = ["SEASON", "D", "GAME_ID", "TEAM", "OPP", "IS_HOME", "TEAM_GAME_NO", "PLAYER", "POSITION", "POS_SOURCE",
             "GP", "S_MIN", "L7_MIN",
-            "PREV_MIN", "S_FP", "L7_FP", "L3_FP", "C_MIN", "C_FP", "CG", "TEAM_GAMES_MISSED", "DAYS_OFF", "FC_MIN",
+            "PREV_MIN", "S_FP", "L7_FP", "L3_FP", "C_MIN", "C_FP", "CG", "S_USG", "TEAM_GAMES_MISSED", "DAYS_OFF", "FC_MIN",
             "FREED_NEW_MIN", "FREED_ALL_MIN", "ACT_MIN", "ACT_FP", "PLAYED"]
     cand = cand[cols].sort_values(["D", "TEAM", "PLAYER"]).reset_index(drop=True)
     OUT.parent.mkdir(parents=True, exist_ok=True)

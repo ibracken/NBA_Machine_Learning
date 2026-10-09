@@ -1,7 +1,7 @@
 # Roadmap
 
-**Status as of 2026-10-05.** Everything through 2026-09-29 is committed and deployed. The 2026-10-05
-preseason fixes are deployed but not yet committed. The 2026-27 season
+**Status as of 2026-10-09.** Everything is committed and deployed, including the injury-scraper name fixes
+(2026-10-09). The learned injury-response minutes model (M8) passed its backtests and is next. The 2026-27 season
 opens **2026-10-20** (per the NBA schedule API). In-house projections stay **paused** until every team has
 played 4 games, about 10 days (see "Early-season pause"). Only the DFF lineup is emailed until then.
 
@@ -39,14 +39,16 @@ L4 (a week of data), and the O1 re-fit (fresh injury data). Everything else can 
    model. New models were published and verified to load and predict through minutes-projection's serving
    code.
    - **Fix B** (retire `current` / `fp_per_min`) is still awaiting Ian.
-2. **M2: fix lineup selection. TOP PRIORITY** (Ian, 2026-10-05). The repeat-pick / optimizer's-curse
-   problem is the biggest measured lineup loss, about 40 FP per lineup.
-3. **M1b: fit the shared minutes baseline to data.** This improves complex minutes. Complex is the target,
-   and Formula C is only the control.
-4. **Opening night (10/20):** run through the watch list below.
-5. **About Oct 30:** the pause lifts, and L2 starts collecting.
-6. **About mid-December:** the L2 go/no-go, and the X/Grok check (under L2).
-7. **In-season:** M7 (blended baseline) and O1 (injury weight re-fit).
+2. **M8: learned minutes model in production. TOP PRIORITY** (2026-10-09). Learned minutes × season FP per
+   minute beat production lineups by +9.3 FP per slate (44 fair slates) to +12.5 (full 2025-26). The gap to
+   DFF went from 20 to 3–7. Next: Questionable status input, team-minute check, then build it during the pause.
+   This supersedes M1b and the M2 investigations; the injury response was the root cause they were chasing.
+3. **Opening night (10/20):** run through the watch list below.
+4. **About Oct 30:** the pause lifts, and L2 starts collecting.
+5. **About mid-December:** the L2 go/no-go, and the X/Grok check (under L2).
+6. **In-season:** M7 (blended baseline). O1 (injury weight re-fit) is moot if M8 replaces the hand rules.
+7. **Later inputs:** historical starters (about 5,000 per-game box-score calls, training only; DFF gives live
+   starters) and betting lines (game total, spread) for FP per minute, where the remaining DFF gap lives.
 
 **Opening-night alarm still expected (fix proposed 2026-10-05, not approved yet):** cluster-scraper runs
 before the first tip on 10/20, when 2026-27 stats are empty, and fails the same way it did in preseason.
@@ -72,6 +74,10 @@ These are the first live runs of the new steps:
   - Check whether its citations include any x.com links (see the X/Grok note under L2).
 - The lineup email says "In-house projections paused" and still contains the DFF lineup.
 - `llm/usage/2026-10-20.json` shows the real nightly cost.
+- injury-scraper (redeployed 2026-10-09 with the name and Doubtful fixes):
+  - the 2026-27 report page lists PDF links (it lists none in the offseason; the scraper fails without them);
+  - `data/injuries/report_statuses.parquet` is written;
+  - hyphenated and "III" names appear correctly in `current.parquet`.
 - Any `nba-lambda-errors-*` alarm email.
 
 ---
@@ -369,12 +375,75 @@ players.**
 - **9% of DFF's swaps (59) weren't in our pool at all:** Jokić on 10 slates (Feb 27 – Apr 8), Avdija 5,
   Barrett 3, Vassell 3. These were healthy players held OUT by the stale injury feed (the Feb–Apr outage).
   Already addressed by the 2026-09-20 stale-OUT fix; re-check once live.
-- **Next: learn the injury response from the 4-season replay instead of the hand rules.**
-  1. **Who absorbs the minutes:** model each teammate's minutes gain given who is out. Features: role
-     (season minutes, starter), position relationship, recent trend, and (likely strongest) how minutes moved
-     the last times this same player sat.
-  2. **Usage bump:** each teammate's per-minute FP change given the absent players' minutes and usage.
-  Fit walk-forward on the replay; decide on the 2025-26 lineup comparison (does the DFF gap shrink?).
+**Learned injury response: built and tested 2026-10-09. The first change that raises realized lineup FP.**
+(`scripts/injury_response.py`, `scripts/backtest_learned_lineups.py`, `scripts/fetch_injury_history.py`)
+- **Historical injury reports exist.** The official NBA report PDFs stay online at
+  `ak-static.cms.nba.com/referee/injury/Injury-Report_YYYY-MM-DD_HHPM.pdf` (15-minute `_HH_MMPM` slots in
+  2025-26) back to 2022-23. Fetched the last report before each day's first tip minus 30 minutes for all 846
+  game days (`data/replay/injury_reports.parquet`, every status). The season page lists no links in the
+  offseason, so URLs are built from the schedule's tip times.
+- **Models:** gradient boosting (scikit-learn GBR, 300 depth-4 trees, learning rate 0.05, 80% row subsample),
+  walk-forward by season.
+  - **Minutes inputs:** own season / last-7 / previous minutes, games played, games missed. Plus season
+    minutes of teammates listed Out (fresh vs ongoing, same position, overlapping position). Plus with/without
+    history: this player's minutes change in earlier games this season when each of tonight's out teammates
+    sat, shrunk by n/(n+3).
+  - **Per-minute model:** the same idea with FP per minute and usage.
+- **Leak check.** The first version took "out" from who actually sat. Only 50% of rotation players who sat
+  were listed Out before first tip (Questionable/Doubtful 9%, not listed 35%: rest, coach's decisions, late
+  scratches, teams not yet filed). The fix: "out" comes from the pre-tip report, and every player not listed
+  Out is scored, with no-shows counted as 0 minutes.
+  - **Absence information's gain shrank from 0.28 to 0.17 min MAE but held in all three test seasons.** About
+    40% of it was hindsight.
+  - **Remaining small leak:** positions use each player's most common DFF listing across all seasons.
+- **2025-26 production pool, minutes MAE:**
+
+  | | complex (stored) | Formula C | learned |
+  |---|---|---|---|
+  | all | 5.77 | 5.57 | **5.48** |
+  | 25+ min teammate listed Out | 6.47 | 6.20 | **5.67** |
+  | complex boosted 0.5+ | 5.83 | 5.50 | **5.37** |
+
+  - Complex's boosts ran +1.9 min high on average.
+  - Learned runs −0.5 low on the pool, since it was trained on everyone not listed Out, including no-shows.
+- **Per-minute model: small gain, mostly from the player's own history.** Season rate 0.245 → 0.239 wMAE.
+  Absences only remove a −0.04 bias on high-usage-out nights.
+- **Lineups (production optimizer, listed-Out players removed in every variant except "production"):**
+
+  | variant | full season, 101 slates | feed working, 44 slates (Nov 29 – Jan 13) |
+  |---|---|---|
+  | production (fair baseline) | 239.5 | 244.0 |
+  | barebones FP on learned minutes | +6.5 (CI +0.2..+12.9) | +0.3 (−8.3..+8.7) |
+  | learned minutes × learned rate | +10.5 (+3.1..+18.1) | +5.9 (−3.7..+15.7) |
+  | **learned minutes × season rate** | **+12.5 (+5.7..+19.8)**, DFF gap 7.1 | **+9.3 (+0.2..+18.3)**, DFF gap 2.8 |
+
+  - Part of the full-season gain is production running on a broken feed after Jan 14. The feed-working window
+    is the fair one, and it is only 44 slates.
+  - **Ship learned minutes × season rate.** The learned rate model adds nothing at lineup level.
+  - **The minutes × rate split works once the minutes are good** (contrast with M1).
+- **Questionable players:** they sat 45% of the time (30% in the pool). Learned-lineup Questionable picks
+  (16 of 808) scored 19.3 vs 33.2 projected. Estimated value of modeling the status: +1 to 2 FP per slate.
+- **Production injury-scraper bugs found while matching reports (fixed and deployed 2026-10-09):**
+  - **Hyphenated names never parsed:** Gilgeous-Alexander, Towns, Finney-Smith, Alexander-Walker.
+  - **The suffix rule split any name containing "ii" or "iv":** "joel emb iid", "dereck l ively ii",
+    "donte d ivincenzo", every "III" player. Embiid was listed Out 229 times over four seasons and never
+    matched.
+  - **Doubtful lines matched no pattern.** Doubtful players sat 98.8%, so they now count as OUT.
+  - **Every listed status is now saved** to `data/injuries/report_statuses.parquet` for the learned model.
+
+### M8. Learned minutes model in production (next; build during the early-season pause)
+1. **Add the player's own report status as an input:** Questionable / Probable / Available (Doubtful = Out).
+   Also add teammates' Questionable minutes. Retest the pool MAE and lineups.
+2. **Team-minute constraint (M6):** the learned model covers every roster player not listed Out, so the
+   team-total check is valid here, unlike on the 10-player slate. Test scaling toward 240.
+3. **Productionize** as the new complex model, keeping the old complex model alongside in
+   `model_comparison/` for the first weeks.
+   - Train in the supervised-learning Lambda, following the release checklist.
+   - Serve with-without history from stored box scores, and the report status from
+     `report_statuses.parquet`.
+   - FP = learned minutes × season FP per minute.
+4. **Kill rule:** after 30 live slates, learned lineups must not trail the old complex lineups. Otherwise
+   revert.
 
 ### M3. Model DNP risk explicitly
 5.5% of players projected over 10 minutes log zero; this was verified as real, not name mismatches.

@@ -87,8 +87,8 @@ def normalize_name(name):
             name = f"{first} {last}"
 
     # Normalize suffixes: ensure space before Jr./II/III/IV/Sr.
-    # PDFs have "NanceJr." but box scores have "nance jr."
-    name = re.sub(r'([a-z])(jr\.|ii|iii|iv|sr\.)', r'\1 \2', name, flags=re.IGNORECASE)
+    # PDFs have "NanceJr." or "Nance Jr." but box scores have "nance jr."; case-sensitive so "Murphy III" stays intact
+    name = re.sub(r'(?<=[a-z])(Jr\.|Sr\.|III|II|IV)(?=\s|,|$)', r' \1', name)
 
     return unidecode(name.strip().lower())
 
@@ -208,7 +208,7 @@ def parse_nba_injury_pdf(pdf_path):
 
                     # Pattern 1: Full line with date, time, matchup, team, player, status, reason (optional)
                     full_match = re.match(
-                        r'^(\d{1,2}/\d{1,2}/\d{4})\s+(\d{2}:\d{2}\s*\([A-Z]+\))\s+([A-Z]{3}@[A-Z]{3})\s+(.+?)\s+([A-Z][a-zA-Z\'\.]+(?:\s*(?:Jr\.|II|III|IV|Sr\.))?,\s*[A-Z][a-zA-Z\']+)\s+(Out|Questionable|Probable|Available)(?:\s+(.+))?$',
+                        r'^(\d{1,2}/\d{1,2}/\d{4})\s+(\d{2}:\d{2}\s*\([A-Z]+\))\s+([A-Z]{3}@[A-Z]{3})\s+(.+?)\s+([A-Z][a-zA-Z\'\.\-]+(?:\s*(?:Jr\.|II|III|IV|Sr\.))?,\s*[A-Z][a-zA-Z\'\-]+)\s+(Out|Doubtful|Questionable|Probable|Available)(?:\s+(.+))?$',
                         line
                     )
                     if full_match:
@@ -220,20 +220,20 @@ def parse_nba_injury_pdf(pdf_path):
                         status = full_match.group(6).strip()
                         reason = full_match.group(7).strip() if full_match.group(7) else ""
 
-                        # Only include if status is "Out" and NOT G League related
-                        if status == "Out" and "GLeague" not in reason and "G League" not in reason:
+                        # Keep every status except G League assignments
+                        if "GLeague" not in reason and "G League" not in reason:
                             team_abbr = extract_team_abbr_from_matchup(current_matchup, current_team)
                             data.append({
                                 "PLAYER": normalize_name(player),
                                 "TEAM": team_abbr,
-                                "STATUS": "OUT",
+                                "STATUS": status.upper(),
                                 "RETURN_DATE": None  # No return date in PDF
                             })
                         continue
 
                     # Pattern 2: Time, matchup, team, player, status, reason (optional, same date as previous)
                     time_match = re.match(
-                        r'^(\d{2}:\d{2}\s*\([A-Z]+\))\s+([A-Z]{3}@[A-Z]{3})\s+(.+?)\s+([A-Z][a-zA-Z\'\.]+(?:\s*(?:Jr\.|II|III|IV|Sr\.))?,\s*[A-Z][a-zA-Z\']+)\s+(Out|Questionable|Probable|Available)(?:\s+(.+))?$',
+                        r'^(\d{2}:\d{2}\s*\([A-Z]+\))\s+([A-Z]{3}@[A-Z]{3})\s+(.+?)\s+([A-Z][a-zA-Z\'\.\-]+(?:\s*(?:Jr\.|II|III|IV|Sr\.))?,\s*[A-Z][a-zA-Z\'\-]+)\s+(Out|Doubtful|Questionable|Probable|Available)(?:\s+(.+))?$',
                         line
                     )
                     if time_match:
@@ -244,20 +244,20 @@ def parse_nba_injury_pdf(pdf_path):
                         status = time_match.group(5).strip()
                         reason = time_match.group(6).strip() if time_match.group(6) else ""
 
-                        # Only include if status is "Out" and NOT G League related
-                        if status == "Out" and "GLeague" not in reason and "G League" not in reason:
+                        # Keep every status except G League assignments
+                        if "GLeague" not in reason and "G League" not in reason:
                             team_abbr = extract_team_abbr_from_matchup(current_matchup, current_team)
                             data.append({
                                 "PLAYER": normalize_name(player),
                                 "TEAM": team_abbr,
-                                "STATUS": "OUT",
+                                "STATUS": status.upper(),
                                 "RETURN_DATE": None
                             })
                         continue
 
                     # Pattern 2.5: Matchup, team, player, status, reason (optional, same time/date as previous)
                     matchup_team_match = re.match(
-                        r'^([A-Z]{3}@[A-Z]{3})\s+(.+?)\s+([A-Z][a-zA-Z\'\.]+(?:\s*(?:Jr\.|II|III|IV|Sr\.))?,\s*[A-Z][a-zA-Z\']+)\s+(Out|Questionable|Probable|Available)(?:\s+(.+))?$',
+                        r'^([A-Z]{3}@[A-Z]{3})\s+(.+?)\s+([A-Z][a-zA-Z\'\.\-]+(?:\s*(?:Jr\.|II|III|IV|Sr\.))?,\s*[A-Z][a-zA-Z\'\-]+)\s+(Out|Doubtful|Questionable|Probable|Available)(?:\s+(.+))?$',
                         line
                     )
                     if matchup_team_match:
@@ -267,20 +267,20 @@ def parse_nba_injury_pdf(pdf_path):
                         status = matchup_team_match.group(4).strip()
                         reason = matchup_team_match.group(5).strip() if matchup_team_match.group(5) else ""
 
-                        # Only include if status is "Out" and NOT G League related
-                        if status == "Out" and "GLeague" not in reason and "G League" not in reason:
+                        # Keep every status except G League assignments
+                        if "GLeague" not in reason and "G League" not in reason:
                             team_abbr = extract_team_abbr_from_matchup(current_matchup, current_team)
                             data.append({
                                 "PLAYER": normalize_name(player),
                                 "TEAM": team_abbr,
-                                "STATUS": "OUT",
+                                "STATUS": status.upper(),
                                 "RETURN_DATE": None
                             })
                         continue
 
                     # Pattern 3: Team, player, status, reason (optional, same matchup)
                     team_match = re.match(
-                        r'^([A-Z][a-zA-Z\s]+?)\s+([A-Z][a-zA-Z\'\.]+(?:\s*(?:Jr\.|II|III|IV|Sr\.))?,\s*[A-Z][a-zA-Z\']+)\s+(Out|Questionable|Probable|Available)(?:\s+(.+))?$',
+                        r'^([A-Z][a-zA-Z\s]+?)\s+([A-Z][a-zA-Z\'\.\-]+(?:\s*(?:Jr\.|II|III|IV|Sr\.))?,\s*[A-Z][a-zA-Z\'\-]+)\s+(Out|Doubtful|Questionable|Probable|Available)(?:\s+(.+))?$',
                         line
                     )
                     if team_match:
@@ -289,20 +289,20 @@ def parse_nba_injury_pdf(pdf_path):
                         status = team_match.group(3).strip()
                         reason = team_match.group(4).strip() if team_match.group(4) else ""
 
-                        # Only include if status is "Out" and NOT G League related
-                        if status == "Out" and "GLeague" not in reason and "G League" not in reason:
+                        # Keep every status except G League assignments
+                        if "GLeague" not in reason and "G League" not in reason:
                             team_abbr = extract_team_abbr_from_matchup(current_matchup, current_team)
                             data.append({
                                 "PLAYER": normalize_name(player),
                                 "TEAM": team_abbr,
-                                "STATUS": "OUT",
+                                "STATUS": status.upper(),
                                 "RETURN_DATE": None
                             })
                         continue
 
                     # Pattern 4: Player, status, reason (optional, same team)
                     player_match = re.match(
-                        r'^([A-Z][a-zA-Z\'\.]+(?:\s*(?:Jr\.|II|III|IV|Sr\.))?,\s*[A-Z][a-zA-Z\']+)\s+(Out|Questionable|Probable|Available)(?:\s+(.+))?$',
+                        r'^([A-Z][a-zA-Z\'\.\-]+(?:\s*(?:Jr\.|II|III|IV|Sr\.))?,\s*[A-Z][a-zA-Z\'\-]+)\s+(Out|Doubtful|Questionable|Probable|Available)(?:\s+(.+))?$',
                         line
                     )
                     if player_match:
@@ -310,13 +310,13 @@ def parse_nba_injury_pdf(pdf_path):
                         status = player_match.group(2).strip()
                         reason = player_match.group(3).strip() if player_match.group(3) else ""
 
-                        # Only include if status is "Out" and NOT G League related
-                        if status == "Out" and "GLeague" not in reason and "G League" not in reason:
+                        # Keep every status except G League assignments
+                        if "GLeague" not in reason and "G League" not in reason:
                             team_abbr = extract_team_abbr_from_matchup(current_matchup, current_team)
                             data.append({
                                 "PLAYER": normalize_name(player),
                                 "TEAM": team_abbr,
-                                "STATUS": "OUT",
+                                "STATUS": status.upper(),
                                 "RETURN_DATE": None
                             })
                         continue
@@ -326,7 +326,7 @@ def parse_nba_injury_pdf(pdf_path):
                         continue
 
         df = pd.DataFrame(data)
-        logger.info(f"Parsed {len(df)} OUT injuries from NBA official PDF (excluding G League)")
+        logger.info(f"Parsed {len(df)} listed players from NBA official PDF (excluding G League)")
 
         return df
 
@@ -514,6 +514,13 @@ def run_injury_scraper():
                 'success': False,
                 'error': 'No injury data scraped from PDF'
             }
+
+        # Every status, for models that use Questionable/Probable; current.parquet stays OUT-only because
+        # minutes-projection treats any listed player as injured. Doubtful players sat 98.8% of the time
+        # (2022-26 pre-tip reports, scripts/fetch_injury_history.py), so they count as OUT.
+        save_dataframe_to_s3(df_injuries, 'data/injuries/report_statuses.parquet')
+        df_injuries = df_injuries[df_injuries['STATUS'].isin(['OUT', 'DOUBTFUL'])].copy()
+        df_injuries['STATUS'] = 'OUT'
 
         # Add RETURN_DATE_DT column (set to None since we don't have return dates)
         df_injuries['RETURN_DATE_DT'] = None
