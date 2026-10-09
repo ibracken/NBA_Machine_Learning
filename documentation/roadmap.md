@@ -54,10 +54,9 @@ before the first tip on 10/20, when 2026-27 stats are empty, and fails the same 
   last season's clusters.
 - Also proposed: daily-predictions should say "DFF returned no projections" instead of `KeyError: 'Player'`.
 
-**Open questions for Ian**
-- How many minutes before lock do you need the preflight email? It lands around T−12. It can come earlier
-  if it stops waiting for L2.
-- Approve fix B (retire two FP models)?
+**Decisions (Ian, 2026-10-09)**
+- Preflight email at about T−12 is fine; no schedule change.
+- Fix B is **on hold**: retire no FP models until the lineup tests produce results.
 
 ---
 
