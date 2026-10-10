@@ -60,6 +60,8 @@ def deploy(function_name, docker):
             docker, "buildx", "build",
             "--platform", "linux/amd64",
             "--provenance=false", "--sbom=false",
+            # Shared modules (lambda/shared); a Dockerfile opts in with COPY --from=shared <file>
+            "--build-context", f"shared={LAMBDA_DIR / 'shared'}",
             "--push",
             "-t", image_uri, "-t", f"{repo}:latest",
             str(LAMBDA_DIR / function_name),

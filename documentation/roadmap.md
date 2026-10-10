@@ -40,8 +40,10 @@ L4 (a week of data), and the O1 re-fit (fresh injury data). Everything else can 
    code.
    - **Fix B** (retire `current` / `fp_per_min`) is still awaiting Ian.
 2. **M8: learned minutes model in production. TOP PRIORITY** (2026-10-09). Learned minutes × season FP per
-   minute beat production lineups by +9.3 FP per slate (44 fair slates) to +12.5 (full 2025-26). The gap to
-   DFF went from 20 to 3–7. Next: Questionable status input, team-minute check, then build it during the pause.
+   minute beat production lineups by +9.3 FP per slate (44 fair slates) to +12.5 (full 2025-26), and the Formula C
+   control by +9.2. **It still trails DFF by 10.7 per slate** (135 slates, CI −17.6..−3.9; corrected 2026-10-10,
+   see "Head-to-head with DFF"). Next: find where the DFF gap lives (it's 4.8 before Jan 14, 16.2 after), the
+   team-minute check, then build it during the pause.
    This supersedes M1b and the M2 investigations; the injury response was the root cause they were chasing.
 3. **Opening night (10/20):** run through the watch list below.
 4. **About Oct 30:** the pause lifts, and L2 starts collecting.
@@ -415,8 +417,12 @@ players.**
   | production (fair baseline) | 239.5 | 244.0 |
   | barebones FP on learned minutes | +6.5 (CI +0.2..+12.9) | +0.3 (−8.3..+8.7) |
   | learned minutes × learned rate | +10.5 (+3.1..+18.1) | +5.9 (−3.7..+15.7) |
-  | **learned minutes × season rate** | **+12.5 (+5.7..+19.8)**, DFF gap 7.1 | **+9.3 (+0.2..+18.3)**, DFF gap 2.8 |
+  | **learned minutes × season rate** | **+12.5 (+5.7..+19.8)** | **+9.3 (+0.2..+18.3)** |
 
+  - **The DFF gaps first reported here (7.1 and 2.8) were wrong.** The old test understated DFF by about 6 FP per
+    slate: it scored DFF's whole lineup 0 on the misdated Dec 16 slate (−2.6 on average), and scored DFF picks 0
+    whenever DFF spelled the name differently or the player wasn't on that night's slate (−3.6). See
+    "Head-to-head with DFF". The gains over production above are unaffected: both sides used our names.
   - Part of the full-season gain is production running on a broken feed after Jan 14. The feed-working window
     is the fair one, and it is only 44 slates.
   - **Ship learned minutes × season rate.** The learned rate model adds nothing at lineup level.
@@ -431,9 +437,43 @@ players.**
   - **Doubtful lines matched no pattern.** Doubtful players sat 98.8%, so they now count as OUT.
   - **Every listed status is now saved** to `data/injuries/report_statuses.parquet` for the learned model.
 
+**Head-to-head with DFF (2026-10-10, `scripts/backtest_vs_dff.py`).** Every 2025-26 regular-season slate with DFF
+data from Oct 30 (when the pause would lift) to Apr 12: 135 slates after dropping 3 misdated ones (Dec 16, 17, 24).
+Both sides choose from DFF's full slate. Our inputs come from the archived pre-tip reports, so production's feed
+outage doesn't affect this test. DFF history exists only for 2025-26; nothing older was kept.
+
+| | realized FP | vs DFF (95% CI) | beats DFF |
+|---|---|---|---|
+| DFF | 268.0 | | |
+| learned minutes × season rate | 257.3 | −10.7 (−17.6..−3.9) | 41% |
+| learned minutes × learned rate | 258.8 | −9.2 (−15.7..−2.6) | 42% |
+| Formula C × season rate (control) | 248.1 | −19.9 (−27.2..−12.7) | 32% |
+
+- **By window:** before Jan 14, −4.8 (−15.2..+5.4), not distinguishable from DFF. From Jan 14, −16.2 (−24.9..−7.8).
+  The feed outage can't explain this, since we use archived reports. Unverified candidates: late-season rest and
+  tanking, and news after our report (read 30 min before the day's *first* tip). Investigate next.
+- **Player level, same players:** DFF MAE 7.63 vs ours 8.00. Per-slate rank correlation with actual: DFF 0.725, ours
+  0.700, Formula C 0.680.
+- **The learned minutes earn their credit:** +9.2 over the Formula C control on an identical setup.
+
+**Player names (2026-10-10).** Every source spells players differently, and production joins them on exact
+names. 238 of 16,026 DFF slate rows last season (1.5%) never matched a box-score name, so they were never in our
+in-house pool: Sarr (26 slates, DFF 35 FP), Butler (10, 38 FP), PJ Washington (29), Portis (43), GG Jackson (33).
+- `lambda/shared/player_names.py` now matches any source to box-score names against that day's rosters: same
+  letters, same words in any order, compatible first name plus last name, or one clearly closest spelling. A name
+  that matches a known player is never loosely matched to someone else. That case appeared on misdated slates:
+  "davion mitchell" → "donovan mitchell" when Miami was off.
+- Validated on every 2025-26 DFF slate: all 14 non-identical matches were correct, and none were unmatched
+  after misdated slates were dropped.
+- `deploy.py` passes `lambda/shared` as the `shared` build context. A Lambda uses it by adding
+  `COPY --from=shared player_names.py ${LAMBDA_TASK_ROOT}` to its Dockerfile. **Not yet wired into production.**
+  That's part of M8: daily-predictions ↔ box scores, injury-scraper ↔ box scores.
+
 ### M8. Learned minutes model in production (next; build during the early-season pause)
-1. **Add the player's own report status as an input:** Questionable / Probable / Available (Doubtful = Out).
-   Also add teammates' Questionable minutes. Retest the pool MAE and lineups.
+1. **Own report status as an input: done (2026-10-10).** Questionable / Probable / Available (Doubtful = Out),
+   plus teammates' Questionable minutes. Pool minutes MAE 5.42 → 5.38. On players who were themselves
+   Questionable, the bias went from +4.0 to −3.6 min, but MAE rose from 10.7 to 11.7: the model now leans
+   toward "sits". Its separate lineup effect wasn't measured. The DFF head-to-head uses this version.
 2. **Team-minute constraint (M6):** the learned model covers every roster player not listed Out, so the
    team-total check is valid here, unlike on the 10-player slate. Test scaling toward 240.
 3. **Productionize** as the new complex model, keeping the old complex model alongside in

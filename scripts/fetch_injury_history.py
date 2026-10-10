@@ -11,12 +11,14 @@ Keeps every listed player with his status (Out / Doubtful / Questionable / Proba
 production, which keeps Out only. Names go through production's normalize_name. Hyphenated names are parsed
 (production's parser drops them).
 
-Names are then matched to box-score names (data/replay/replay.parquet) on letters only, ignoring suffixes, which
-covers "o.g." vs "og", "jimmy butler" vs "jimmy butler iii" and PDF text that loses hyphens or spaces.
+Names are then matched to box-score names (data/replay/replay.parquet) with lambda/shared/player_names.py, against
+each day's rosters.
 
 Output: D, FIRST_TIP, REPORT, PLAYER, STATUS, GLEAGUE
 Needs PROXY_URL (from .env) for the NBA schedule API.
-Usage: python scripts/fetch_injury_history.py [--reparse]   (--reparse: re-read cached PDFs, no downloads)
+Usage: python scripts/fetch_injury_history.py [--reparse | --rematch]
+  --reparse  re-read cached PDFs, no downloads
+  --rematch  re-run only the name matching on the saved table
 """
 
 import importlib.util
@@ -33,6 +35,9 @@ import requests
 from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "lambda" / "shared"))
+from player_names import match_names  # noqa: E402
+
 OUT = ROOT / "data" / "replay" / "injury_reports.parquet"
 PDF_DIR = ROOT / "data" / "replay" / "injury_pdfs"
 SEASONS = ["2022-23", "2023-24", "2024-25", "2025-26"]
@@ -104,20 +109,21 @@ def parse(path, normalize_name):
     return rows
 
 
-def name_key(name):
-    return re.sub(r"[^a-z]", "", re.sub(r"(jr|sr|ii|iii|iv)\.?$", "", name.strip()))
-
-
 def match_box_names(df):
+    """Rename report players to box-score spelling (lambda/shared/player_names), matched against that day's rosters.
+    Unmatched names (mostly players who never logged a game) are kept as listed."""
     replay = ROOT / "data" / "replay" / "replay.parquet"
     if not replay.exists():
         return df
-    box = pd.read_parquet(replay, columns=["PLAYER"]).PLAYER.unique()
-    keys = pd.Series(box, index=[name_key(n) for n in box])
-    keys = keys[~keys.index.duplicated(keep=False)]
-    mapped = df.PLAYER.map(lambda n: n if n in set(box) else keys.get(name_key(n), n))
-    print(f"name matching: {(mapped != df.PLAYER).sum():,} rows renamed to box-score spelling")
-    return df.assign(PLAYER=mapped)
+    r = pd.read_parquet(replay, columns=["D", "PLAYER"])
+    known, rosters = set(r.PLAYER), r.groupby("D").PLAYER.apply(list)
+    parts = []
+    for day, g in df.groupby("D"):
+        mapping, _ = match_names(g.PLAYER, rosters.get(day, []), known)
+        parts.append(g.assign(PLAYER=g.PLAYER.map(lambda n: mapping.get(n) or n)))
+    out = pd.concat(parts)
+    print(f"name matching: {(out.PLAYER != df.PLAYER.loc[out.index]).sum():,} rows renamed to box-score spelling")
+    return out
 
 
 def reparse():
@@ -131,6 +137,9 @@ def reparse():
 
 
 def main():
+    if "--rematch" in sys.argv:
+        save(pd.read_parquet(OUT), [])
+        return
     if "--reparse" in sys.argv:
         df, missing = reparse()
         save(df, missing)
