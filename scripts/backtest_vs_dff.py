@@ -140,6 +140,7 @@ def main():
                                    dnp=("ACT", lambda x: (x == 0).mean()),
                                    unmatched=("MATCHED", lambda x: 1 - x.mean())).round(3).to_string())
     R.to_parquet(REPLAY / "vs_dff_2025_26.parquet")
+    P.to_parquet(REPLAY / "vs_dff_picks_2025_26.parquet", index=False)
 
 
 if __name__ == "__main__":

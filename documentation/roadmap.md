@@ -449,9 +449,22 @@ outage doesn't affect this test. DFF history exists only for 2025-26; nothing ol
 | learned minutes × learned rate | 258.8 | −9.2 (−15.7..−2.6) | 42% |
 | Formula C × season rate (control) | 248.1 | −19.9 (−27.2..−12.7) | 32% |
 
-- **By window:** before Jan 14, −4.8 (−15.2..+5.4), not distinguishable from DFF. From Jan 14, −16.2 (−24.9..−7.8).
-  The feed outage can't explain this, since we use archived reports. Unverified candidates: late-season rest and
-  tanking, and news after our report (read 30 min before the day's *first* tip). Investigate next.
+- **By window:** before Jan 14, −4.8 (−15.2..+5.4). From Jan 14, −16.2 (−24.9..−7.8). **The jump is not
+  significant:** the difference is −11.4 (CI −25.0..+2.1), and a random 65/70 split of the same slates gives one this
+  large 11% of the time. One slate's gap has an SD of 41 FP.
+- **Setup checked, nothing differs between windows (2026-10-10):**
+  - DFF was scraped 20 min before the first tip every day (CloudWatch logs). Our report time is 10 min earlier
+    than that. After Jan 14 the report was fresher: 15-minute reports, 0 min stale vs up to 30 before.
+  - Picked no-shows are 1–2% on both sides, picked Questionable players are about 0, and the lineups share 2.5
+    players in both halves. No unmatched names.
+- **What the gap is made of, both windows: per-minute scoring, then minutes.** DFF-only picks score 1.10–1.14 FP
+  per minute against our season rate of 1.05–1.08, and play 1.6–1.8 min more than we project. Our-only picks
+  regress (1.06–1.08 vs 1.10–1.16 projected).
+  - After Jan 14, DFF-only picks' last-7 rate ran +0.032 above their season rate, and ours −0.023. Before, about 0.
+  - The season rate ignores form, and it gets stickier as games pile up.
+  - Traded players are only 7–8% of swaps and about 1.7 FP of the post-Jan-14 gap.
+- **Next:** replace the season rate with a fitted blend of season and recent rate (walk-forward on the replay),
+  then rerun this head-to-head. Learned × learned rate, which uses the last-7 rate, ran −9.7 after Jan 14 vs −16.2.
 - **Player level, same players:** DFF MAE 7.63 vs ours 8.00. Per-slate rank correlation with actual: DFF 0.725, ours
   0.700, Formula C 0.680.
 - **The learned minutes earn their credit:** +9.2 over the Formula C control on an identical setup.
