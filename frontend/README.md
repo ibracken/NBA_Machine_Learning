@@ -22,11 +22,13 @@ Set in `frontend/.env.local` (not committed) or the shell:
 
 ## What it shows
 
-`lineup-optimizer` (API mode) reads the first non-empty file in this order and returns the latest date in it:
+`lineup-optimizer` (API mode) returns the lineup the nightly email uses: the in-house lineup, or DFF's while in-house
+projections are paused. It reads both files (`API_LINEUP_SOURCES` in the Lambda) and returns the most recent slate,
+preferring in-house on a tie. The response says which one (`source`) and for which slate (`slate_date`). The page warns
+when that isn't today; outside game days it shows the last slate played. Actual FP appears once games are graded.
 
-1. `model_comparison/complex_position_overlap/fp_current/daily_lineups.parquet`
-2. `model_comparison/complex_position_overlap/daily_lineups.parquet`
-3. `data/daily_lineups/current.parquet`
+The Lambda runs at 1769 MB (one full vCPU). At 512 MB a cold start exceeded Lambda's 10 s init limit and took about
+19 s end to end, close to API Gateway's 30 s limit; at 1769 MB it takes about 2 s. deploy.py doesn't set memory.
 
 The API response is normalized to `PREDICTED_FP`/`GAME_DATE` and the UI computes value (FP per $1k) and salary usage against the $50,000 cap. `src/api.ts` unwraps either a raw JSON body or a Lambda-proxy `{statusCode, body}` envelope.
 
@@ -35,6 +37,8 @@ The API response is normalized to `PREDICTED_FP`/`GAME_DATE` and the UI computes
 ```json
 {
   "success": true,
+  "source": "In-house",
+  "slate_date": "2026-01-17",
   "lineup_size": 8,
   "total_salary": 48500,
   "remaining_salary": 1500,

@@ -9,12 +9,16 @@ export type LineupPlayer = {
   PREV_MIN?: number;
   SEASON_AVG_FP?: number;
   SEASON_AVG_MIN?: number;
+  ACTUAL_FP?: number | null;
+  TEAM?: string;
   GAME_DATE?: string;
 };
 
 export type LineupResponse = {
   success?: boolean;
   error?: string;
+  source?: string;
+  slate_date?: string;
   lineup_size?: number;
   total_salary: number;
   remaining_salary: number;

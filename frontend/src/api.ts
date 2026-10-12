@@ -28,7 +28,12 @@ export async function fetchLineup(): Promise<LineupResponse> {
     return MOCK_DATA;
   }
 
-  const response = await fetch(API_ENDPOINT);
+  // One retry on a server error: a cold Lambda can fail the first request after a long idle
+  let response = await fetch(API_ENDPOINT);
+  if (response.status >= 500) {
+    await new Promise((resolve) => window.setTimeout(resolve, 2000));
+    response = await fetch(API_ENDPOINT);
+  }
   if (!response.ok) {
     const details = await response.text();
     const suffix = details ? `: ${details.slice(0, 180)}` : '';

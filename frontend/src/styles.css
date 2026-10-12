@@ -131,3 +131,12 @@ tbody tr:last-child td { border-bottom: 0; }
   .summary-grid { grid-template-columns: 1fr; }
   .header-actions { width: 100%; justify-content: space-between; }
 }
+
+.notice {
+  margin: 16px 20px 0;
+  padding: 12px 14px;
+  border: 1px solid #f2d39b;
+  border-radius: 6px;
+  background: #fff8e6;
+  color: #7a4b00;
+}

@@ -5,7 +5,6 @@ import datetime
 import pytz
 import logging
 from io import BytesIO
-from pulp import LpMaximize, LpProblem, LpVariable, lpSum, value, PULP_CBC_CMD
 
 # Configure logging
 logger = logging.getLogger()
@@ -16,10 +15,12 @@ s3 = boto3.client('s3')
 sns = boto3.client('sns')
 BUCKET_NAME = 'nba-prediction-ibracken'
 SNS_TOPIC_ARN = 'arn:aws:sns:us-east-1:349928386418:lineup-optimizer-notifications'  # Replace with your SNS topic ARN
-API_LINEUP_KEYS = [
-    'model_comparison/complex_position_overlap/fp_current/daily_lineups.parquet',
-    'model_comparison/complex_position_overlap/daily_lineups.parquet',
-    'data/daily_lineups/current.parquet',
+# The lineup the email uses: the in-house #1 model, or DFF's while in-house projections are paused.
+# The most recent slate wins; on the same slate the earlier entry wins.
+# TODO(learned model build): replace the in-house key with the learned model's lineup file.
+API_LINEUP_SOURCES = [
+    ('In-house', 'model_comparison/complex_position_overlap/fp_current/daily_lineups.parquet'),
+    ('DFF baseline', 'model_comparison/daily_fantasy_fuel_baseline/daily_lineups.parquet'),
 ]
 
 # S3 utility functions
@@ -116,6 +117,8 @@ def is_eligible_for_slot(position, slot):
     return False
 
 def optimize_lineup(df):
+    # Imported here so API requests (read-only) don't pay for loading the solver on a cold start
+    from pulp import LpMaximize, LpProblem, LpVariable, lpSum, value, PULP_CBC_CMD
     """
     Optimize DraftKings lineup using linear programming.
 
@@ -235,18 +238,19 @@ def get_saved_lineup():
     logger.info("Fetching saved lineup from S3")
 
     try:
-        lineup_df = pd.DataFrame()
-        source_key = None
+        lineup_df, source, source_key, best_date = pd.DataFrame(), None, None, None
 
-        for key in API_LINEUP_KEYS:
+        for label, key in API_LINEUP_SOURCES:
             try:
                 candidate = load_dataframe_from_s3(key)
-                if not candidate.empty:
-                    lineup_df = candidate
-                    source_key = key
-                    break
             except Exception as e:
                 logger.warning(f"Could not load lineup candidate {key}: {e}")
+                continue
+            if candidate.empty or 'DATE' not in candidate.columns:
+                continue
+            latest = pd.to_datetime(candidate['DATE']).max()
+            if best_date is None or latest > best_date:
+                lineup_df, source, source_key, best_date = candidate, label, key, latest
 
         if lineup_df.empty:
             logger.warning("No saved lineup found")
@@ -264,6 +268,8 @@ def get_saved_lineup():
 
         return {
             'success': True,
+            'source': source,
+            'slate_date': best_date.date().isoformat(),
             'lineup_size': len(lineup_df),
             'total_salary': float(total_salary),
             'remaining_salary': float(50000 - total_salary),
@@ -302,7 +308,7 @@ def normalize_lineup_for_api(lineup_df):
     lineup_df['slot_order'] = lineup_df['SLOT'].map(slot_order).fillna(99)
     lineup_df = lineup_df.sort_values('slot_order').drop(columns=['slot_order'])
 
-    return lineup_df.applymap(format_api_value)
+    return lineup_df.map(format_api_value)
 
 def format_api_value(value):
     if pd.isna(value):
@@ -420,7 +426,10 @@ def lambda_handler(event, context):
                 'statusCode': 200,
                 'headers': headers,
                 'body': json.dumps({
+                    'success': True,
                     'message': 'Lineup fetched successfully' if is_api_request else 'Lineup optimization completed successfully',
+                    'source': result.get('source'),
+                    'slate_date': result.get('slate_date'),
                     'lineup_size': result['lineup_size'],
                     'total_salary': result['total_salary'],
                     'remaining_salary': result['remaining_salary'],
@@ -429,10 +438,12 @@ def lambda_handler(event, context):
                 })
             }
         else:
+            # "No lineup saved" is an answer, not a server failure
             return {
-                'statusCode': 500,
+                'statusCode': 200 if is_api_request else 500,
                 'headers': headers,
                 'body': json.dumps({
+                    'success': False,
                     'message': 'Lineup operation failed',
                     'error': result['error']
                 })

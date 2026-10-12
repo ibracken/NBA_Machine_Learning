@@ -26,7 +26,10 @@ Evidence for every number here is in [`findings.md`](findings.md).
   - the X/Grok question.
 
   Formula C stays as the cheap control. The removals happen in one change during the pause (step 4), so the
-  pipeline changes once.
+  pipeline changes once. **Barebones and the cluster pipeline are commented out, not deleted** (Ian), so they can
+  come back.
+- **Weekly post-mortem paused** (commented out in game-scheduler, 2026-10-11). It comes back with the learned-model
+  build, its datasets updated to the learned model. (Ian)
 - **FP = learned minutes × the player's season FP per minute.** That beat every FP-model combination in the
   backtests.
 - **Injury designations:** Out and Doubtful count as out. Questionable, Probable and Available are **not**
@@ -77,8 +80,10 @@ Evidence for every number here is in [`findings.md`](findings.md).
    - **Remove:**
      - the complex model (`injury_system.py` and the redistribution in `projection_models.py`);
      - the `current` / `fp_per_min` FP models in training, serving, preflight and the evaluation scripts;
-     - cluster-scraper and nba-clustering: the Lambdas, their schedule entries, ECR repos and alarms, and
-       box-score-scraper's cluster join.
+     - **comment out, keep the code:** barebones (training and serving), and cluster-scraper → nba-clustering
+       (schedule entries and box-score-scraper's cluster join; the Lambdas stay deployed);
+     - re-enable the weekly post-mortem with learned-model datasets;
+     - point the viewer API (`lineup-optimizer`, `API_LINEUP_SOURCES`) at the learned model's lineup file.
    - **Parity check before switching on:** production code must reproduce the backtest's projections for a
      sample of 2025-26 dates.
 5. **Point the AI steps at the learned model** (see "AI pieces" below for the target design):
@@ -166,8 +171,7 @@ stops all calls.
 
 **Weekly post-mortem (Mondays).**
 - **Goal:** find systematic misses in the logged projections.
-- **Proposed:** pause it until the learned model is live. Its datasets and prompt describe the old model setup.
-  Needs Ian's OK.
+- **Status:** paused until the learned model is live (step 4 re-enables it).
 
 
 ---

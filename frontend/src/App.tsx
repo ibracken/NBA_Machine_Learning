@@ -40,9 +40,11 @@ export function App() {
     const players = lineup.players;
     const avgValue = lineup.total_predicted_fp / (lineup.total_salary / 1000);
     const salaryUsedPct = Math.min(100, Math.round((lineup.total_salary / SALARY_CAP) * 100));
-    const slateDate = players.find((player) => player.GAME_DATE)?.GAME_DATE;
+    const slateDate = lineup.slate_date ?? players.find((player) => player.GAME_DATE)?.GAME_DATE;
+    const isToday = slateDate === localIsoDate(new Date());
+    const hasActuals = players.some((player) => player.ACTUAL_FP != null);
 
-    return { avgValue, salaryUsedPct, slateDate };
+    return { avgValue, salaryUsedPct, slateDate, isToday, hasActuals };
   }, [lineup]);
 
   return (
@@ -70,11 +72,18 @@ export function App() {
       <section className="lineup-card" aria-label="Optimal lineup">
         <div className="card-header">
           <div>
-            <h2>Optimal Lineup</h2>
-            <p>{diagnostics?.slateDate ?? 'Slate date unavailable'}</p>
+            <h2>{lineup?.source ? `${lineup.source} lineup` : 'Optimal Lineup'}</h2>
+            <p>Slate {diagnostics?.slateDate ?? 'date unavailable'}</p>
           </div>
           {lastUpdated ? <span>Updated {formatDateTime(lastUpdated)}</span> : null}
         </div>
+
+        {status === 'ready' && diagnostics && !diagnostics.isToday ? (
+          <div className="notice">
+            No lineup has been built for today yet, so this is the most recent one ({diagnostics.slateDate}).
+            The pipeline runs about 30 minutes before the first tip on game days.
+          </div>
+        ) : null}
 
         {diagnostics ? (
           <div className="salary-bar" aria-label={`Salary used ${diagnostics.salaryUsedPct}%`}>
@@ -84,13 +93,13 @@ export function App() {
 
         {status === 'loading' ? <LoadingState /> : null}
         {status === 'error' ? <ErrorState message={error ?? 'Unable to load lineup'} /> : null}
-        {status === 'ready' ? (lineup ? <RosterTable players={lineup.players} /> : <EmptyState />) : null}
+        {status === 'ready' ? (lineup ? <RosterTable players={lineup.players} showActuals={diagnostics?.hasActuals ?? false} /> : <EmptyState />) : null}
       </section>
     </main>
   );
 }
 
-function RosterTable({ players }: { players: LineupPlayer[] }) {
+function RosterTable({ players, showActuals }: { players: LineupPlayer[]; showActuals: boolean }) {
   return (
     <div className="table-wrap">
       <table>
@@ -103,7 +112,7 @@ function RosterTable({ players }: { players: LineupPlayer[] }) {
             <th>Proj FP</th>
             <th>Value</th>
             <th>Min</th>
-            <th>Avg FP</th>
+            {showActuals ? <th>Actual FP</th> : null}
           </tr>
         </thead>
         <tbody>
@@ -116,7 +125,7 @@ function RosterTable({ players }: { players: LineupPlayer[] }) {
               <td className="strong">{formatNumber.format(player.PREDICTED_FP)}</td>
               <td>{formatNumber.format(valueScore(player))}x</td>
               <td>{formatNumber.format(player.PROJECTED_MIN ?? 0)}</td>
-              <td>{formatNumber.format(player.SEASON_AVG_FP ?? 0)}</td>
+              {showActuals ? <td>{player.ACTUAL_FP != null ? formatNumber.format(player.ACTUAL_FP) : '-'}</td> : null}
             </tr>
           ))}
         </tbody>
@@ -150,13 +159,17 @@ function ErrorState({ message }: { message: string }) {
     <div className="state-card error">
       <strong>Could not load lineup.</strong>
       <p>{message}</p>
-      <p>A 500 response means the request reached the API, but the Lambda/API Gateway side failed.</p>
     </div>
   );
 }
 
 function EmptyState() {
   return <div className="state-card">No lineup returned.</div>;
+}
+
+function localIsoDate(date: Date) {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 
 function valueScore(player: LineupPlayer) {

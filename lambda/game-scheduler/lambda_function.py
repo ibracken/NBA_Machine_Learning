@@ -253,9 +253,10 @@ def lambda_handler(event, context):
         ('llm-analyst', 18, {'action': 'preflight'}),     # L1 email, ~12 minutes before lock
         ('minutes-projection', 22, {'action': 'llm_lineups'}),  # L3 lineups, scored but never emailed
     ]
-    # L4 weekly post-mortem on Mondays, covering the previous 7 days
-    if main_slate_time.astimezone(pytz.timezone('America/New_York')).weekday() == 0:
-        lambda_pipeline.append(('llm-analyst', 0, {'action': 'postmortem'}))
+    # Weekly post-mortem on Mondays, covering the previous 7 days. Paused (Ian, 2026-10-11) until the learned
+    # minutes model is live; its datasets still describe the old models. Re-enable with the learned-model build.
+    # if main_slate_time.astimezone(pytz.timezone('America/New_York')).weekday() == 0:
+    #     lambda_pipeline.append(('llm-analyst', 0, {'action': 'postmortem'}))
 
     # === CREATE RULES FOR MAIN SLATE ===
     try:
