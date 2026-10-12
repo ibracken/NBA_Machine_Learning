@@ -8,8 +8,7 @@ come from scripts/injury_response.py (trained on 2022-25, pre-tip injury report 
                         fixed since) - the fair baseline
   barebones x learned   barebones FP regenerated on learned minutes
   learned x learned     learned minutes x learned FP per minute
-  learned x season      learned minutes x season FP per minute (LEARNED_MIN: with report-status inputs)
-  learned v1 x season   same with the first learned minutes model (no status inputs)
+  learned x season      learned minutes x season FP per minute 
 All variants except "production" drop listed-Out players. Players without a learned projection (no game yet this
 season) keep the production projection. DFF's own lineup is the yardstick. Also scored on the slates before production's injury feed broke (Jan 14, 2026),
 where the complex model's inputs were sound apart from the injury-name bugs fixed 2026-10-09. Per-slate realized FP
@@ -56,7 +55,7 @@ def main():
     out = reports[reports.STATUS.isin(["Out", "Doubtful"]) & ~reports.GLEAGUE]
     listed = set(zip(out.D, out.PLAYER))
     pool["LISTED_OUT"] = [(d, p) in listed for d, p in zip(pool.D, pool.PLAYER)]
-    pool = pool.merge(learned[["D", "PLAYER", "LEARNED_MIN", "LEARNED_MIN_V1", "LEARNED_RATE", "S_RATE"]], on=["D", "PLAYER"], how="left")
+    pool = pool.merge(learned[["D", "PLAYER", "LEARNED_MIN", "LEARNED_RATE", "S_RATE"]], on=["D", "PLAYER"], how="left")
     print(f"Pool {len(pool):,} rows; listed Out pre-tip {pool.LISTED_OUT.sum()} "
           f"(of whom played {pool[pool.LISTED_OUT].PLAYED.fillna(False).sum()}); "
           f"no learned projection {pool.LEARNED_MIN.isna().sum()}")
@@ -73,15 +72,12 @@ def main():
     fair["BB_LEARNED"] = bs.regenerate_fp(regen, box).values
     fair["LxL"] = np.where(has, fair.LEARNED_MIN * fair.LEARNED_RATE, fair.FP_HAT)
     fair["LxS"] = np.where(has & fair.S_RATE.notna(), fair.LEARNED_MIN * fair.S_RATE, fair.FP_HAT)
-    fair["V1xS"] = np.where(has & fair.S_RATE.notna(), fair.LEARNED_MIN_V1 * fair.S_RATE, fair.FP_HAT)
-    v1_min = np.where(has, fair.LEARNED_MIN_V1, fair.PROJECTED_MIN)
 
     variants = {
         "production": (pool, "FP_HAT", "PROJECTED_MIN"),
         "production, report": (fair, "FP_HAT", "PROJECTED_MIN"),
         "barebones x learned": (fair.assign(PROJECTED_MIN=regen.PROJECTED_MIN.values), "BB_LEARNED", "PROJECTED_MIN"),
         "learned x learned": (fair.assign(PROJECTED_MIN=regen.PROJECTED_MIN.values), "LxL", "PROJECTED_MIN"),
-        "learned v1 x season": (fair.assign(PROJECTED_MIN=v1_min), "V1xS", "PROJECTED_MIN"),
         "learned x season": (fair.assign(PROJECTED_MIN=regen.PROJECTED_MIN.values), "LxS", "PROJECTED_MIN"),
     }
     res = {name: bs.lineups(df, daily, col).set_index("D") for name, (df, col, _) in variants.items()}

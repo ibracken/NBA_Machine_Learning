@@ -3,7 +3,7 @@ Learned injury response: who absorbs an absent teammate's minutes, and how much 
 Fit walk-forward on the replay table (data/replay/replay.parquet) plus the pre-tip injury reports
 (data/replay/injury_reports.parquet, scripts/fetch_injury_history.py). Read-only; writes
 data/replay/injury_features.parquet and data/replay/learned_2025_26.parquet (2025-26 predictions, trained on 2022-25;
-LEARNED_MIN = +status model, LEARNED_MIN_V1 = pre-tip model).
+LEARNED_MIN = pre-tip model).
 
 Tonight's out set (teammates whose minutes are up for grabs), two versions:
   realized (hindsight)  on the roster and did not play tonight
@@ -22,8 +22,9 @@ Minutes models (gradient boosting), three ways:
   hindsight   realized out set, trained and scored on players who played (the first, leaky setup)
   own only    no teammate-absence inputs at all
   pre-tip     report out set, trained and scored on everyone not listed Out (DNPs count as 0 minutes)
-  +status     pre-tip plus his own report status (Questionable / Probable / Available) and teammates listed
-              Questionable (_Q features). Out and Doubtful both count as out, as in production.
+Out and Doubtful both count as out, as in production. Questionable / Probable / Available are deliberately not
+inputs (tested 2026-10-10: small, mixed gain; Ian's call 2026-10-11 is to judge Questionable players with the AI
+pre-lineup check instead).
 Rate model: actual FP per minute, players who played 8+ minutes, weighted by minutes.
 
 Usage: python scripts/injury_response.py [--predict-only]
@@ -53,7 +54,6 @@ GBR = dict(n_estimators=300, max_depth=4, learning_rate=0.05, subsample=0.8, ran
 
 OWN_FEATS = ["S_MIN", "L7_MIN", "PREV_MIN", "GP", "TEAM_GAMES_MISSED"]
 ABS_FEATS = ["OUT_MIN_FRESH", "OUT_MIN_ONGOING", "OUT_MIN_SAME", "OUT_MIN_ADJ", "WOWY_MIN", "WOWY_N"]
-STATUS_FEATS = ["SELF_Q", "SELF_P", "SELF_A", "OUT_MIN_FRESH_Q", "OUT_MIN_ONGOING_Q", "WOWY_MIN_Q"]
 RATE_OWN = ["S_RATE", "L7_RATE", "C_RATE", "S_USG", "S_MIN"]
 RATE_ABS = ["OUT_USG_FRESH", "OUT_USG_ONGOING", "OUT_MIN_FRESH", "WOWY_RATE", "WOWY_N"]
 FEAT_NAMES = ["OUT_MIN_FRESH", "OUT_MIN_ONGOING", "OUT_USG_FRESH", "OUT_USG_ONGOING", "OUT_MIN_SAME", "OUT_MIN_ADJ",
@@ -138,12 +138,9 @@ def build_features(r, reports):
     r = r.merge(rep, on=["D", "PLAYER"], how="left")
     # Doubtful players sat 98.8% of the time; production (injury-scraper) counts them as OUT too
     r["LISTED_OUT"] = r.STATUS.isin(["Out", "Doubtful"])
-    r["LISTED_Q"] = r.STATUS == "Questionable"
-    for status in ("Questionable", "Probable", "Available"):
-        r[f"SELF_{status[0]}"] = (r.STATUS == status).astype(float)
     r["HAS_REPORT"] = r.D.isin(set(reports.D))
     r["NOT_PLAYED"] = ~r.PLAYED
-    parts = [team_season_features(ts, {"": "NOT_PLAYED", "_R": "LISTED_OUT", "_Q": "LISTED_Q"}) for _, ts in r.groupby(["SEASON", "TEAM"])]
+    parts = [team_season_features(ts, {"": "NOT_PLAYED", "_R": "LISTED_OUT"}) for _, ts in r.groupby(["SEASON", "TEAM"])]
     r = r.merge(pd.concat(parts, ignore_index=True), on=["SEASON", "D", "TEAM", "PLAYER"], how="left")
     safe = lambda a, b: np.where(b > 0, a / b.where(b > 0, 1), np.nan)
     r["S_RATE"] = safe(r.S_FP, r.S_MIN)
@@ -178,12 +175,11 @@ def predict_last_season(r):
     train, test = base[base.SEASON != SEASONS[-1]], base[base.SEASON == SEASONS[-1]]
     elig_tr, elig_te = train[~train.LISTED_OUT], test[~test.LISTED_OUT].copy()
     pre = OWN_FEATS + suffixed(ABS_FEATS, "_R")
-    for col, feats in (("LEARNED_MIN", pre + STATUS_FEATS), ("LEARNED_MIN_V1", pre)):
-        elig_te[col] = np.clip(gbr(elig_tr, feats, "ACT_MIN").predict(elig_te[feats].fillna(0)), 0, 48)
+    elig_te["LEARNED_MIN"] = np.clip(gbr(elig_tr, pre, "ACT_MIN").predict(elig_te[pre].fillna(0)), 0, 48)
     rated = train[train.PLAYED & (train.ACT_MIN >= 8) & train.S_RATE.notna()]
     rate_pre = RATE_OWN + suffixed(RATE_ABS, "_R")
     elig_te["LEARNED_RATE"] = gbr(rated, rate_pre, "ACT_RATE", rated.ACT_MIN).predict(elig_te[rate_pre].fillna(0))
-    return elig_te[["D", "PLAYER", "TEAM", "LEARNED_MIN", "LEARNED_MIN_V1", "SELF_Q", "LEARNED_RATE", "S_RATE"]]
+    return elig_te[["D", "PLAYER", "TEAM", "LEARNED_MIN", "LEARNED_RATE", "S_RATE"]]
 
 
 def main():
@@ -205,7 +201,6 @@ def main():
     played = base[base.PLAYED]
     eligible = base[~base.LISTED_OUT]           # what production projects: everyone not listed Out
     own, hind, pre = OWN_FEATS, OWN_FEATS + ABS_FEATS, OWN_FEATS + suffixed(ABS_FEATS, "_R")
-    pre_q = pre + STATUS_FEATS
 
     print("=== Minutes: average minutes off (bias), walk-forward ===")
     preds = None
@@ -217,22 +212,17 @@ def main():
         te_p["FITTED"] = fitted_formula(tr_p)(te_p)
         m_pre, m_own = gbr(tr_e, pre, "ACT_MIN"), gbr(tr_e, own, "ACT_MIN")
         te_e["PRE"] = np.clip(m_pre.predict(te_e[pre].fillna(0)), 0, 48)
-        te_e["PREQ"] = np.clip(gbr(tr_e, pre_q, "ACT_MIN").predict(te_e[pre_q].fillna(0)), 0, 48)
         te_e["OWN"] = np.clip(m_own.predict(te_e[own].fillna(0)), 0, 48)
         te_e["FITTED"] = fitted_formula(tr_e)(te_e)
         print(f"test {SEASONS[i]}:")
         cols = [("Formula C", "FC_MIN"), ("fitted", "FITTED"), ("own only", "OWN"), ("hindsight", "HIND")]
         report("[players who played] all", te_p, cols)
         report("[played] fresh 25+ min actually sat", te_p[te_p.OUT_MIN_FRESH >= 25], cols)
-        cols = [("Formula C", "FC_MIN"), ("fitted", "FITTED"), ("own only", "OWN"), ("pre-tip", "PRE"),
-                ("+status", "PREQ")]
+        cols = [("Formula C", "FC_MIN"), ("fitted", "FITTED"), ("own only", "OWN"), ("pre-tip", "PRE")]
         report("[not listed Out] all, DNPs = 0", te_e, cols)
         report("[not listed] fresh 25+ min listed Out", te_e[te_e.OUT_MIN_FRESH_R >= 25], cols)
-        report("[not listed] himself Questionable", te_e[te_e.SELF_Q == 1], cols)
-        report("[not listed] 15+ min teammates Questionable", te_e[te_e.OUT_MIN_FRESH_Q + te_e.OUT_MIN_ONGOING_Q >= 15], cols)
         if SEASONS[i] == SEASONS[-1]:
-            preds = te_e[["D", "PLAYER", "TEAM", "PREQ", "PRE", "OWN", "SELF_Q"]].rename(
-                columns={"PREQ": "LEARNED_MIN", "PRE": "LEARNED_MIN_V1", "OWN": "OWN_MIN"})
+            preds = te_e[["D", "PLAYER", "TEAM", "PRE", "OWN"]].rename(columns={"PRE": "LEARNED_MIN", "OWN": "OWN_MIN"})
 
     print("\n=== 2025-26 production pool: learned (pre-tip, trained 2022-25) vs the complex model's stored projections ===")
     pool = pd.read_parquet(POOL).merge(preds, on=["D", "PLAYER"], how="left", suffixes=("", "_L"))
@@ -241,9 +231,8 @@ def main():
     ok = pool[pool.LEARNED_MIN.notna()]
     print(f"pool rows {len(pool):,}, with a learned projection {len(ok):,}")
     cols = [("complex (prod)", "PROJECTED_MIN"), ("Formula C", "FC_MIN"), ("own only", "OWN_MIN"),
-            ("pre-tip", "LEARNED_MIN_V1"), ("+status", "LEARNED_MIN")]
+            ("pre-tip", "LEARNED_MIN")]
     report("pool, all", ok, cols)
-    report("pool, himself Questionable", ok[ok.SELF_Q == 1], cols)
     report("pool, fresh 25+ min listed Out", ok[ok.OUT_MIN_FRESH_R >= 25], cols)
     report("pool, complex added 0.5+ min", ok[ok.GROUP == "injury boost"], cols)
 
