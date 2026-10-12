@@ -17,15 +17,21 @@ Evidence for every number here is in [`findings.md`](findings.md).
 
 **Decisions in force**
 - **The learned minutes model replaces the complex model as our #1 projection everywhere:** the lineup email,
-  the AI steps, preflight and comparisons. The old complex model runs alongside only until the live comparison
-  (step 8) settles it. (Ian, 2026-10-11)
+  the AI steps, preflight and comparisons. (Ian, 2026-10-11)
+- **Removed (Ian, 2026-10-11):**
+  - the old complex model and its hand-tuned injury rules;
+  - the `current` and `fp_per_min` FP models;
+  - the cluster pipeline (cluster-scraper, nba-clustering);
+  - the team-minutes check;
+  - the X/Grok question.
+
+  Formula C stays as the cheap control. The removals happen in one change during the pause (step 4), so the
+  pipeline changes once.
 - **FP = learned minutes × the player's season FP per minute.** That beat every FP-model combination in the
   backtests.
 - **Injury designations:** Out and Doubtful count as out. Questionable, Probable and Available are **not**
   model inputs; whether the AI research can tell real Questionables from fake ones is an experiment. (Ian,
   2026-10-11)
-- **Nothing gets retired until it loses a live comparison.** That covers the three FP models, the old complex
-  model and the cluster pipeline. (Ian, 2026-10-09)
 - **Preflight email at about T−12 is fine.** (Ian, 2026-10-09)
 
 ---
@@ -53,10 +59,7 @@ Evidence for every number here is in [`findings.md`](findings.md).
 
 ### During the pause (Oct 20 – about Oct 30): make the learned model #1
 
-4. **Team-minutes check (backtest, about an hour).** The learned model projects every roster player not listed
-   out, so team totals should land near 240. Test whether scaling each team toward 240 raises lineup FP.
-   Ship the scaling only if it does.
-5. **Build the learned model into production.**
+4. **Build the learned model into production, and remove what it replaces.**
    - **Training:** the supervised-learning Lambda trains the minutes model on all seasons, following the model
      release checklist in AGENTS.md (Lambda-pinned versions; verify load and predict).
    - **Serving:** minutes-projection computes the inputs from stored box scores and today's injury report:
@@ -69,11 +72,16 @@ Evidence for every number here is in [`findings.md`](findings.md).
    - **Names:** wire `lambda/shared/player_names.py` into daily-predictions, the injury scraper and
      minutes-projection. Last season Sarr, Butler, Portis, PJ Washington and GG Jackson were missing from our
      pool because of spelling.
-   - **Outputs:** the lineup email uses the learned model. The old complex model, Formula C and DFF lineups are
-     still built and saved for comparison.
+   - **Outputs:** the lineup email uses the learned model. Formula C and DFF lineups are still built and saved for
+     comparison.
+   - **Remove:**
+     - the complex model (`injury_system.py` and the redistribution in `projection_models.py`);
+     - the `current` / `fp_per_min` FP models in training, serving, preflight and the evaluation scripts;
+     - cluster-scraper and nba-clustering: the Lambdas, their schedule entries, ECR repos and alarms, and
+       box-score-scraper's cluster join.
    - **Parity check before switching on:** production code must reproduce the backtest's projections for a
      sample of 2025-26 dates.
-6. **Point the AI steps at the learned model** (see "AI pieces" below for the target design):
+5. **Point the AI steps at the learned model** (see "AI pieces" below for the target design):
    - give the adjustments judge full context on the model;
    - turn the AI head-to-head into a single AI-picked lineup;
    - switch the preflight table and rules to the learned model, and re-measure its team-total and "above role"
@@ -81,28 +89,23 @@ Evidence for every number here is in [`findings.md`](findings.md).
 
 ### Live season
 
-7. **Pause lifts (about Oct 30):** the learned model's lineup goes in the email; the AI judge and AI lineup start
+6. **Pause lifts (about Oct 30):** the learned model's lineup goes in the email; the AI judge and AI lineup start
    collecting.
-8. **Live comparison at 30 slates (about late November):** learned vs old complex vs DFF on realized lineup FP.
-   If the learned model trails the old complex model, revert.
-9. **AI go/no-go (about mid-December, 30+ slates):** each AI piece is kept or switched off by its own rule below.
-   The X/Grok question is decided at the same time.
-10. **Simplify once the learned model wins live (Ian's OK at the time):** retire the old complex model and its
-    hand-tuned injury rules. Retire the three FP models and their training if minutes × season rate still wins
-    live. Retire cluster-scraper → nba-clustering, which only feed the FP models. That's three Lambdas and a
-    lot of code.
+7. **Live comparison at 30 slates (about late November):** learned vs Formula C vs DFF on realized lineup FP.
+   If the learned model trails Formula C, stop and investigate. That would contradict every backtest.
+8. **AI go/no-go (about mid-December, 30+ slates):** each AI piece is kept or switched off by its own rule below.
 
-### Next accuracy work, in order (the remaining ~11 FP to DFF)
+### Later: one at a time, once the learned model is live (the remaining ~11 FP to DFF)
 
-11. **Opponent pace and defense, built from our own box scores.** Team possessions and points allowed are
+9. **Opponent pace and defense, built from our own box scores.** Team possessions and points allowed are
     derivable game by game. First test whether they explain the per-minute misses on the players DFF picked
     and we didn't, before building anything.
-12. **Historical betting lines (game total, spread).** Find a source with past seasons; likely the biggest
+10. **Historical betting lines (game total, spread).** Find a source with past seasons; likely the biggest
     per-minute input DFF has and we don't.
-13. **Early-season blend:** players with 0–3 games currently get a flat 10 minutes (2–3% of rotation players
+11. **Early-season blend:** players with 0–3 games currently get a flat 10 minutes (2–3% of rotation players
     every week). Replace it with a blend of this season and last season, weighted by games played. This might
     also let the pause lift earlier.
-14. **Faster backtests:** switch the backtest models to `HistGradientBoostingRegressor` (multi-core, same Lambda
+12. **Faster backtests:** switch the backtest models to `HistGradientBoostingRegressor` (multi-core, same Lambda
     version) after confirming equal accuracy. Runs drop from about 45 minutes to about 5.
 
 ### Housekeeping (whenever convenient)
@@ -166,11 +169,6 @@ stops all calls.
 - **Proposed:** pause it until the learned model is live. Its datasets and prompt describe the old model setup.
   Needs Ian's OK.
 
-**X / Grok, decided with the judge in December.**
-- Claude's web search barely sees live X posts.
-- If the judge doesn't beat no adjustment, drop X: a better source won't rescue it.
-- If it does, check our biggest misses for news posted on X before tip that our research missed, and add Grok
-  only if that's common. Details are in `findings.md`.
 
 ---
 
@@ -188,7 +186,7 @@ stops all calls.
   `$env:PATH = "$PWD\.venv\Scripts;$env:PATH"`). Environment variables (`PROXY_URL`, `CLAUDE_API_KEY`) are set by
   hand.
 - **Nightly schedule** (minutes after the pipeline starts at T−30 before the first tip):
-  - +0 cluster-scraper, +2 nba-clustering, +4 box-score-scraper, +6 supervised-learning;
+  - +0 cluster-scraper, +2 nba-clustering (both being removed), +4 box-score-scraper, +6 supervised-learning;
   - +9 daily-predictions (DFF), +11 injury-scraper, +12 research;
   - +13 minutes-projection (the lineup email, about T−17);
   - +16 adjustments judge, +18 preflight email (about T−12), +22 AI lineup;
