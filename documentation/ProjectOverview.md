@@ -8,7 +8,7 @@ This repo is an AWS Lambda-based pipeline that scrapes NBA data, builds clusteri
 - `scripts/`: Local utilities — model evaluation (`evaluate_projections.py`, `evaluate_llm.py`, `analyze_model_performance*.py`), S3 inspection, notebooks.
 - `aws/`: Shared S3 utilities, inspection helpers, and the game-scheduler IAM policy document.
 - `frontend/`: React + Vite viewer for the `lineup-optimizer` API (see `frontend/README.md`).
-- `documentation/`: Project docs (this file, `minutes-projection.md`, and `roadmap.md`, the current status document).
+- `documentation/`: Project docs (this file, `minutes-projection.md`, `roadmap.md` (the plan) and `findings.md` (what was measured and built, with history)).
 - `images/`: Figures used in analysis and docs.
 
 ## Lambda pipeline (current code)
@@ -26,7 +26,7 @@ The `lambda/game-scheduler` Lambda scrapes the DailyFantasyFuel main slate start
 11. [+22] `minutes-projection` `llm_lineups` -> lineups for the L3 minutes (never emailed)
 12. Mondays only, [+0] `llm-analyst` `postmortem` -> `llm/postmortem/{date}.json` and email (L4)
 
-Early-season pause: until all 30 teams have played 4 games, minutes-projection builds only the DFF lineup, L2 is skipped, and L1 checks inputs only (see `roadmap.md`).
+Early-season pause: until all 30 teams have played 4 games, minutes-projection builds only the DFF lineup, L2 is skipped, and L1 checks inputs only (see `findings.md`, "Reference: early-season pause").
 
 ## What each Lambda does
 - `cluster-scraper`: Pulls advanced/scoring/defense stats from the NBA API (via `PROXY_URL`) and writes `data/advanced_player_stats/current.parquet` plus a per-season copy (`{YYYY}-{YYYY+1}.parquet`).
@@ -56,7 +56,7 @@ Each Lambda raises on failure so the `AWS/Lambda Errors` metric fires. CloudWatc
 `scripts/evaluate_projections.py` scores stored minutes projections and lineups against actuals, split by data-freshness regime (see the docstring for the 2025-26 regimes). Run it before judging any model change. `scripts/evaluate_llm.py` scores L2 and L3 and reports LLM spend.
 
 ## Roadmap
-`documentation/roadmap.md` is the status document: the pre-season checklist, what was done when, and the open work (LLM components, model quality, operations), each with how it gets measured.
+`documentation/roadmap.md` is the plan: status, decisions in force, the ordered steps with how each is judged, and the AI pieces with their kill rules. `documentation/findings.md` holds the evidence: every backtest, negative result and the done log.
 
 ## Frontend
 `frontend/` is a React + Vite app that reads the `lineup-optimizer` API (see `frontend/README.md`).

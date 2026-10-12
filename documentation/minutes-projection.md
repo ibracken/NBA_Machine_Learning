@@ -23,7 +23,7 @@ Total lineups per run: 6 (minutes x FP) + 1 (DFF) = 7.
 `serving_features.projection_gate` pauses in-house projections until all 30 teams have played
 `PROJECTION_START_MIN_TEAM_GAMES` (4) games of the current season (about 10 days; Oct 30 in 2025-26).
 While paused the default action updates actuals, builds and emails only the DFF lineup, and
-`llm_lineups` is skipped. See roadmap "Early-season pause".
+`llm_lineups` is skipped. See `findings.md`, "Reference: early-season pause".
 
 ## Inputs (S3)
 
