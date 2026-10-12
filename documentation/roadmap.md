@@ -43,13 +43,14 @@ Evidence for every number here is in [`findings.md`](findings.md).
 
 ### Before opening night (Oct 20)
 
-1. **Injury scraper: request today's report by its address instead of reading the season web page.**
-   - The page listed no report links for any season when checked on Oct 9.
-   - Report addresses are predictable (`Injury-Report_YYYY-MM-DD_HH_MMPM.pdf`). The history download fetched
-     846 days this way.
-   - *Done when:* a local run finds the latest preseason report without the page.
-2. **daily-predictions: say "DFF returned no projections"** instead of crashing with `KeyError: 'Player'`.
-3. **Opening-night check (Oct 20):**
+1. **Injury scraper: recommend no change before opening night (pending Ian's OK).** The season page listing no reports looks
+   like the offseason, not a break: the 2026-27 page doesn't exist yet (404), the NBA publishes no preseason
+   reports, and the scraper read links from the page all last season. How soon the new page appears is unverified
+   (no logs survive from last October). If the opening-night check finds no report, build the report address
+   directly (`Injury-Report_YYYY-MM-DD_HH_MMPM.pdf`, as `scripts/fetch_injury_history.py` does). The injury
+   feed hasn't been written since Jan 13, so Oct 20 is also the first live run of the September fixes.
+2. **daily-predictions error message:** skipped (Ian, 2026-10-11). The crash already raises an alarm.
+3. **Opening-night check (Oct 20): `python scripts/opening_night_check.py`** after the lineup email. It checks:
    - game-scheduler skipped preseason and scheduled the 20th;
    - DFF returned players ("Extracted N players");
    - the schedule files refreshed;
