@@ -337,9 +337,8 @@ def send_adjusted_email(today, lineup, status_changes, adjustments):
             order = {'PG': 0, 'SG': 1, 'SF': 2, 'PF': 3, 'C': 4, 'G': 5, 'F': 6, 'UTIL': 7}
             for r in lineup.assign(o=lineup['SLOT'].map(order)).sort_values('o').itertuples():
                 mark = '*' if r.PLAYER not in base_players else ' '
-                mult = getattr(r, 'RATE_MULT', None)
                 lines.append(f"{mark}{r.SLOT:4} | {r.PLAYER:<20} | ${r.SALARY:<5,.0f} | {r.PROJECTED_FP:5.1f} FP | "
-                             f"{r.PROJECTED_MIN:4.1f} Min" + (f" | pace/def x{mult:.3f}" if pd.notna(mult) else ''))
+                             f"{r.PROJECTED_MIN:4.1f} Min")
     lines += ai_lineup_section(today)
     try:
         sns_client.publish(TopicArn=SNS_TOPIC_ARN, Subject=subject[:100], Message='\n'.join(lines))

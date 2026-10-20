@@ -766,7 +766,7 @@ See M7.
 
 ### 2026-10-20 (evening)
 - **Pace and opponent defense in production (Ian).** Learned FP per minute = season rate × the pace/defense
-  multiplier; the multiplier is saved with every projection and shown per player in both lineup emails. The repo
+  multiplier; the multiplier is saved with every projection and lineup (not shown in the emails: Ian, too much detail). The repo
   backtest reproduces it (259.9 vs 256.0), and the Lambda code picked the backtest's 8 on 2025-11-05, 2025-12-30
   and 2026-03-03. See "Pace and opponent defense".
 
