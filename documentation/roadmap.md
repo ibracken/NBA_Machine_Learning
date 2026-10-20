@@ -102,16 +102,17 @@ Evidence for every number here is in [`findings.md`](findings.md).
    If the learned model trails Formula C, stop and investigate. That would contradict every backtest.
 8. **AI go/no-go (about mid-December, 30+ slates):** each AI piece is kept or switched off by its own rule below.
 
-### Later: one at a time, once the learned model is live (the remaining ~11 FP to DFF)
+### Later: one at a time, once the learned model is live (the remaining ~8 FP to DFF in the backtest)
 
-9. **Opponent pace and defense, built from our own box scores.** Team possessions and points allowed are
-    derivable game by game. First test whether they explain the per-minute misses on the players DFF picked
-    and we didn't, before building anything.
+9. **Opponent pace and defense: shipped 2026-10-20.** FP per minute is scaled by tonight's expected pace and
+    the opponent's FP allowed. Backtest: +3.9 per slate (−0.9..+9.0, not significant), and player error better in
+    both test seasons. Watch it in the live comparison (step 7). Details in `findings.md`.
 10. **Historical betting lines (game total, spread).** Find a source with past seasons; likely the biggest
     per-minute input DFF has and we don't.
 11. **Early-season blend:** players with 0–3 games currently get a flat 10 minutes (2–3% of rotation players
     every week). Replace it with a blend of this season and last season, weighted by games played. This might
-    also let the pause lift earlier.
+    also let the pause lift earlier. The same blend applies to the season FP-per-minute rate: in the DFF backtest,
+    the first 10 slates after the pause ran −29.6 vs DFF, against −10.6 for the rest (a small sample).
 12. **Faster backtests:** switch the backtest models to `HistGradientBoostingRegressor` (multi-core, same Lambda
     version) after confirming equal accuracy. Runs drop from about 45 minutes to about 5.
 

@@ -1,9 +1,11 @@
 """
 Nightly training. Trains the learned minutes model (lambda/shared/learned_minutes.py), the #1 projection since
-2026-10-18, and publishes models/learned_minutes.pkl with its feature names and a training summary.
+2026-10-18, and publishes models/learned_minutes.pkl with its feature names and a training summary. On the same
+rows it fits the pace / opponent-defense weights on FP per minute (lambda/shared/pace_defense.py) and publishes
+models/pace_defense.json.
 
 The barebones FP model (train_fp_models) is switched off but kept (Ian, 2026-10-18): FP is now projected
-minutes x season FP per minute. The current and fp_per_min FP models were removed.
+minutes x season FP per minute x the pace/defense multiplier. The current and fp_per_min FP models were removed.
 """
 
 import pandas as pd
@@ -22,14 +24,17 @@ from pathlib import Path
 
 try:
     import learned_minutes as lm
+    import pace_defense as pdm
 except ImportError:   # local run: the shared modules live in lambda/shared
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'shared'))
     import learned_minutes as lm
+    import pace_defense as pdm
 
 # The barebones FP model is kept but not trained or served (Ian, 2026-10-18)
 TRAIN_BAREBONES = False
 INJURY_HISTORY_KEY = 'data/injuries/history.parquet'   # D, PLAYER, STATUS; injury-scraper appends nightly
 LEARNED_MODEL_KEY = 'models/learned_minutes.pkl'
+PACE_DEFENSE_KEY = 'models/pace_defense.json'
 
 # Configure logging
 logger = logging.getLogger()
@@ -113,7 +118,8 @@ def calculate_rest_days(df):
     return df_sorted
 
 def train_learned_minutes(publish=True):
-    """Train the learned minutes model on the current season and the three before it, and publish it."""
+    """Train the learned minutes model and fit the pace/defense weights on the current season and the three
+    before it, and publish both."""
     start_year = season_start_year()
     frames = []
     for year in range(start_year - 3, start_year + 1):
@@ -126,6 +132,7 @@ def train_learned_minutes(publish=True):
     box = pd.concat(frames, ignore_index=True)
     reports = load_dataframe_from_s3(INJURY_HISTORY_KEY)
     rows, _ = lm.build(box, reports)
+    rows = pdm.add_inputs(rows, box)
     train = lm.training_rows(rows)
     logger.info(f"Learned minutes: {len(rows)} roster rows, {len(train)} training rows, "
                 f"seasons {sorted(train['SEASON'].unique())}, report days {rows.loc[rows['HAS_REPORT'], 'D'].nunique()}")
@@ -139,11 +146,18 @@ def train_learned_minutes(publish=True):
     # In-sample MAE only confirms training worked; out-of-sample results are in documentation/findings.md
     logger.info(f"Learned minutes: in-sample MAE {mae:.3f}; importances {summary['importances']}")
 
+    coefs, n_rate = pdm.fit(train)
+    pace = {'trained_at': summary['trained_at'], 'coefficients': coefs, 'rows': n_rate,
+            'seasons': summary['seasons'], 'last_game': summary['last_game'], 'shrink_k': pdm.SHRINK_K}
+    logger.info(f"Pace/defense weights {coefs} from {n_rate} played rows (2022-25 backtest fit: 0.97 / 1.17)")
+    summary['pace_defense'] = coefs
+
     if publish:
         # Feature names, summary and model are published together, right after the fit
         s3.put_object(Bucket=BUCKET_NAME, Key='models/learned_minutes_feature_names.json',
                       Body=json.dumps({'features': lm.FEATURES}))
         s3.put_object(Bucket=BUCKET_NAME, Key='models/learned_minutes_summary.json', Body=json.dumps(summary))
+        s3.put_object(Bucket=BUCKET_NAME, Key=PACE_DEFENSE_KEY, Body=json.dumps(pace))
         save_model_to_s3(model, LEARNED_MODEL_KEY)
     return {'success': True, 'models_trained': ['learned_minutes'], 'results': {'learned_minutes': summary}}
 

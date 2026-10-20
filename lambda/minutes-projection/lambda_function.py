@@ -6,8 +6,10 @@ NBA Minutes Projection Lambda. Nightly lineups from three projections:
 plus, after the AI adjustments judge (action adjusted_lineup, its own email about T-11): the learned model re-run
 with the judge's verified status changes and its minutes adjustments applied, to test whether the judge helps. That
 email also carries the AI's own lineup (llm-analyst research), and still goes out during the pause with just that.
-For 1 and 2, FP = projected minutes x the player's season FP per minute. Lineups use the production optimizer with
-DFF's salaries and positions.
+FP = projected minutes x FP per minute. For the learned lineups, FP per minute is the season rate x tonight's pace /
+opponent-defense multiplier (lambda/shared/pace_defense.py, weights fit nightly by supervised-learning). Formula C
+keeps the plain season rate, so the control is unchanged. Lineups use the production optimizer with DFF's salaries
+and positions.
 
 The complex model was removed 2026-10-18. The barebones FP model is kept but not served (process_model.py,
 lineup_optimizer.predict_fantasy_points).
@@ -25,9 +27,11 @@ import pytz
 
 try:
     import learned_minutes as lm
+    import pace_defense as pdm
 except ImportError:   # local run: the shared modules live in lambda/shared
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'shared'))
     import learned_minutes as lm
+    import pace_defense as pdm
 from actuals_updater import update_actual_minutes
 from lineup_optimizer import optimize_lineup
 from player_names import match_names
@@ -46,6 +50,8 @@ LEARNED_PATH = 'model_comparison/learned_minutes'
 FORMULA_C_PATH = 'model_comparison/formula_c_baseline'
 DFF_PATH = 'model_comparison/daily_fantasy_fuel_baseline'
 LEARNED_MODEL_KEY = 'models/learned_minutes.pkl'
+PACE_DEFENSE_KEY = 'models/pace_defense.json'
+PACE_COLS = ['OPP', 'EXP_PACE', 'DEF_IDX', 'PACE_RATIO', 'DEF_RATIO', 'RATE_MULT', 'FP_RATE']
 ADJUSTED_PATH = 'model_comparison/learned_ai_adjusted'
 AI_LINEUP_PATH = 'model_comparison/ai_lineup'   # written by llm-analyst research
 ADJUSTMENTS_LOG = 'llm/adjustments/log.parquet'
@@ -111,6 +117,7 @@ def tonight_rows(box_scores, today, status_overrides=None):
         if missing:
             logger.warning(f"Status overrides with no roster row tonight: {missing}")
     rows = lm.absence_features(rows)
+    rows = pdm.add_inputs(rows, box_scores, tonight)
     rows = rows[rows['D'] == pd.Timestamp(today)].copy()
     if unmatched:
         logger.info(f"Injury report names not on tonight's rosters (long-term or two-way): "
@@ -133,7 +140,25 @@ def add_learned_minutes(rows, model):
     return rows
 
 
-def slate_pool(rows, daily_preds, today, minutes_col, known_names):
+def load_pace_weights():
+    """Pace/defense weights from supervised-learning, or None if the file is missing."""
+    weights = load_json(PACE_DEFENSE_KEY)
+    if weights is None:
+        logger.error(f"{PACE_DEFENSE_KEY} missing: learned FP uses the plain season rate tonight")
+        return None
+    logger.info(f"Pace/defense weights {weights['coefficients']} (trained {weights.get('trained_at')})")
+    return weights['coefficients']
+
+
+def add_fp_rate(rows, coefs):
+    """RATE_MULT (1 without weights) and FP_RATE = season rate x RATE_MULT."""
+    rows = rows.copy()
+    rows['RATE_MULT'] = pdm.multiplier(rows, coefs or {})
+    rows['FP_RATE'] = rows['S_RATE'] * rows['RATE_MULT']
+    return rows
+
+
+def slate_pool(rows, daily_preds, today, minutes_col, known_names, rate_col='S_RATE'):
     """
     Tonight's DFF slate joined to our projections. PLAYER stays DFF's spelling (the optimizer takes salaries from
     daily_preds by name); BOX_NAME is the box-score spelling, matched against tonight's rosters.
@@ -145,11 +170,13 @@ def slate_pool(rows, daily_preds, today, minutes_col, known_names):
     if unmatched:
         logger.info(f"DFF slate players with no roster row tonight: {unmatched}")
     slate = slate.assign(BOX_NAME=slate['PLAYER'].map(mapping)).dropna(subset=['BOX_NAME'])
+    extra = ['RATE_MULT'] if 'RATE_MULT' in rows.columns and rate_col != 'S_RATE' else []
     pool = slate[['PLAYER', 'BOX_NAME', 'POSITION']].merge(
-        rows.rename(columns={'PLAYER': 'BOX_NAME'})[['BOX_NAME', 'TEAM', minutes_col, 'S_RATE']], on='BOX_NAME')
+        rows.rename(columns={'PLAYER': 'BOX_NAME'})[['BOX_NAME', 'TEAM', minutes_col, rate_col, *extra]],
+        on='BOX_NAME')
     # Unrounded: rounding can flip near-ties in the optimizer (the email and saved files round for display)
     pool['PROJECTED_MIN'] = pool[minutes_col]
-    pool['PROJECTED_FP'] = pool[minutes_col] * pool['S_RATE']
+    pool['PROJECTED_FP'] = pool[minutes_col] * pool[rate_col]
     return pool[pool['PROJECTED_FP'] > 0]
 
 
@@ -161,14 +188,16 @@ def build_lineup(label, path, pool, daily_preds, today):
     if lineup.empty:
         logger.warning(f"{label}: optimizer returned no lineup for {today}")
         return lineup
+    if 'RATE_MULT' in pool.columns:
+        lineup['RATE_MULT'] = lineup['PLAYER'].map(pool.drop_duplicates('PLAYER').set_index('PLAYER')['RATE_MULT'])
     save_day(lineup, f'{path}/daily_lineups.parquet', today)
     logger.info(f"{label} lineup: {lineup['PROJECTED_FP'].sum():.1f} projected FP")
     return lineup
 
 
-def save_projections(rows, path, minutes_col, today, extra_cols=()):
+def save_projections(rows, path, minutes_col, today, extra_cols=(), rate_col='S_RATE'):
     out = rows.assign(DATE=pd.Timestamp(today), PROJECTED_MIN=rows[minutes_col].round(1),
-                      PROJECTED_FP=(rows[minutes_col] * rows['S_RATE']).round(1),
+                      PROJECTED_FP=(rows[minutes_col] * rows[rate_col]).round(1),
                       OUT_TONIGHT=rows['LISTED_OUT'], ACTUAL_MIN=None, ACTUAL_FP=None)
     cols = ['DATE', 'PLAYER', 'TEAM', 'PROJECTED_MIN', 'PROJECTED_FP', 'S_RATE', 'S_MIN', 'L7_MIN', 'GP',
             'TEAM_GAMES_MISSED', 'OUT_TONIGHT', *extra_cols, 'ACTUAL_MIN', 'ACTUAL_FP']
@@ -258,6 +287,7 @@ def build_adjusted_lineup(box_scores, today):
         raise RuntimeError(f"could not load {LEARNED_MODEL_KEY}")
     known = set(box_scores['PLAYER'])
     rows = add_learned_minutes(tonight_rows(box_scores, today, overrides), model)
+    rows = add_fp_rate(rows, load_pace_weights())
     mapping, _ = match_names(list(pct), rows['PLAYER'], known)
     rows['AI_PCT'] = rows['PLAYER'].map({mapping[n]: v for n, v in pct.items() if mapping.get(n)}).fillna(0.0)
     rows['LEARNED_MIN'] = rows['LEARNED_MIN'] * (1 + rows['AI_PCT'])
@@ -266,8 +296,9 @@ def build_adjusted_lineup(box_scores, today):
          for n, m in match_names(list(overrides), rows['PLAYER'], known)[0].items() if m})
 
     daily_preds = load_daily_preds()
-    pool = slate_pool(rows, daily_preds, today, 'LEARNED_MIN', known)
-    save_projections(rows, ADJUSTED_PATH, 'LEARNED_MIN', today, extra_cols=['AI_PCT', 'AI_STATUS_CHANGE'])
+    pool = slate_pool(rows, daily_preds, today, 'LEARNED_MIN', known, rate_col='FP_RATE')
+    save_projections(rows, ADJUSTED_PATH, 'LEARNED_MIN', today, extra_cols=['AI_PCT', 'AI_STATUS_CHANGE', *PACE_COLS],
+                     rate_col='FP_RATE')
     lineup = build_lineup("Learned + AI adjustments", ADJUSTED_PATH, pool, daily_preds, today)
     send_adjusted_email(today, lineup, verified, log)
     body = (f"Adjusted lineup for {today}: {len(pct)} minutes adjustments, {len(overrides)} status changes, "
@@ -306,8 +337,9 @@ def send_adjusted_email(today, lineup, status_changes, adjustments):
             order = {'PG': 0, 'SG': 1, 'SF': 2, 'PF': 3, 'C': 4, 'G': 5, 'F': 6, 'UTIL': 7}
             for r in lineup.assign(o=lineup['SLOT'].map(order)).sort_values('o').itertuples():
                 mark = '*' if r.PLAYER not in base_players else ' '
+                mult = getattr(r, 'RATE_MULT', None)
                 lines.append(f"{mark}{r.SLOT:4} | {r.PLAYER:<20} | ${r.SALARY:<5,.0f} | {r.PROJECTED_FP:5.1f} FP | "
-                             f"{r.PROJECTED_MIN:4.1f} Min")
+                             f"{r.PROJECTED_MIN:4.1f} Min" + (f" | pace/def x{mult:.3f}" if pd.notna(mult) else ''))
     lines += ai_lineup_section(today)
     try:
         sns_client.publish(TopicArn=SNS_TOPIC_ARN, Subject=subject[:100], Message='\n'.join(lines))
@@ -353,11 +385,18 @@ def check_model(box_scores):
     if model is None:
         raise RuntimeError(f"could not load {LEARNED_MODEL_KEY}")
     rows, _ = lm.build(box_scores, load_from_s3('data/injuries/history.parquet'))
+    rows = pdm.add_inputs(rows, box_scores)
     last = rows[(rows['D'] == rows['D'].max()) & rows['S_MIN'].notna() & ~rows['LISTED_OUT']]
     pred = lm.predict(model, last)
     mae = float(abs(pred - last['ACT_MIN']).mean())
+    coefs = load_pace_weights()
+    last = add_fp_rate(last, coefs)
+    fp_plain = float(abs(pred * last['S_RATE'] - last['ACT_FP']).mean())
+    fp_pace = float(abs(pred * last['FP_RATE'] - last['ACT_FP']).mean())
     body = (f"{LEARNED_MODEL_KEY} loaded and predicted {len(last)} players not listed out for "
-            f"{last['D'].max().date()}: MAE {mae:.2f} min (injury report {'found' if last['HAS_REPORT'].any() else 'MISSING'})")
+            f"{last['D'].max().date()}: MAE {mae:.2f} min (injury report {'found' if last['HAS_REPORT'].any() else 'MISSING'}). "
+            f"Pace/defense weights {coefs if coefs else 'MISSING'}: FP MAE {fp_pace:.3f} vs {fp_plain:.3f} on the "
+            f"plain season rate; multiplier {last['RATE_MULT'].min():.3f} to {last['RATE_MULT'].max():.3f}")
     logger.info(body)
     return {'statusCode': 200, 'body': body}
 
@@ -375,11 +414,16 @@ def run_projections(box_scores, today):
         lineups["1. Learned minutes (#1) - MODEL FAILED TO LOAD"] = pd.DataFrame()
     elif not rows.empty:
         rows = add_learned_minutes(rows, model)
-        pool = slate_pool(rows, daily_preds, today, 'LEARNED_MIN', known)
+        coefs = load_pace_weights()
+        if coefs is None:
+            failures.append(f"{PACE_DEFENSE_KEY} missing (learned FP used the plain season rate)")
+        rows = add_fp_rate(rows, coefs)
+        pool = slate_pool(rows, daily_preds, today, 'LEARNED_MIN', known, rate_col='FP_RATE')
         # DFF's spelling, for llm-analyst, which works from the DFF slate
         rows['DFF_NAME'] = rows['PLAYER'].map(dict(zip(pool['BOX_NAME'], pool['PLAYER']))) if not pool.empty else None
-        save_projections(rows, LEARNED_PATH, 'LEARNED_MIN', today,
-                         extra_cols=['DFF_NAME', 'LEARNED_MIN_NO_ABSENCES', 'ABSENCE_ADJ_MIN', *ABSENCE_FEATURES])
+        save_projections(rows, LEARNED_PATH, 'LEARNED_MIN', today, rate_col='FP_RATE',
+                         extra_cols=['DFF_NAME', 'LEARNED_MIN_NO_ABSENCES', 'ABSENCE_ADJ_MIN', *ABSENCE_FEATURES,
+                                     *PACE_COLS])
         logger.info(f"Learned minutes: {len(pool)} slate players projected")
         lineups["1. Learned minutes (#1)"] = build_lineup("Learned minutes", LEARNED_PATH, pool, daily_preds, today)
         update_daily_predictions_minutes(daily_preds, pool, today)

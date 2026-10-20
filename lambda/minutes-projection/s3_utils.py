@@ -121,10 +121,14 @@ def send_multi_model_notification(lineups_dict, date):
                 df_today['sort'] = df_today['SLOT'].map(slot_order)
                 df_today = df_today.sort_values('sort')
 
+                if 'RATE_MULT' in df_today.columns:
+                    message_lines.append("pace/def = tonight's pace and opponent-defense multiplier on FP per minute")
                 for _, row in df_today.iterrows():
+                    mult = row.get('RATE_MULT')
                     message_lines.append(
                         f"{row['SLOT']:4} | {row['PLAYER']:<20} | "
                         f"${row['SALARY']:<5,.0f} | {row['PROJECTED_FP']:5.1f} FP | {row['PROJECTED_MIN']:4.1f} Min"
+                        + (f" | pace/def x{mult:.3f}" if pd.notna(mult) else '')
                     )
 
         full_message = "\n".join(message_lines)

@@ -29,7 +29,8 @@ Rate model: actual FP per minute, players who played 8+ minutes, weighted by min
 
 Usage: python scripts/injury_response.py [--predict-only]
   --predict-only  skip the evaluation; write learned_2025_26.parquet from the production model code
-                  (lambda/shared/learned_minutes.py: no position inputs, no per-minute model)
+                  (lambda/shared/learned_minutes.py: no position inputs, no per-minute model), plus the
+                  pace/defense multiplier RATE_MULT (lambda/shared/pace_defense.py, weights fit on 2022-25)
 """
 
 import sys
@@ -177,16 +178,21 @@ def predict_last_season(r=None):
     """2025-26 predictions from the production model code (lambda/shared/learned_minutes.py), trained on 2022-25."""
     sys.path.insert(0, str(ROOT / "lambda" / "shared"))
     import learned_minutes as lm
+    import pace_defense as pdm
     sys.path.insert(0, str(ROOT / "scripts"))
     import backtest_shrinkage as bs
     box = pd.concat([bs.load(f"data/box_scores/{s}.parquet").assign(SEASON=s) for s in SEASONS], ignore_index=True)
     reports = pd.read_parquet(REPORTS)
     rows, _ = lm.build(box, reports[~reports.GLEAGUE])
+    rows = pdm.add_inputs(rows, box)
     elig = lm.training_rows(rows)
-    model = lm.train(elig[elig.SEASON != SEASONS[-1]])
+    train = elig[elig.SEASON != SEASONS[-1]]
+    model = lm.train(train)
+    coefs, _ = pdm.fit(train)
     test = elig[elig.SEASON == SEASONS[-1]].copy()
     test["LEARNED_MIN"] = lm.predict(model, test)
-    return test[["D", "PLAYER", "TEAM", "LEARNED_MIN", "S_RATE"]]
+    test["RATE_MULT"] = pdm.multiplier(test, coefs)
+    return test[["D", "PLAYER", "TEAM", "LEARNED_MIN", "S_RATE", "RATE_MULT"]]
 
 
 def main():

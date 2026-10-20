@@ -471,6 +471,44 @@ included).
   lineup's invalid-then-retry path and the judge's new model context. It surfaced one more spelling miss: llm-analyst
   gave PJ Washington and Bobby Portis no team; fixed with the shared matcher.
 
+### Pace and opponent defense (2026-10-20): shipped
+
+FP per minute = season rate × (1 + a·log(expected pace / pace of his games) + b·log(opponent FP allowed / that of
+opponents he faced)). Code: `lambda/shared/pace_defense.py`.
+- **Team ratings come from our own box scores, point in time.**
+  - Possessions = FGA + 0.44·FTA − OREB + TOV, which comes to about 101 per team-game, matching the league.
+  - Each rating is the team's mean over its earlier games this season, shrunk to the league mean with 10 games'
+    weight.
+  - Expected pace = team pace + opponent pace − league pace. It correlates 0.51 with tonight's actual pace.
+- **Leak checks:** recomputing from box scores dated before each game reproduced 900 of 900 team ratings and 300
+  of 300 player contexts.
+  - Design and settings were chosen on 2024-25 (trained on 2022-24). 2025-26 was run once afterwards.
+- **Fitted weights:** pace 0.99–1.03, defense 0.95–1.17. Both fixed at 1.0 (no fitting) scores almost the same.
+- **Player FP error, all roster players not listed out (did not play = 0):**
+
+  | | 2024-25 (selection) | 2025-26 (test) |
+  |---|---|---|
+  | season rate | 6.723 | 6.719 |
+  | pace + defense | −0.018 (−0.026..−0.011), 66% of days better | −0.028 (−0.035..−0.020), 70% of days |
+  | with actual minutes instead | −0.044 | −0.055 |
+
+  - On DFF's slate players: MAE 8.04 → 8.00 (DFF 7.63); rank correlation 0.695 → 0.698 (DFF 0.725).
+- **Lineups vs DFF, 135 slates (`scripts/backtest_vs_dff.py`):** 259.9 vs 256.0 on the plain season rate,
+  **+3.9 (−0.9..+9.0)**, not significant.
+  - Gap to DFF −12.0 → −8.1; beat DFF on 33% → 43% of slates.
+  - Before Jan 14 −0.4; from Jan 14 +8.0.
+  - Picked no-shows 1.8% vs 1.1%.
+- **Variants that didn't make it** (lineup change vs the plain rate):
+  - pace only −1.6;
+  - defense only +0.2;
+  - a boosted-tree rate model +1.9: its gain came from the player's own history, and it ran a +0.15 bias;
+  - expected-margin minutes (team strength gap + home court) +1.2 on top: minutes MAE 4.908 → 4.915 in 2024-25.
+- **Shipped on Ian's call:** cheap, no AI cost, no pickle, and unlikely to hurt.
+  - Formula C keeps the plain season rate.
+  - Weights are refit nightly by supervised-learning (`models/pace_defense.json`).
+- **Early-season gap (same backtest):** the first 10 slates after the pause ran −29.6 vs DFF, the other 125 −10.6.
+  That's a small sample (about ±26), but it fits a season rate built on only 4–8 games.
+
 ### Older backlog notes
 
 ### M3. Model DNP risk explicitly
@@ -489,6 +527,7 @@ included).
   ECR repo).
 
 ### M5. Opponent and pace adjustment
+Done 2026-10-20 from box scores instead: see "Pace and opponent defense". The original note:
 The `PACE` and `DEF_RATING` that `cluster-scraper` pulls are **player-level and season-to-date**, overwritten
 on every run. They aren't opponent-team stats and have no history of past values to train on.
 - The opponent join key exists: the schedule's `OPPONENT` column.
@@ -724,6 +763,12 @@ See M7.
 ---
 
 ## Done log
+
+### 2026-10-20 (evening)
+- **Pace and opponent defense in production (Ian).** Learned FP per minute = season rate × the pace/defense
+  multiplier; the multiplier is saved with every projection and shown per player in both lineup emails. The repo
+  backtest reproduces it (259.9 vs 256.0), and the Lambda code picked the backtest's 8 on 2025-11-05, 2025-12-30
+  and 2026-03-03. See "Pace and opponent defense".
 
 ### 2026-10-20 (after opening night)
 - **Research filter (Ian):** only games with a Questionable/Doubtful rotation player, or one listed but not Out after

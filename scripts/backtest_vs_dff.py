@@ -13,8 +13,9 @@ outage doesn't affect this test. DFF's numbers are as of our scrape (about 20 mi
 
 Our pool: slate players matched to a replay row that day, not listed Out/Doubtful, with a season FP-per-minute
 rate (at least one game this season). Variants:
-  learned min x season rate     the candidate
-  Formula C min x season rate   control: how much comes from the learned minutes rather than the setup
+  learned min x season rate x pace/def   production since 2026-10-20 (lambda/shared/pace_defense.py)
+  learned min x season rate              production 2026-10-18 to 2026-10-20
+  Formula C min x season rate            control: how much comes from the learned minutes rather than the setup
 DFF names are matched to box-score names per day with lambda/shared/player_names.py. Actual FP comes from box
 scores through the same matching, so a name mismatch can't silently score a player as 0.
 
@@ -71,6 +72,7 @@ def build_slates():
     s["MATCHED"] = s.TEAM.notna()
     s["OURS_OK"] = s.LEARNED_MIN.notna() & s.S_RATE.notna() & (s.S_RATE > 0)
     s["LxS"] = np.where(s.OURS_OK, s.LEARNED_MIN * s.S_RATE, np.nan)
+    s["LxPD"] = np.where(s.OURS_OK, s.LEARNED_MIN * s.S_RATE * s.RATE_MULT, np.nan)
     s["FCxS"] = np.where(s.OURS_OK, s.FC_MIN * s.S_RATE, np.nan)
     return daily, s
 
@@ -99,16 +101,16 @@ def main():
     for label, d in (("all", both), ("DFF projected 20+", both[both.PPG_PROJECTION >= 20]),
                      ("salary $6k+", both[both.SALARY >= 6000])):
         parts = [f"{n} MAE {(d[c] - d.ACT).abs().mean():.2f} bias {(d[c] - d.ACT).mean():+.2f}"
-                 for n, c in (("DFF", "PPG_PROJECTION"), ("learned x season", "LxS"),
-                              ("Formula C x season", "FCxS"))]
+                 for n, c in (("DFF", "PPG_PROJECTION"), ("learned x pace/def", "LxPD"),
+                              ("learned x season", "LxS"), ("Formula C x season", "FCxS"))]
         print(f"  {label:18s} n={len(d):6,d} | " + " | ".join(parts))
     corr = both.groupby("D").apply(lambda d: pd.Series({c: d[c].corr(d.ACT, method="spearman")
-                                                        for c in ("PPG_PROJECTION", "LxS", "FCxS")}))
-    print(f"  per-slate rank correlation with actual: DFF {corr.PPG_PROJECTION.mean():.3f}, "
-          f"learned x season {corr.LxS.mean():.3f}, Formula C x season {corr.FCxS.mean():.3f}")
+                                                        for c in ("PPG_PROJECTION", "LxPD", "LxS", "FCxS")}))
+    print(f"  per-slate rank correlation with actual: DFF {corr.PPG_PROJECTION.mean():.3f}, learned x pace/def "
+          f"{corr.LxPD.mean():.3f}, learned x season {corr.LxS.mean():.3f}, Formula C x season {corr.FCxS.mean():.3f}")
 
-    variants = {"DFF": ("PPG_PROJECTION", "LEARNED_MIN"), "learned x season": ("LxS", "LEARNED_MIN"),
-                "Formula C x season": ("FCxS", "FC_MIN")}
+    variants = {"DFF": ("PPG_PROJECTION", "LEARNED_MIN"), "learned x pace/def": ("LxPD", "LEARNED_MIN"),
+                "learned x season": ("LxS", "LEARNED_MIN"), "Formula C x season": ("FCxS", "FC_MIN")}
     rows, picks = [], []
     for day in days:
         g = s[s.D == day]
@@ -131,8 +133,10 @@ def main():
             m, lo, hi = bs.bootstrap(W[name] - W.DFF)
             print(f"  {name:20s} {W[name].mean():6.1f}  vs DFF {m:+5.1f} ({lo:+5.1f}..{hi:+5.1f})  "
                   f"beats DFF on {(W[name] > W.DFF).mean():.0%} of slates")
-    print("\nBy month (learned x season minus DFF):")
-    print((R["learned x season"] - R.DFF).groupby(R.index.to_period("M")).agg(["size", "mean"]).round(1).to_string())
+    m, lo, hi = bs.bootstrap(R["learned x pace/def"] - R["learned x season"])
+    print(f"\nPace/def minus plain season rate: {m:+.1f} ({lo:+.1f}..{hi:+.1f}) per slate")
+    print("\nBy month (learned x pace/def minus DFF):")
+    print((R["learned x pace/def"] - R.DFF).groupby(R.index.to_period("M")).agg(["size", "mean"]).round(1).to_string())
     print("\nPicked players:")
     print(P.groupby("VARIANT").agg(picks=("PLAYER", "size"), actual=("ACT", "mean"), salary=("SALARY", "mean"),
                                    dnp=("ACT", lambda x: (x == 0).mean()),

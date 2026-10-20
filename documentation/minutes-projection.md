@@ -10,8 +10,24 @@ The minutes-projection Lambda builds three DraftKings lineups each night and ema
    4 games; ×0.75 after missing 10+ team games.
 3. **DailyFantasyFuel:** DFF's own projections.
 
-For 1 and 2, **FP = projected minutes × the player's season FP per minute.** Lineups use the production optimizer
-(`lineup_optimizer.optimize_lineup`) with DFF's salaries and positions.
+**FP = projected minutes × FP per minute.** For the learned lineups, FP per minute is the season rate × tonight's
+pace / opponent-defense multiplier (below). Formula C keeps the plain season rate, so the control is unchanged.
+Lineups use the production optimizer (`lineup_optimizer.optimize_lineup`) with DFF's salaries and positions.
+
+## Pace and opponent defense
+
+`lambda/shared/pace_defense.py`, added 2026-10-20 (`findings.md`, "Pace and opponent defense").
+- **Team ratings from the current season's box scores before tonight:**
+  - pace (possessions per 48);
+  - FP allowed per 100 possessions;
+  - each shrunk to the league mean with 10 games' weight.
+- **Multiplier** = 1 + a·log(expected pace / pace of his games so far) + b·log(opponent FP allowed / that of the
+  opponents he faced).
+  - The weights a and b come from `models/pace_defense.json`, fit nightly by supervised-learning on the same
+    training rows as the minutes model.
+  - A player with no game yet this season gets ×1.
+- **If the weights file is missing:** learned FP uses ×1 (the plain season rate), the lineups are still built and
+  emailed, and the run raises so the error alarm fires.
 
 Removed 2026-10-18: the complex injury-redistribution model and the `current` / `fp_per_min` FP models. The
 barebones FP model is kept but not served (`process_model.py`, `lineup_optimizer.predict_fantasy_points`), and the
@@ -72,9 +88,11 @@ and emails only the DFF lineup. See `findings.md`, "Reference: early-season paus
 
 - `model_comparison/learned_minutes/minutes_projections.parquet`: every roster player tonight: `DATE`, `PLAYER`
   (box-score spelling), `DFF_NAME`, `TEAM`, `PROJECTED_MIN`, `PROJECTED_FP`, `S_RATE`, `S_MIN`, `L7_MIN`, `GP`,
-  `TEAM_GAMES_MISSED`, `OUT_TONIGHT`, `LEARNED_MIN_NO_ABSENCES`, `ABSENCE_ADJ_MIN`, absence features, `ACTUAL_MIN`,
-  `ACTUAL_FP`
-- `model_comparison/learned_minutes/daily_lineups.parquet`
+  `TEAM_GAMES_MISSED`, `OUT_TONIGHT`, `LEARNED_MIN_NO_ABSENCES`, `ABSENCE_ADJ_MIN`, absence features, `OPP`,
+  `EXP_PACE`, `DEF_IDX`, `PACE_RATIO`, `DEF_RATIO`, `RATE_MULT`, `FP_RATE` (= `S_RATE` × `RATE_MULT`),
+  `ACTUAL_MIN`, `ACTUAL_FP`
+- `model_comparison/learned_minutes/daily_lineups.parquet` (with `RATE_MULT`; the AI-adjusted files carry the
+  same pace columns)
 - `model_comparison/formula_c_baseline/minutes_projections.parquet` and `daily_lineups.parquet`. The lineup file
   also holds pre-January-2026 lineups from before the FP-model split.
 - `model_comparison/daily_fantasy_fuel_baseline/daily_lineups.parquet`
