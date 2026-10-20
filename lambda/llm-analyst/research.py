@@ -1,8 +1,9 @@
 """
 Nightly research and the AI lineup.
 
-Research: one web-search call per game gathers tonight's availability and minutes news, keeping the exact
-snippets each statement rests on. The adjustments judge and the AI lineup both read it.
+Research: one web-search call per game with open injury news (slate.open_news_teams) gathers tonight's
+availability and minutes news, keeping the exact snippets each statement rests on. Games with no open news on the
+official report are skipped (Ian, 2026-10-20: cost). The adjustments judge and the AI lineup both read it.
 
 AI lineup (replaced the per-player head-to-head minutes, Ian 2026-10-11): one call per slate picks a DraftKings
 lineup from the research briefings, the slate (names, teams, positions, salaries) and the model's own knowledge.
@@ -21,7 +22,7 @@ from claude_client import LLMError, extract, research
 from config import (AI_LINEUP_EFFORT, AI_LINEUP_MODEL, RESEARCH_EFFORT, RESEARCH_MAX_SEARCHES, RESEARCH_MODEL,
                     RESEARCH_PARALLEL_GAMES, SALARY_CAP)
 from s3_io import replace_date_rows, save_json
-from slate import AI_LINEUP, tonight
+from slate import AI_LINEUP, load_box_scores, open_news_teams, tonight
 
 logger = logging.getLogger()
 
@@ -130,11 +131,14 @@ def check_lineup(picks, slate):
              'SALARY': float(by_name.loc[n, 'SALARY']), 'REASON': p['reason']} for p, n in zip(picks, names)], None
 
 
-def ai_lineup(today, slate, briefings):
+def ai_lineup(today, slate, briefings, skipped=()):
     rows = '\n'.join(f"- {s.PLAYER} | {s.TEAM} vs {s.OPPONENT if pd.notna(s.OPPONENT) else '?'} | {s.POSITION} | "
                      f"${int(s.SALARY)}" for s in slate.dropna(subset=['SALARY', 'POSITION'])
                      .sort_values('SALARY', ascending=False).itertuples())
     news = '\n\n'.join(f"=== {b['away']} at {b['home']} ===\n{b['briefing'] or '(no news found)'}" for b in briefings)
+    if skipped:
+        news += ("\n\nNot researched (no Questionable, Doubtful or returning rotation player on the official injury "
+                 "report): " + ', '.join(skipped))
     prompt = (f"Date: {today:%A %B %d, %Y}. It is now {now_et():%I:%M %p} ET.\n\n"
               f"Tonight's slate (name | team vs opponent | position | salary):\n{rows}\n\n"
               f"Research briefings:\n{news or '(none)'}")
@@ -156,6 +160,14 @@ def run(today):
     if not games:
         logger.info(f"No slate games for {today}; nothing to research")
         return {'games': 0}
+    open_news, report_found = open_news_teams(today, *load_box_scores())
+    if report_found:
+        skipped = [f"{g['away']}@{g['home']}" for g in games if not ({g['away'], g['home']} & set(open_news))]
+        games_all, games = games, [g for g in games if {g['away'], g['home']} & set(open_news)]
+        logger.info(f"Researching {len(games)} of {len(games_all)} games; open news: {open_news}; skipped {skipped}")
+    else:
+        skipped = []
+        logger.warning(f"No injury report for {today} yet: researching every game")
 
     def one(game):
         # A failed game must not discard the others; failures are raised after everything is saved
@@ -168,12 +180,13 @@ def run(today):
     with ThreadPoolExecutor(max_workers=RESEARCH_PARALLEL_GAMES) as pool:
         results = list(pool.map(one, games))
     briefings = [b for b, _ in results if b is not None]
-    save_json({'date': today, 'games': briefings}, f'llm/research/{today}.json')
+    save_json({'date': today, 'games': briefings, 'skipped_no_open_news': skipped,
+               'open_news': open_news if report_found else None}, f'llm/research/{today}.json')
     errors = [err for _, err in results if err]
 
     lineup = pd.DataFrame()
     try:
-        lineup = ai_lineup(today, slate, briefings)
+        lineup = ai_lineup(today, slate, briefings, skipped)
         replace_date_rows(lineup, AI_LINEUP, today)
         logger.info(f"AI lineup for {today}: {lineup['PLAYER'].tolist()} (${lineup['SALARY'].sum():,.0f})")
     except Exception as e:
@@ -182,5 +195,5 @@ def run(today):
 
     if errors:
         raise LLMError(f"{len(errors)} failures (everything else saved): {errors}")
-    return {'games': len(games), 'citations': sum(len(b['citations']) for b in briefings),
+    return {'games': len(games), 'skipped': len(skipped), 'citations': sum(len(b['citations']) for b in briefings),
             'ai_lineup_salary': float(lineup['SALARY'].sum()) if not lineup.empty else None}

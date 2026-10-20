@@ -24,7 +24,7 @@ logger = logging.getLogger()
 
 # learned_minutes is our #1 since 2026-10-18; formula_c_baseline is the control. FP = minutes x season FP/min.
 MINUTES_MODELS = ['learned_minutes', 'formula_c_baseline']
-LINEUP_MODELS = MINUTES_MODELS + ['daily_fantasy_fuel_baseline', 'ai_lineup']
+LINEUP_MODELS = MINUTES_MODELS + ['learned_ai_adjusted', 'daily_fantasy_fuel_baseline', 'ai_lineup']
 UNSAFE_FILTER_TOKENS = ('__', '@', 'import', 'lambda', 'eval', 'exec', 'open(', '`', 'getattr', 'globals')
 
 SYSTEM = """You are the weekly post-mortem analyst for an NBA DraftKings projection pipeline. Find systematic \

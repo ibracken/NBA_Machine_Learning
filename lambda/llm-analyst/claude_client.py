@@ -9,12 +9,14 @@ import os
 
 import anthropic
 
-from config import FALLBACK_BETA, PAUSE_TURN_LIMIT, PRICING
+from config import DAILY_BUDGET_USD, FALLBACK_BETA, PAUSE_TURN_LIMIT, PRICING, RUN_BUDGET_USD, WEB_SEARCH_USD
 
 logger = logging.getLogger()
 
 # One record per API call made during this invocation; lambda_function persists it
 USAGE = []
+# Recorded spend earlier today, before this invocation (set by lambda_function)
+SPENT_EARLIER_TODAY = 0.0
 
 _client = None
 
@@ -48,13 +50,15 @@ def _record_usage(label, requested_model, response):
         'cache_read_input_tokens': getattr(usage, 'cache_read_input_tokens', 0) or 0,
         'web_search_requests': (getattr(server_tools, 'web_search_requests', 0) or 0) if server_tools else 0,
     }
-    # Web search requests are billed separately and are not included in cost_usd
+    # cost_usd = tokens + web searches ($10 per 1,000), so the budget guards see everything billed
     rates = PRICING.get(response.model) or PRICING.get(requested_model)
     if rates:
         rate_in, rate_out, rate_write, rate_read = rates
+        record['search_cost_usd'] = round(record['web_search_requests'] * WEB_SEARCH_USD, 5)
         record['cost_usd'] = round((record['input_tokens'] * rate_in + record['output_tokens'] * rate_out
                                     + record['cache_creation_input_tokens'] * rate_write
-                                    + record['cache_read_input_tokens'] * rate_read) / 1e6, 5)
+                                    + record['cache_read_input_tokens'] * rate_read) / 1e6
+                                   + record['search_cost_usd'], 5)
     else:
         record['cost_usd'] = None
         logger.warning(f"{label}: no pricing for {response.model}; cost not recorded")
@@ -75,6 +79,12 @@ def _check_stop(label, response):
 
 def call(label, model, effort, system, messages, max_tokens, tools=None, output_schema=None, cache=False):
     """One streamed request. Returns the final message; stop_reason is checked by the caller."""
+    spent = sum(r['cost_usd'] or 0 for r in USAGE)
+    if spent >= RUN_BUDGET_USD:
+        raise LLMError(f"{label}: per-run budget reached (${spent:.2f} >= ${RUN_BUDGET_USD:.2f}); call not made")
+    if SPENT_EARLIER_TODAY + spent >= DAILY_BUDGET_USD:
+        raise LLMError(f"{label}: daily budget reached (${SPENT_EARLIER_TODAY + spent:.2f} >= "
+                       f"${DAILY_BUDGET_USD:.2f}); call not made")
     output_config = {'effort': effort}
     if output_schema is not None:
         output_config['format'] = {'type': 'json_schema', 'schema': output_schema}
@@ -92,8 +102,17 @@ def call(label, model, effort, system, messages, max_tokens, tools=None, output_
     if cache:
         kwargs['cache_control'] = {'type': 'ephemeral'}
 
-    with client().beta.messages.stream(**kwargs) as stream:
-        response = stream.get_final_message()
+    try:
+        with client().beta.messages.stream(**kwargs) as stream:
+            response = stream.get_final_message()
+    except anthropic.APIStatusError as e:
+        # Spend cap (429 enforced_spend_limit_reached), a Console spend limit (400 "specified API usage limits") or
+        # an empty credit balance: say so plainly, so the alarm email says what to fix
+        text = str(e).lower()
+        if any(k in text for k in ('spend_limit', 'usage limits', 'credit balance', 'billing')):
+            raise LLMError(f"{label}: Anthropic API billing stop - add credits or raise the spend limit in the "
+                           f"Console (Billing page). API said: {e}") from e
+        raise
     record = _record_usage(label, model, response)
     logger.info(f"{label}: {record['served_model']} stop={response.stop_reason} in={record['input_tokens']} "
                 f"out={record['output_tokens']} searches={record['web_search_requests']} ${record['cost_usd']}")

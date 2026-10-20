@@ -126,9 +126,23 @@ Evidence for every number here is in [`findings.md`](findings.md).
 
 ## AI pieces (Opus 5.5, all in the `llm-analyst` Lambda)
 
-None of these changes the emailed lineup today. Each runs in shadow mode or as a report until it earns its place.
-Cost: one preflight review measured $0.11; the real nightly total is unknown until Oct 20. A $25/day guard
-stops all calls.
+None of these changes the main lineup email. The AI-adjusted lineup has its own email; the rest are reports or
+shadow lineups until they earn their place. Ian's priority (2026-10-20) is evaluation, not short-term profit: run
+them through mid-December, then keep or drop each by its rule.
+
+**Cost and caps (2026-10-20).**
+- **Estimate:** $3–4 on a typical night (plausibly $2–6), about $100–130 in a full month. Measured so far: research
+  $0.45 per game, the AI lineup $0.07, the preflight review $0.11, the post-mortem $0.58. The judge isn't measured
+  yet. Replace the estimate with real usage after the first week of full runs (about Nov 6; `scripts/evaluate_llm.py`).
+- **Caps,** checked before every call (`llm-analyst/config.py`):
+  - $6.50 per run;
+  - $10 per day;
+  - the $220 monthly spend limit Ian set in the Anthropic Console (Billing page), enforced by the API.
+
+  A tripped cap blocks AI calls only; the lineup emails never call the API, and preflight still emails its rules.
+  Recorded cost includes web searches ($10 per 1,000).
+- **A billing stop** (no credits, or a spend limit) raises a clearly worded error, so the alarm email says what to
+  fix.
 
 **Research (nightly, before the judge and the AI lineup).**
 - **Goal:** collect tonight's availability and playing-time news per game, with the exact source snippets.
@@ -138,13 +152,16 @@ stops all calls.
     citations, $0.40 against $0.56 before.
   - **Cost:** about $0.45 per game ($0.40 tokens plus 5 searches at $10 per 1,000), so about $4.50 on a 10-game
     night for research alone.
-  - **Option to cut it (Ian's call):** research only games with open news. Last season 44% of games had a rotation
-    player Questionable or Doubtful, and 68% counting rotation players returning from 3+ missed games.
+  - **Research only games with open news (Ian, 2026-10-20).** A game is researched if either team has a rotation
+    player (15+ min a game) listed Questionable or Doubtful, or one listed but not Out after missing 3+ team games.
+    - On 2025-26 nights that researched 56% of games (150 of 267 sampled).
+    - Without today's report, every game is researched.
+    - Skipped games are listed in `llm/research/{date}.json` and in the AI lineup's prompt.
 - **Status:** built. Prompt fixes done 2026-10-18:
   - state the current time, so the AI can tell a report from this morning from one 20 minutes old;
   - ask about off-slate rotation players too, since the learned model uses every absent teammate.
 
-**Adjustments judge (shadow).**
+**Adjustments judge + the AI-adjusted lineup (built 2026-10-20; emailed, Ian 2026-10-20).**
 - **Goal:** move a player's minutes only for news the model can't see: a stated minutes restriction, planned
   rest, a lineup change, or a Questionable player confirmed in or out.
 - **Change (Ian, 2026-10-11; built 2026-10-18):** the judge must know what the model already did, so it doesn't stack a second
@@ -156,9 +173,23 @@ stops all calls.
     tonight's absences** (projection minus the same model with no absences);
   - the instruction: don't adjust for anything already in that list.
 
-  The verbatim-quote check and ±25% cap stay. Status contradictions are still flagged rather than applied.
-- **Kill rule:** after 30+ slates, adjusted minutes must have lower error than unadjusted (bootstrap CI below 0),
-  measured separately on Questionable players. Otherwise switch it off.
+  The verbatim-quote check stays. ±25% is a cap: the judge picks any size up to it.
+- **AI-adjusted lineup** (minutes-projection `adjusted_lineup`, +19, after the judge):
+  - The judge's quote-verified status calls ("reported out" / "reported available") change the out list, and the
+    learned model is re-run, so teammates' minutes move the way the model learned. In the test, Amen Thompson
+    marked out sent 31 minutes to his Houston teammates.
+  - Its minutes tweaks are applied on top. Those minutes are not redistributed to teammates.
+  - The lineup is saved to `model_comparison/learned_ai_adjusted/` and emailed at about T−11, with each change, its
+    quote and source, and the players who differ from the learned lineup. A quiet night gets a one-line "no changes"
+    email.
+  - It runs after the main email, so it can't be the lineup Ian enters yet. If it wins, move research and the
+    judge earlier.
+- **Kill rule:** after 30+ slates:
+  - realized FP of the AI-adjusted lineup vs the learned lineup, on the nights they differ;
+  - plus the per-player check: adjusted minutes must have lower error than unadjusted (bootstrap CI below 0),
+    measured separately on Questionable players.
+
+  Drop the judge if neither holds.
 
 **AI lineup (shadow; replaces the per-player AI projections, Ian 2026-10-11; built 2026-10-18).**
 - **Goal:** can an AI pick a better lineup from tonight's news and its own knowledge than our pipeline does?
@@ -200,8 +231,9 @@ stops all calls.
   `$env:PATH = "$PWD\.venv\Scripts;$env:PATH"`). Environment variables (`PROXY_URL`, `CLAUDE_API_KEY`) are set by
   hand.
 - **Nightly schedule** (minutes after the pipeline starts at T−30 before the first tip):
-  - +0 cluster-scraper, +2 nba-clustering (both being removed), +4 box-score-scraper, +6 supervised-learning;
+  - +4 box-score-scraper, +6 supervised-learning (cluster-scraper and nba-clustering are switched off);
   - +9 daily-predictions (DFF), +11 injury-scraper, +12 research;
   - +13 minutes-projection (the lineup email, about T−17);
-  - +16 adjustments judge, +18 preflight email (about T−12), +22 AI lineup;
+  - research also builds the AI lineup;
+  - +16 adjustments judge, +18 preflight email (about T−12), +19 AI-adjusted lineup and its email (about T−11);
   - Mondays: post-mortem.

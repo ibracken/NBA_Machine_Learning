@@ -14,7 +14,7 @@ from s3_utils import load_from_s3, save_to_s3
 logger = logging.getLogger()
 
 # Models still written nightly. Older folders (complex_position_overlap, fp_* lineups) are complete history.
-PROJECTION_MODELS = ['learned_minutes', 'formula_c_baseline']
+PROJECTION_MODELS = ['learned_minutes', 'formula_c_baseline', 'learned_ai_adjusted']
 LINEUP_MODELS = PROJECTION_MODELS + ['daily_fantasy_fuel_baseline', 'ai_lineup']   # ai_lineup: llm-analyst
 
 

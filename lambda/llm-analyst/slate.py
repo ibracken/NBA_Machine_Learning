@@ -7,8 +7,8 @@ import time
 
 import pandas as pd
 
-from config import (NBA_TEAM_COUNT, PROJECTION_START_MIN_TEAM_GAMES, UPSTREAM_POLL_SECONDS,
-                    UPSTREAM_WAIT_SECONDS)
+from config import (NBA_TEAM_COUNT, OPEN_NEWS_ROTATION_MIN, PROJECTION_START_MIN_TEAM_GAMES, RETURN_MIN_MISSED,
+                    UPSTREAM_POLL_SECONDS, UPSTREAM_WAIT_SECONDS)
 from s3_io import load_parquet
 
 try:
@@ -162,6 +162,56 @@ def slate_projections(rows):
     if rows.empty or 'DFF_NAME' not in rows.columns:
         return rows
     return rows.assign(BOX_NAME=rows['PLAYER'], PLAYER=rows['DFF_NAME'].fillna(rows['PLAYER']))
+
+
+def open_news_teams(today, current, previous):
+    """
+    Teams with open injury news tonight, from the official report (data/injuries/report_statuses.parquet):
+    a rotation player listed Questionable or Doubtful, or a rotation player returning from RETURN_MIN_MISSED+
+    missed team games who is listed Questionable / Probable / Available. Returns ({team: [reasons]}, report_found).
+    """
+    report, waited = pd.DataFrame(), 0
+    while True:
+        report = load_parquet('data/injuries/report_statuses.parquet')
+        fresh = (not report.empty and 'REPORT_DATE' in report.columns
+                 and pd.to_datetime(report['REPORT_DATE']).dt.date.max() == today)
+        if fresh or waited >= UPSTREAM_WAIT_SECONDS:
+            break
+        time.sleep(UPSTREAM_POLL_SECONDS)
+        waited += UPSTREAM_POLL_SECONDS
+    if not fresh:
+        return {}, False
+
+    def season_avgs(frame):
+        if frame.empty:
+            return pd.DataFrame(columns=['avg', 'gp'])
+        return frame.groupby('PLAYER')['MIN'].agg(avg='mean', gp='size')
+    cur, prev = season_avgs(current), season_avgs(previous)
+    avg = prev['avg'].to_dict()
+    avg.update(cur.loc[cur['gp'] >= 4, 'avg'].to_dict())   # this season once he has 4 games
+    rotation = {p for p, a in avg.items() if a >= OPEN_NEWS_ROTATION_MIN}
+
+    names, _ = match_names(report['PLAYER'], list(avg), set(avg))
+    report = report.assign(BOX=report['PLAYER'].map(names))
+    reasons = {}
+    for r in report[report['BOX'].isin(rotation) & report['STATUS'].isin(['QUESTIONABLE', 'DOUBTFUL'])].itertuples():
+        reasons.setdefault(r.TEAM, []).append(f"{r.PLAYER} {r.STATUS.lower()}")
+
+    # Returning: his team has played RETURN_MIN_MISSED+ games since his last one this season, and he isn't Out.
+    # This season only: current.parquet still holds last season until the first new box score lands.
+    current = current[pd.to_datetime(current['GAME_DATE']).apply(season_of) == season_of(today)] if not current.empty else current
+    if not current.empty:
+        # Listed but not Out (Questionable / Probable / Available): how teams flag a player coming back. Requiring
+        # this keeps traded and released players, whose old team keeps "missing" them, from counting.
+        listed_back = set(report.loc[report['STATUS'].isin(['QUESTIONABLE', 'PROBABLE', 'AVAILABLE']), 'BOX'].dropna())
+        games = current.drop_duplicates(['TEAM_ABBREVIATION', 'GAME_ID'])[['TEAM_ABBREVIATION', 'GAME_DATE']]
+        last = current.sort_values('GAME_DATE').groupby('PLAYER').tail(1)
+        for r in last[last['PLAYER'].isin(rotation & listed_back)].itertuples():
+            team_games = games[games['TEAM_ABBREVIATION'] == r.TEAM_ABBREVIATION]
+            missed = int((team_games['GAME_DATE'] > r.GAME_DATE).sum())
+            if missed >= RETURN_MIN_MISSED:
+                reasons.setdefault(r.TEAM_ABBREVIATION, []).append(f"{r.PLAYER} back after {missed} missed games?")
+    return reasons, True
 
 
 def wait_for_todays_rows(key, today):

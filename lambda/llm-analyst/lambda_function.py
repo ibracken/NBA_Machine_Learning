@@ -21,7 +21,6 @@ import claude_client
 import postmortem
 import preflight
 import research
-from config import DAILY_BUDGET_USD
 from s3_io import load_json, save_json
 
 logger = logging.getLogger()
@@ -53,9 +52,9 @@ def lambda_handler(event, context):
 
     spent = load_json(usage_key(today)) or {'runs': []}
     spent_today = sum(r['cost_usd'] for r in spent['runs'])
-    if spent_today >= DAILY_BUDGET_USD:
-        raise RuntimeError(f"Daily LLM budget reached: ${spent_today:.2f} >= ${DAILY_BUDGET_USD:.2f}; "
-                           f"{action} not run")
+    # The per-run and daily caps are enforced on every call (claude_client.call), not here: an action still runs
+    # its non-AI parts (preflight's rules email) when the caps block its calls
+    claude_client.SPENT_EARLIER_TODAY = spent_today
 
     claude_client.USAGE.clear()
     logger.info(f"llm-analyst {action} for {today} (spent today so far ${spent_today:.2f})")
@@ -72,7 +71,7 @@ def lambda_handler(event, context):
                                   'web_search_requests': sum(c['web_search_requests'] for c in calls),
                                   'calls': calls})
             save_json(spent, usage_key(today))
-        logger.info(f"llm-analyst {action}: {len(calls)} API calls, ${cost:.3f} (web searches billed separately)")
+        logger.info(f"llm-analyst {action}: {len(calls)} API calls, ${cost:.3f} including web searches")
 
     return {'statusCode': 200, 'body': json.dumps({'action': action, 'date': str(today), **result}, default=str)}
 

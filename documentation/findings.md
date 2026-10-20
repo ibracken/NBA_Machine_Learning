@@ -725,6 +725,16 @@ See M7.
 
 ## Done log
 
+### 2026-10-20 (after opening night)
+- **Research filter (Ian):** only games with a Questionable/Doubtful rotation player, or one listed but not Out after
+  3+ missed games. 56% of 2025-26 games. The first version counted end-of-last-season absences (Beal "back after
+  73") and traded players, and flagged 86%; both fixed before shipping.
+- **Spending caps (Ian):** $6.50 per run and $10 per day, checked before every call and including web searches;
+  monthly backstop at the $220 Console limit. A tripped cap no longer stops preflight's rules email.
+- **AI-adjusted lineup (Ian):** the learned model re-run with the judge's verified status calls, plus its minutes
+  tweaks, emailed at about T−11. Tested on 2026-01-15 with a scripted judge: Amen Thompson out → +31.2 min to
+  Houston teammates; a −20% tweak gave 34.3 → 27.4; other teams unchanged; the email lists each change and quote.
+
 ### 2026-10-20 (opening night)
 - `scripts/opening_night_check.py`: 13 of 13 checks passed. The season opened at 3 PM ET, so the pipeline ran around
   2:30. The injury scraper found the 2026-27 report from the season page.

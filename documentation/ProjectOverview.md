@@ -17,11 +17,12 @@ The `lambda/game-scheduler` Lambda scrapes the DailyFantasyFuel main slate start
 2. [+6] `supervised-learning` -> `models/learned_minutes.pkl`, `models/learned_minutes_feature_names.json`, `models/learned_minutes_summary.json`
 3. [+9] `daily-predictions` -> `data/daily_predictions/current.parquet` (DFF projections only; no model FP here)
 4. [+11] `injury-scraper` -> `data/injuries/current.parquet` (Out + Doubtful from the NBA PDF), `report_statuses.parquet` (every status), and appends the night to `history.parquet`
-5. [+12] `llm-analyst` `research` -> `llm/research/{date}.json` and the AI lineup in `model_comparison/ai_lineup/`
+5. [+12] `llm-analyst` `research` -> `llm/research/{date}.json` (games with open injury news only) and the AI lineup in `model_comparison/ai_lineup/`
 6. [+13] `minutes-projection` -> learned-minutes, Formula C and DFF lineups in `model_comparison/*`, and the lineup email
-7. [+16] `llm-analyst` `adjustments` -> `llm/adjustments/` (shadow mode)
+7. [+16] `llm-analyst` `adjustments` -> `llm/adjustments/` (the judge)
 8. [+18] `llm-analyst` `preflight` -> `llm/preflight/{date}.json` and the preflight email
-9. Mondays only, [+0] `llm-analyst` `postmortem` -> `llm/postmortem/{date}.json` and email
+9. [+19] `minutes-projection` `adjusted_lineup` -> the learned model re-run with the judge's changes, saved to `model_comparison/learned_ai_adjusted/` and emailed
+10. Mondays only, [+0] `llm-analyst` `postmortem` -> `llm/postmortem/{date}.json` and email
 
 `cluster-scraper` and `nba-clustering` (formerly +0 and +2) are switched off but still deployed; they only fed the barebones FP model, which is also off.
 
@@ -35,7 +36,7 @@ Early-season pause: until all 30 teams have played 4 games, minutes-projection b
 - `daily-predictions`: Scrapes DailyFantasyFuel projections and writes `data/daily_predictions/current.parquet` (PPG projection, salary, position, starter status).
 - `injury-scraper`: Scrapes the official NBA injury report PDF and writes `data/injuries/current.parquet` with `OUT` players (Out and Doubtful) and estimated injury dates, `data/injuries/report_statuses.parquet` with every listed status, and appends the night's statuses to `data/injuries/history.parquet` (the minutes model's training history; seeded with archived 2022-26 pre-tip reports).
 - `minutes-projection`: Projects minutes with the learned model (our #1) and Formula C (control), turns them into FP with each player's season FP per minute, builds those two lineups plus DFF's, writes them to `model_comparison/*`, and emails them. See `minutes-projection.md`.
-- `llm-analyst`: Claude (Opus 5.5) components: nightly per-game web research, the AI lineup (one AI-picked lineup per slate, scored but never emailed), the adjustments judge (shadow mode; it sees what the learned model already adjusted), the preflight check, and the weekly post-mortem. Reads the API key from the `CLAUDE_API_KEY` environment variable; spend is capped at $25/day and logged to `llm/usage/{date}.json`.
+- `llm-analyst`: Claude (Opus 5.5) components: nightly per-game web research, the AI lineup (one AI-picked lineup per slate, scored but never emailed), the adjustments judge (shadow mode; it sees what the learned model already adjusted), the preflight check, and the weekly post-mortem. Reads the API key from the `CLAUDE_API_KEY` environment variable; spend is capped per run ($6.50) and per day ($10) and logged, web searches included, to `llm/usage/{date}.json`; the monthly backstop is the Anthropic Console spend limit.
 - `lineup-optimizer` (standalone): Serves the lineup the email uses (learned model, or DFF's while paused) to the frontend through API Gateway. It is not part of the game-scheduler pipeline.
 
 ## S3 schemas and inspection

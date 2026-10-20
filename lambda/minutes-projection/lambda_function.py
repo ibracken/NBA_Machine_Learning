@@ -3,6 +3,8 @@ NBA Minutes Projection Lambda. Nightly lineups from three projections:
 1. Learned minutes (our #1): lambda/shared/learned_minutes.py, trained nightly by supervised-learning
 2. Formula C (control)
 3. DailyFantasyFuel: DFF's own projections
+plus, after the AI adjustments judge (action adjusted_lineup, its own email about T-11): the learned model re-run
+with the judge's verified status changes and its minutes adjustments applied, to test whether the judge helps.
 For 1 and 2, FP = projected minutes x the player's season FP per minute. Lineups use the production optimizer with
 DFF's salaries and positions.
 
@@ -10,8 +12,10 @@ The complex model was removed 2026-10-18. The barebones FP model is kept but not
 lineup_optimizer.predict_fantasy_points).
 """
 
+import json
 import logging
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -26,6 +30,7 @@ except ImportError:   # local run: the shared modules live in lambda/shared
 from actuals_updater import update_actual_minutes
 from lineup_optimizer import optimize_lineup
 from player_names import match_names
+from config import BUCKET_NAME, SNS_TOPIC_ARN, s3_client, sns_client
 from s3_utils import load_from_s3, load_model_from_s3, save_to_s3, send_multi_model_notification
 from serving_features import projection_gate
 
@@ -40,6 +45,9 @@ LEARNED_PATH = 'model_comparison/learned_minutes'
 FORMULA_C_PATH = 'model_comparison/formula_c_baseline'
 DFF_PATH = 'model_comparison/daily_fantasy_fuel_baseline'
 LEARNED_MODEL_KEY = 'models/learned_minutes.pkl'
+ADJUSTED_PATH = 'model_comparison/learned_ai_adjusted'
+ADJUSTMENTS_LOG = 'llm/adjustments/log.parquet'
+JUDGE_WAIT_SECONDS, JUDGE_POLL_SECONDS = 300, 20
 ABSENCE_FEATURES = ['OUT_MIN_FRESH', 'OUT_MIN_ONGOING', 'WOWY_MIN', 'WOWY_N']
 
 
@@ -75,8 +83,12 @@ def tonights_injury_report(today):
     return pd.DataFrame({'D': pd.Timestamp(today), 'PLAYER': injuries['PLAYER'], 'STATUS': injuries['STATUS']})
 
 
-def tonight_rows(box_scores, today):
-    """Roster rows for tonight's games with the learned model's features (lambda/shared/learned_minutes.py)."""
+def tonight_rows(box_scores, today, status_overrides=None):
+    """
+    Roster rows for tonight's games with the learned model's features (lambda/shared/learned_minutes.py).
+    status_overrides: {player name: True (out) / False (playing)} applied over the injury report before the
+    absence features are computed, so teammates' minutes follow.
+    """
     schedule = load_from_s3('data/schedule/current.parquet')
     if schedule.empty:
         raise RuntimeError("data/schedule/current.parquet missing: can't tell which teams play tonight")
@@ -85,7 +97,18 @@ def tonight_rows(box_scores, today):
         logger.warning(f"No scheduled games for {today}")
         return pd.DataFrame()
     tonight = games.assign(SEASON=str(box_scores['SEASON'].max()))[['GAME_DATE', 'GAME_ID', 'TEAM', 'SEASON']]
-    rows, unmatched = lm.build(box_scores, tonights_injury_report(today), tonight)
+    known = set(box_scores['PLAYER'])
+    rows = lm.player_games(box_scores, tonight)
+    rows, unmatched = lm.attach_listed_out(rows, tonights_injury_report(today), known)
+    if status_overrides:
+        night = rows['D'] == pd.Timestamp(today)
+        mapping, missing = match_names(list(status_overrides), rows.loc[night, 'PLAYER'], known)
+        for name, out in status_overrides.items():
+            if mapping.get(name):
+                rows.loc[night & (rows['PLAYER'] == mapping[name]), 'LISTED_OUT'] = out
+        if missing:
+            logger.warning(f"Status overrides with no roster row tonight: {missing}")
+    rows = lm.absence_features(rows)
     rows = rows[rows['D'] == pd.Timestamp(today)].copy()
     if unmatched:
         logger.info(f"Injury report names not on tonight's rosters (long-term or two-way): "
@@ -193,6 +216,102 @@ def run_paused(box_scores, today, reason):
     return {'statusCode': 200, 'body': f'Projections paused ({reason}); DFF lineup {len(lineup_dff)} players'}
 
 
+def load_json(key):
+    try:
+        return json.loads(s3_client.get_object(Bucket=BUCKET_NAME, Key=key)['Body'].read())
+    except s3_client.exceptions.NoSuchKey:
+        return None
+
+
+def build_adjusted_lineup(box_scores, today):
+    """
+    Learned model + the AI adjustments judge, for comparison with the learned lineup (never emailed):
+    1. statuses the judge verified with a quote ("reported out" / "reported available") change the out list, and
+       the model is re-run so it redistributes the minutes itself;
+    2. the judge's valid +-25% minutes adjustments are applied on top.
+    """
+    marker, waited = f'llm/adjustments/conflicts/{today}.json', 0
+    conflicts = load_json(marker)
+    while conflicts is None and waited < JUDGE_WAIT_SECONDS:
+        time.sleep(JUDGE_POLL_SECONDS)
+        waited += JUDGE_POLL_SECONDS
+        conflicts = load_json(marker)
+    if conflicts is None:
+        logger.warning(f"Adjustments judge didn't finish for {today}; no adjusted lineup")
+        return {'statusCode': 200, 'body': 'no judge output'}
+    verified = [c for c in conflicts.get('status_conflicts', [])
+                if c.get('quote_verified') and c.get('reported_status') in ('out', 'available')]
+    overrides = {c['player']: c['reported_status'] == 'out' for c in verified}
+
+    log = load_from_s3(ADJUSTMENTS_LOG)
+    pct = {}
+    if not log.empty:
+        log = log[(pd.to_datetime(log['DATE']).dt.date == today) & log['VALID'].astype(bool)]
+        pct = log.groupby('PLAYER')['PCT_APPLIED'].mean().to_dict()
+    else:
+        log = pd.DataFrame(columns=['PLAYER', 'PCT_APPLIED', 'PRE_MIN', 'POST_MIN', 'QUOTE', 'SOURCE_URL'])
+
+    model = load_model_from_s3(LEARNED_MODEL_KEY)
+    if model is None:
+        raise RuntimeError(f"could not load {LEARNED_MODEL_KEY}")
+    known = set(box_scores['PLAYER'])
+    rows = add_learned_minutes(tonight_rows(box_scores, today, overrides), model)
+    mapping, _ = match_names(list(pct), rows['PLAYER'], known)
+    rows['AI_PCT'] = rows['PLAYER'].map({mapping[n]: v for n, v in pct.items() if mapping.get(n)}).fillna(0.0)
+    rows['LEARNED_MIN'] = rows['LEARNED_MIN'] * (1 + rows['AI_PCT'])
+    rows['AI_STATUS_CHANGE'] = rows['PLAYER'].map(
+        {m: ('out' if overrides[n] else 'available')
+         for n, m in match_names(list(overrides), rows['PLAYER'], known)[0].items() if m})
+
+    daily_preds = load_daily_preds()
+    pool = slate_pool(rows, daily_preds, today, 'LEARNED_MIN', known)
+    save_projections(rows, ADJUSTED_PATH, 'LEARNED_MIN', today, extra_cols=['AI_PCT', 'AI_STATUS_CHANGE'])
+    lineup = build_lineup("Learned + AI adjustments", ADJUSTED_PATH, pool, daily_preds, today)
+    send_adjusted_email(today, lineup, verified, log)
+    body = (f"Adjusted lineup for {today}: {len(pct)} minutes adjustments, {len(overrides)} status changes, "
+            f"{len(lineup)} players")
+    logger.info(body)
+    return {'statusCode': 200, 'body': body}
+
+
+def send_adjusted_email(today, lineup, status_changes, adjustments):
+    """The AI-adjusted lineup, what the judge changed and why, and which players differ from the learned lineup."""
+    base = load_from_s3(f'{LEARNED_PATH}/daily_lineups.parquet')
+    base_players = set(base.loc[pd.to_datetime(base['DATE']).dt.date == today, 'PLAYER']) if not base.empty else set()
+    changes = len(status_changes) + len(adjustments)
+    if not changes:
+        subject = f"NBA AI-adjusted lineup ({today}): no changes - same as the learned lineup"
+        lines = ["The judge found no news the model doesn't already account for. The AI-adjusted lineup is the "
+                 "learned lineup."]
+    else:
+        different = set(lineup['PLAYER']) - base_players if not lineup.empty else set()
+        subject = (f"NBA AI-adjusted lineup ({today}): {changes} judge changes, "
+                   f"{len(different)} players differ from the learned lineup")
+        lines = ["What the judge changed (each backed by a quote checked against its source):", ""]
+        for c in status_changes:
+            lines.append(f"- {c['player']}: reported {c['reported_status'].upper()} - \"{c.get('quote', '')}\" "
+                         f"({c.get('source_url', '')})")
+            lines.append("  The model was re-run with this status, so his teammates' minutes moved too.")
+        for a in adjustments.to_dict('records'):
+            lines.append(f"- {a['PLAYER']}: minutes {a['PCT_APPLIED']:+.0%} ({a.get('PRE_MIN', 0):.1f} -> "
+                         f"{a.get('POST_MIN', 0):.1f}) - \"{a.get('QUOTE', '')}\" ({a.get('SOURCE_URL', '')})")
+        lines.append("")
+        if lineup.empty:
+            lines.append("No lineup could be built.")
+        else:
+            lines += [f"Salary ${lineup['SALARY'].sum():,.0f} | Proj FP {lineup['PROJECTED_FP'].sum():.1f}",
+                      "(* = not in the learned lineup)", "-" * 50]
+            order = {'PG': 0, 'SG': 1, 'SF': 2, 'PF': 3, 'C': 4, 'G': 5, 'F': 6, 'UTIL': 7}
+            for r in lineup.assign(o=lineup['SLOT'].map(order)).sort_values('o').itertuples():
+                mark = '*' if r.PLAYER not in base_players else ' '
+                lines.append(f"{mark}{r.SLOT:4} | {r.PLAYER:<20} | ${r.SALARY:<5,.0f} | {r.PROJECTED_FP:5.1f} FP | "
+                             f"{r.PROJECTED_MIN:4.1f} Min")
+    try:
+        sns_client.publish(TopicArn=SNS_TOPIC_ARN, Subject=subject[:100], Message='\n'.join(lines))
+    except Exception as e:
+        logger.error(f"AI-adjusted lineup email failed: {e}")
+
+
 def check_model(box_scores):
     """
     Release check (AGENTS.md): load the published model in this environment and predict the last graded game day
@@ -258,7 +377,8 @@ def run_projections(box_scores, today):
 def lambda_handler(event, context):
     """
     Event parameters:
-        action: 'project' (default), 'update_actuals' or 'check_model' (load + predict, no side effects)
+        action: 'project' (default), 'update_actuals', 'adjusted_lineup' (after the AI judge) or
+                'check_model' (load + predict, no side effects)
         date: optional date override (YYYY-MM-DD)
     """
     event = event or {}
@@ -275,6 +395,10 @@ def lambda_handler(event, context):
     if box_scores.empty:
         raise RuntimeError("No box scores in data/box_scores/current.parquet")
     paused, reason = projection_gate(box_scores, today)
+    if action == 'adjusted_lineup':
+        if paused:
+            return {'statusCode': 200, 'body': f'Projections paused ({reason})'}
+        return build_adjusted_lineup(box_scores, today)
     update_actual_minutes(box_scores.copy())
     if paused:
         return run_paused(box_scores, today, reason)

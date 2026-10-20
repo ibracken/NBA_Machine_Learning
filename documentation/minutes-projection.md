@@ -50,6 +50,9 @@ and emails only the DFF lineup. See `findings.md`, "Reference: early-season paus
 ## Actions
 
 - `project` (default): update actuals, then build and email the three lineups.
+- `adjusted_lineup` (+19, after the AI judge): waits for the judge. Its quote-verified status calls change the out
+  list and the model is re-run; its minutes tweaks (at most ±25%) are applied on top. Builds the AI-adjusted
+  lineup (`model_comparison/learned_ai_adjusted/`) and emails it with what changed and why. Skipped while paused.
 - `update_actuals`: fill ACTUAL_MIN / ACTUAL_FP from the box scores (names matched per date with
   `lambda/shared/player_names.py`; a projected player with no box-score row on a graded date gets 0).
 - `check_model`: load the published model and predict the last graded game day. No writes, no email. Use it after

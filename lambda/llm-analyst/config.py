@@ -19,6 +19,12 @@ POSTMORTEM_MODEL, POSTMORTEM_EFFORT = OPUS, 'high'
 # L2 judge(s), model -> effort. One judge; a second model can be added here for an A/B on identical evidence
 ADJUSTMENT_JUDGES = {OPUS: 'high'}
 
+# Research only games with open injury news (Ian, 2026-10-20): a rotation player (season avg >= this, or last
+# season's while he has < 4 games) listed Questionable/Doubtful, or listed but not Out after missing >= RETURN_MIN_MISSED
+# team games. Without today's injury report every game is researched.
+OPEN_NEWS_ROTATION_MIN = 15
+RETURN_MIN_MISSED = 3
+
 # Web searches allowed per game in the nightly research call
 RESEARCH_MAX_SEARCHES = 5
 RESEARCH_PARALLEL_GAMES = 6
@@ -49,8 +55,18 @@ NBA_TEAM_COUNT = 30
 UPSTREAM_WAIT_SECONDS = 300
 UPSTREAM_POLL_SECONDS = 20
 
-# Hard stop on runaway spend: an action refuses to start once today's recorded cost exceeds this
-DAILY_BUDGET_USD = 25.0
+# Freak-overspend stops (Ian, 2026-10-20: stop a runaway, never normal progress; a normal night is ~$3-4).
+# Both are checked before every API call (claude_client.call); a blocked call raises LLMError, so preflight still
+# emails its rule findings and only the AI review is skipped.
+# RUN_BUDGET_USD: one action (research, adjustments, preflight, postmortem) makes no further calls once its own
+#   recorded cost (tokens + web searches) reaches this. Calls already in flight finish, so parallel research can
+#   end a little above it.
+# DAILY_BUDGET_USD: no further calls once the day's recorded cost reaches this. A big slate (15 games, most with
+#   open news) can put research near $7, so a $7 cap would cut off preflight's review on exactly those nights.
+# The monthly backstop is the spend limit Ian set in the Anthropic Console (Billing page, $220), enforced by the API.
+RUN_BUDGET_USD = 6.5
+DAILY_BUDGET_USD = 10.0
+WEB_SEARCH_USD = 0.01   # $10 per 1,000 searches (platform.claude.com web search docs)
 
 # $ per million tokens: input, output, 5-minute cache write, cache read
 PRICING = {
