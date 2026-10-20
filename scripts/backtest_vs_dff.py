@@ -14,7 +14,6 @@ outage doesn't affect this test. DFF's numbers are as of our scrape (about 20 mi
 Our pool: slate players matched to a replay row that day, not listed Out/Doubtful, with a season FP-per-minute
 rate (at least one game this season). Variants:
   learned min x season rate     the candidate
-  learned min x learned rate
   Formula C min x season rate   control: how much comes from the learned minutes rather than the setup
 DFF names are matched to box-score names per day with lambda/shared/player_names.py. Actual FP comes from box
 scores through the same matching, so a name mismatch can't silently score a player as 0.
@@ -72,7 +71,6 @@ def build_slates():
     s["MATCHED"] = s.TEAM.notna()
     s["OURS_OK"] = s.LEARNED_MIN.notna() & s.S_RATE.notna() & (s.S_RATE > 0)
     s["LxS"] = np.where(s.OURS_OK, s.LEARNED_MIN * s.S_RATE, np.nan)
-    s["LxL"] = np.where(s.OURS_OK, s.LEARNED_MIN * s.LEARNED_RATE, np.nan)
     s["FCxS"] = np.where(s.OURS_OK, s.FC_MIN * s.S_RATE, np.nan)
     return daily, s
 
@@ -101,7 +99,7 @@ def main():
     for label, d in (("all", both), ("DFF projected 20+", both[both.PPG_PROJECTION >= 20]),
                      ("salary $6k+", both[both.SALARY >= 6000])):
         parts = [f"{n} MAE {(d[c] - d.ACT).abs().mean():.2f} bias {(d[c] - d.ACT).mean():+.2f}"
-                 for n, c in (("DFF", "PPG_PROJECTION"), ("learned x season", "LxS"), ("learned x learned", "LxL"),
+                 for n, c in (("DFF", "PPG_PROJECTION"), ("learned x season", "LxS"),
                               ("Formula C x season", "FCxS"))]
         print(f"  {label:18s} n={len(d):6,d} | " + " | ".join(parts))
     corr = both.groupby("D").apply(lambda d: pd.Series({c: d[c].corr(d.ACT, method="spearman")
@@ -110,7 +108,7 @@ def main():
           f"learned x season {corr.LxS.mean():.3f}, Formula C x season {corr.FCxS.mean():.3f}")
 
     variants = {"DFF": ("PPG_PROJECTION", "LEARNED_MIN"), "learned x season": ("LxS", "LEARNED_MIN"),
-                "learned x learned": ("LxL", "LEARNED_MIN"), "Formula C x season": ("FCxS", "FC_MIN")}
+                "Formula C x season": ("FCxS", "FC_MIN")}
     rows, picks = [], []
     for day in days:
         g = s[s.D == day]

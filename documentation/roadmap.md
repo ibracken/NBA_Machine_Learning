@@ -28,8 +28,7 @@ Evidence for every number here is in [`findings.md`](findings.md).
   Formula C stays as the cheap control. The removals happen in one change during the pause (step 4), so the
   pipeline changes once. **Barebones and the cluster pipeline are commented out, not deleted** (Ian), so they can
   come back.
-- **Weekly post-mortem paused** (commented out in game-scheduler, 2026-10-11). It comes back with the learned-model
-  build, its datasets updated to the learned model. (Ian)
+- **Weekly post-mortem:** paused 2026-10-11 (Ian), re-enabled 2026-10-18 on learned-model data.
 - **FP = learned minutes × the player's season FP per minute.** That beat every FP-model combination in the
   backtests.
 - **Injury designations:** Out and Doubtful count as out. Questionable, Probable and Available are **not**
@@ -61,37 +60,39 @@ Evidence for every number here is in [`findings.md`](findings.md).
    - `llm/usage/2026-10-20.json` shows the real nightly AI cost;
    - no `nba-lambda-errors-*` alarm.
 
-### During the pause (Oct 20 – about Oct 30): make the learned model #1
+### Built early (2026-10-18): the learned model is #1
 
-4. **Build the learned model into production, and remove what it replaces.**
-   - **Training:** the supervised-learning Lambda trains the minutes model on all seasons, following the model
-     release checklist in AGENTS.md (Lambda-pinned versions; verify load and predict).
-   - **Serving:** minutes-projection computes the inputs from stored box scores and today's injury report:
-     - the player's season, last-7 and previous-game minutes;
-     - games played and games missed;
-     - season minutes of teammates listed out, fresh vs ongoing and by position;
-     - each player's with/without history for tonight's absent teammates.
-
-     Then FP = minutes × season FP per minute, and the existing optimizer builds the lineup.
-   - **Names:** wire `lambda/shared/player_names.py` into daily-predictions, the injury scraper and
-     minutes-projection. Last season Sarr, Butler, Portis, PJ Washington and GG Jackson were missing from our
-     pool because of spelling.
-   - **Outputs:** the lineup email uses the learned model. Formula C and DFF lineups are still built and saved for
-     comparison.
-   - **Remove:**
-     - the complex model (`injury_system.py` and the redistribution in `projection_models.py`);
-     - the `current` / `fp_per_min` FP models in training, serving, preflight and the evaluation scripts;
-     - **comment out, keep the code:** barebones (training and serving), and cluster-scraper → nba-clustering
-       (schedule entries and box-score-scraper's cluster join; the Lambdas stay deployed);
-     - re-enable the weekly post-mortem with learned-model datasets;
-     - point the viewer API (`lineup-optimizer`, `API_LINEUP_SOURCES`) at the learned model's lineup file.
-   - **Parity check before switching on:** production code must reproduce the backtest's projections for a
-     sample of 2025-26 dates.
-5. **Point the AI steps at the learned model** (see "AI pieces" below for the target design):
-   - give the adjustments judge full context on the model;
-   - turn the AI head-to-head into a single AI-picked lineup;
-   - switch the preflight table and rules to the learned model, and re-measure its team-total and "above role"
-     thresholds on the learned model's backtest projections.
+4. **Learned model in production, and what it replaces removed. Built, tested and deployed 2026-10-18.**
+   - **Shared code:** `lambda/shared/learned_minutes.py` holds the rows, features, training and prediction, and is
+     used by supervised-learning (nightly training), minutes-projection (serving) and the backtests.
+     - It reproduced the backtest table and features exactly (163,879 rows).
+     - The serving path was identical on four test nights.
+     - The nightly Lambda picked the same 8 players as the backtest on every night tested.
+     - Head-to-head with DFF on this code: −12.0 per slate (CI −19.0..−5.1), +7.9 over Formula C.
+   - **Position inputs dropped:** minutes MAE 4.888 → 4.900, and the lineup difference was within noise. No
+     position table is needed.
+   - **Injury history:** `data/injuries/history.parquet` (archived 2022-26 pre-tip reports), appended nightly by
+     injury-scraper.
+   - **Names:** `lambda/shared/player_names.py` in minutes-projection (DFF slate and actuals) and llm-analyst (slate
+     teams).
+   - **Removed:** the complex model, and the `current` / `fp_per_min` FP models.
+   - **Switched off but kept:** barebones (`TRAIN_BAREBONES`), the cluster schedule entries and the cluster join.
+   - **Also:** the post-mortem is re-enabled on learned-model data, and the viewer shows the learned lineup.
+   - **Left to do:**
+     - Run supervised-learning once to publish the first model, then `check_model` (load + predict in the
+       Lambda), per the AGENTS.md release checklist.
+     - About Oct 25, once a few 2026-27 games exist: confirm a nightly training run succeeds on them.
+5. **AI steps pointed at the learned model. Built and tested offline 2026-10-18 (all checks pass).**
+   - **The adjustments judge** gets the model's description, tonight's out list, and each player's absence
+     adjustment, and is told not to adjust for anything the model already counts.
+   - **The AI lineup replaces the per-player head-to-head:**
+     - one call per slate;
+     - code checks the slate players, the slots and the $50k cap, with one retry;
+     - it runs during the pause too.
+   - **Research prompt:** states the current time, and covers rotation news for non-slate players.
+   - **Preflight** reads the learned model. Its team-total thresholds were re-measured on learned backtest
+     projections (warning outside 162–243 slate minutes, critical outside 132–254), and the "above role" rule was
+     dropped: learned jumps of 10+ minutes realized within 1.3 min.
 
 ### Live season
 
@@ -131,20 +132,19 @@ stops all calls.
 
 **Research (nightly, before the judge and the AI lineup).**
 - **Goal:** collect tonight's availability and playing-time news per game, with the exact source snippets.
-- **Status:** built.
-- **Prompt fixes:**
+- **Status:** built. Prompt fixes done 2026-10-18:
   - state the current time, so the AI can tell a report from this morning from one 20 minutes old;
   - ask about off-slate rotation players too, since the learned model uses every absent teammate.
 
 **Adjustments judge (shadow).**
 - **Goal:** move a player's minutes only for news the model can't see: a stated minutes restriction, planned
   rest, a lineup change, or a Questionable player confirmed in or out.
-- **Change (Ian, 2026-10-11):** the judge must know what the model already did, so it doesn't stack a second
+- **Change (Ian, 2026-10-11; built 2026-10-18):** the judge must know what the model already did, so it doesn't stack a second
   overreaction on top, which is the complex model's old failure. Per game it gets:
   - a description of the model: what it accounts for, which is the official injury report's Out/Doubtful list,
     each teammate's with/without history, recent minutes and games missed;
   - the teammates the model is treating as out tonight;
-  - per player: projected minutes, season average, last 5 games, and **how much the model moved him for
+  - per player: projected minutes, season average, last-7 average, and **how much the model moved him for
     tonight's absences** (projection minus the same model with no absences);
   - the instruction: don't adjust for anything already in that list.
 
@@ -152,11 +152,12 @@ stops all calls.
 - **Kill rule:** after 30+ slates, adjusted minutes must have lower error than unadjusted (bootstrap CI below 0),
   measured separately on Questionable players. Otherwise switch it off.
 
-**AI lineup (shadow; replaces the per-player AI projections, Ian 2026-10-11).**
+**AI lineup (shadow; replaces the per-player AI projections, Ian 2026-10-11; built 2026-10-18).**
 - **Goal:** can an AI pick a better lineup from tonight's news and its own knowledge than our pipeline does?
 - **Design:**
   - One call per slate: the slate (name, team, opponent, position, salary) plus the research briefings.
-  - It returns 8 players. Code checks the salary cap, positions and that every player is on the slate.
+  - It returns 8 players. Code checks the salary cap, positions and that every player is on the slate, with one
+    retry on an invalid lineup. Saved to `model_comparison/ai_lineup/daily_lineups.parquet`; runs during the pause.
   - It never sees our projections or DFF's.
 - **Kill rule:** after 30+ slates, scored on realized FP against our lineup and DFF's. Drop it if it doesn't beat
   ours.
@@ -172,7 +173,7 @@ stops all calls.
 
 **Weekly post-mortem (Mondays).**
 - **Goal:** find systematic misses in the logged projections.
-- **Status:** paused until the learned model is live (step 4 re-enables it).
+- **Status:** re-enabled 2026-10-18 on learned-model data. Until about Oct 30 it has nothing to grade.
 
 
 ---

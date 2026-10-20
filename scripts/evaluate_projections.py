@@ -5,6 +5,7 @@ Regimes are defined by when upstream inputs went stale during the 2025-26 season
   A  fresh injuries + fresh box scores   (season start .. 2026-01-19)
   B  stale injuries + fresh box scores   (2026-02-22 .. 2026-03-25)
   C  stale injuries + stale box scores   (2026-03-26 .. 2026-04-12, regular-season end)
+  L  learned minutes model live          (2026-10-30 .. 2027-04-11)
 Playoff dates have no actuals because box-score-scraper pulls SeasonType=Regular Season only.
 Pass --regimes to override, e.g. --regimes "A:2025-10-01:2026-01-19,B:2026-02-22:2026-03-25".
 """
@@ -22,11 +23,12 @@ pd.set_option("display.width", 220)
 pd.set_option("display.max_columns", 40)
 
 BUCKET = "nba-prediction-ibracken"
-# direct_position_only was retired 2026-09-20; its historical files are still scored here.
-# llm_head_to_head is written by llm-analyst (roadmap L3) from the 2026-27 season on.
-MINUTES_MODELS = ["complex_position_overlap", "direct_position_only", "formula_c_baseline", "llm_head_to_head"]
-FP_MODELS = ["current", "fp_per_min", "barebones"]
-DEFAULT_REGIMES = "A:2025-10-01:2026-01-19,B:2026-02-22:2026-03-25,C:2026-03-26:2026-04-12"
+# learned_minutes is the #1 model from 2026-27 (FP = minutes x season FP per minute); formula_c_baseline is the
+# control. complex_position_overlap and direct_position_only are retired; their 2025-26 files are still scored.
+MINUTES_MODELS = ["learned_minutes", "complex_position_overlap", "direct_position_only", "formula_c_baseline"]
+FP_MODELS = ["current", "fp_per_min", "barebones"]   # 2025-26 lineup folders only
+LEGACY_END = pd.Timestamp("2026-07-01")   # formula_c_baseline/daily_lineups.parquet held pre-FP lineups until then
+DEFAULT_REGIMES = "A:2025-10-01:2026-01-19,B:2026-02-22:2026-03-25,C:2026-03-26:2026-04-12,L:2026-10-30:2027-04-11"
 
 s3 = boto3.client("s3")
 
@@ -84,6 +86,10 @@ def lineup_frames():
         for f in FP_MODELS:
             frames[f"{m}|{f}"] = f"model_comparison/{m}/fp_{f}/daily_lineups.parquet"
     frames["DFF"] = "model_comparison/daily_fantasy_fuel_baseline/daily_lineups.parquet"
+    # 2026-27 on: one lineup per model, FP = minutes x season FP per minute; the AI lineup comes from llm-analyst
+    for m in ("learned_minutes", "formula_c_baseline"):
+        frames[f"{m}|season_rate"] = f"model_comparison/{m}/daily_lineups.parquet"
+    frames["ai_lineup"] = "model_comparison/ai_lineup/daily_lineups.parquet"
     # Pre-FP-model lineups (Jan 6 archive + Jan 17 legacy file) cover the fresh-injury window
     for m in MINUTES_MODELS:
         frames[f"{m}|legacy"] = [
@@ -107,6 +113,10 @@ def lineup_report(regimes):
             continue
         df = pd.concat(parts, ignore_index=True)
         df["DATE"] = pd.to_datetime(df["DATE"])
+        if name.endswith("|legacy"):
+            df = df[df["DATE"] < LEGACY_END]
+        elif name.endswith("|season_rate"):
+            df = df[df["DATE"] >= LEGACY_END]
         df = df.drop_duplicates(subset=["DATE", "SLOT", "PLAYER"])
         df["REGIME"] = label_regime(df["DATE"], regimes)
         g = df.groupby(["REGIME", "DATE"]).agg(

@@ -1,10 +1,12 @@
 """
-L2: beat-writer synthesis -> bounded minutes adjustments, in shadow mode.
+Adjustments judge: news -> bounded minutes adjustments to the learned minutes model, in shadow mode.
 
-The judge (Opus 5.5; config.ADJUSTMENT_JUDGES) reads tonight's research briefing and the exact
-snippets it cites. Each proposed adjustment must name one snippet and copy a quote from it verbatim;
-the quote is checked against the snippet, the size is clamped to +-25%, and the pre- and post-
-adjustment projections are logged. Nothing here changes a projection or a lineup.
+The judge (Opus 5.5; config.ADJUSTMENT_JUDGES) reads tonight's research briefing and the exact snippets it cites,
+plus what the model already did: which teammates it treats as out and how much each player's projection moved
+for those absences (Ian, 2026-10-11: an uninformed judge stacks a second overreaction on top, the complex model's
+old failure). Each proposed adjustment must name one snippet and copy a quote from it verbatim; the quote is
+checked against the snippet, the size is clamped to +-25%, and the pre- and post-adjustment projections are
+logged. Nothing here changes a projection or a lineup.
 """
 
 import logging
@@ -17,20 +19,29 @@ import pandas as pd
 from claude_client import LLMError, extract
 from config import ADJUSTMENT_JUDGES, MAX_ADJUSTMENT_PCT, MIN_QUOTE_CHARS
 from s3_io import load_json, replace_date_rows, save_json
-from slate import COMPLEX_PROJECTIONS, load_box_scores, projection_gate, wait_for_todays_rows
+from slate import LEARNED_PROJECTIONS, load_box_scores, projection_gate, slate_projections, wait_for_todays_rows
 
 logger = logging.getLogger()
 
 ADJUSTMENTS_LOG = 'llm/adjustments/log.parquet'
 
 JUDGE_SYSTEM = f"""You review tonight's NBA news for a minutes-projection model and decide whether any \
-player's projected minutes should move because of something a source actually reported.
+player's projected minutes should move because of something a source reported that the model cannot know.
 
-Propose an adjustment only when a numbered evidence item directly states something that changes tonight's \
-playing time relative to a normal game: a minutes restriction, a return from injury with a stated limit, \
-planned rest, a promotion into or out of the starting lineup, a coach's stated rotation change. Vague \
-language ("we'll see how he feels", "managing him") is not enough unless the source says what it means \
-for tonight's minutes. When in doubt, propose nothing - an empty list is a normal answer.
+What the model already does: it is trained on four seasons of box scores and uses each player's season, \
+last-7 and last-game minutes, games played and games missed. It reads tonight's official NBA injury report: \
+every teammate listed Out or Doubtful is treated as out, and his minutes are redistributed according to how \
+this player's minutes actually changed in earlier games this season when that teammate sat. A player's \
+"absence adjustment" is how much that moved his projection tonight. The model has no other news.
+
+So do not adjust for anything the model already counts: a teammate who is in the out list below, a player's \
+general role or recent form, or anything else on the injury report. Adjust only for news the model cannot see: \
+a stated minutes restriction, a return from injury with a stated limit, planned rest not on the report, a \
+confirmed change to the starting lineup, a coach's stated rotation change, or a Questionable player confirmed \
+in or out (which changes his teammates' minutes too). For a player whose absence adjustment is already large, \
+adjust only if the news adds something beyond the absences the model counted. Vague language ("we'll see how \
+he feels", "managing him") is not enough unless the source says what it means for tonight's minutes. When in \
+doubt, propose nothing - an empty list is a normal answer.
 
 For each adjustment:
 - evidence_index is the number of the single item it rests on.
@@ -40,7 +51,7 @@ It is checked against the source mechanically; a paraphrase is rejected.
 {MAX_ADJUSTMENT_PCT} (-0.2 means 20% fewer minutes). Never try to zero a player or create a starter.
 
 Separately, list status_conflicts: players whose listed projection contradicts a reported status for \
-tonight (projected to play but reported out, or projected at 0 but reported available). Those are not \
+tonight (projected to play but reported out, or in the out list but reported available). Those are not \
 adjustments; they are flagged for a human."""
 
 JUDGE_SCHEMA = {
@@ -142,11 +153,21 @@ def judge_game(today, briefing, projections, judge_model, effort):
     if game_proj.empty:
         return [], []
     evidence = briefing['citations']
-    pre_minutes = dict(zip(game_proj['PLAYER'], game_proj['PROJECTED_MIN'].astype(float)))
+    out = game_proj[game_proj['OUT_TONIGHT'].fillna(False).astype(bool)]
+    # Slate players only (DFF_NAME set); everyone else on the roster is context through the out list
+    slate_rows = game_proj[~game_proj.index.isin(out.index) & game_proj['DFF_NAME'].notna()]
+    pre_minutes = dict(zip(slate_rows['PLAYER'], slate_rows['PROJECTED_MIN'].astype(float)))
+    pre_minutes.update({p: 0.0 for p in out['PLAYER']})
     label = f"judge[{judge_model}] {briefing['away']}@{briefing['home']}"
-    players = '\n'.join(f"- {r.PLAYER} ({r.TEAM}): {float(r.PROJECTED_MIN):.1f} min"
-                        for r in game_proj.itertuples())
+    players = '\n'.join(
+        f"- {r.PLAYER} ({r.TEAM}): {float(r.PROJECTED_MIN):.1f} min projected | season avg {float(r.S_MIN):.1f} | "
+        f"last-7 avg {float(r.L7_MIN):.1f} | absence adjustment {float(r.ABSENCE_ADJ_MIN):+.1f}"
+        for r in slate_rows.itertuples())
+    outs = '\n'.join(f"- {r.PLAYER} ({r.TEAM}, season avg {float(r.S_MIN):.1f} min)"
+                     for r in out.sort_values('S_MIN', ascending=False).itertuples()) or '(none)'
     prompt = (f"Date: {today:%A %B %d, %Y}. Game: {briefing['away']} at {briefing['home']}.\n\n"
+              f"Teammates the model already treats as out tonight (official injury report, Out or Doubtful):\n"
+              f"{outs}\n\n"
               f"Current minutes projections:\n{players}\n\n"
               f"Evidence items (quote only from these):\n{evidence_block(evidence) or '(none)'}\n\n"
               f"Research briefing (context; quotes must come from the evidence items above):\n"
@@ -184,7 +205,7 @@ def run(today):
     if not research or not research.get('games'):
         logger.warning(f"No research for {today}; L2 skipped")
         return {'skipped': 'no research'}
-    projections = wait_for_todays_rows(COMPLEX_PROJECTIONS, today)
+    projections = slate_projections(wait_for_todays_rows(LEARNED_PROJECTIONS, today))
     if projections.empty:
         logger.warning(f"No complex projections for {today}; L2 skipped")
         return {'skipped': 'no projections'}

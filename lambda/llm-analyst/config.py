@@ -13,7 +13,7 @@ FALLBACK_BETA = 'server-side-fallback-2026-07-01'
 
 # Model and effort per task. Opus 5.5 defaults to effort "medium", so every call sets it explicitly.
 RESEARCH_MODEL, RESEARCH_EFFORT = OPUS, 'medium'
-HEAD_TO_HEAD_MODEL, HEAD_TO_HEAD_EFFORT = OPUS, 'medium'
+AI_LINEUP_MODEL, AI_LINEUP_EFFORT = OPUS, 'medium'
 PREFLIGHT_MODEL, PREFLIGHT_EFFORT = OPUS, 'medium'
 POSTMORTEM_MODEL, POSTMORTEM_EFFORT = OPUS, 'high'
 # L2 judge(s), model -> effort. One judge; a second model can be added here for an A/B on identical evidence
@@ -24,16 +24,18 @@ RESEARCH_MAX_SEARCHES = 8
 RESEARCH_PARALLEL_GAMES = 6
 PAUSE_TURN_LIMIT = 5
 
+# DraftKings classic salary cap (the AI lineup is checked against it)
+SALARY_CAP = 50000
+
 # L2 guardrails
 MAX_ADJUSTMENT_PCT = 0.25   # an LLM may never move a projection more than 25% either way
 MIN_QUOTE_CHARS = 20        # a quote shorter than this cannot carry a minutes claim
 
-# L1 thresholds, measured on 2025-26 fresh-input slates (Oct 25 - Jan 13; slate players only):
-# team projected totals p1/p5/p95/p99 = 148/190/274/290 (actual team minutes are always >= 238);
-# projections >= 10 min above the player's prior average (2.3% of rows) realized 6.7 min less.
-TEAM_TOTAL_CRITICAL = (150, 290)
-TEAM_TOTAL_WARNING = (190, 274)
-ABOVE_ROLE_WARNING_MIN = 10
+# Preflight thresholds, measured on the learned minutes model's 2025-26 backtest (Oct 30 - Jan 13, slate players
+# only): team projected totals p1/p5/p95/p99 = 132/162/243/254. The old "above role" rule was dropped: learned
+# projections 10+ min above the season average realized within 1.3 min (complex ones ran 6.7 min high).
+TEAM_TOTAL_CRITICAL = (132, 254)
+TEAM_TOTAL_WARNING = (162, 243)
 ZEROED_REGULAR_LAST3_MIN = 20
 MIN_SLATE_COVERAGE = 0.90
 MAX_INPUT_AGE_HOURS = 24

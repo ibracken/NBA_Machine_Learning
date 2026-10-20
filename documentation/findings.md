@@ -447,6 +447,30 @@ Questionable players is left to the AI pre-lineup research. Doubtful still count
 the player's box-score games *before* that date on 99.98% of 25,957 player-games (0.08% if tonight were
 included).
 
+### Production build (2026-10-18)
+
+- **Position inputs dropped.** Walk-forward 2022-25 → 2025-26, pre-tip out set:
+  - minutes MAE 4.888 with the same-position / adjacent-position freed-minutes inputs, 4.900 without;
+  - on 25+ fresh minutes listed out: 5.335 vs 5.377;
+  - those two inputs held 0.4% of the importance.
+- **The shared module matches the backtest exactly.** `lambda/shared/learned_minutes.py` vs `replay.parquet` +
+  `injury_features.parquet`: 163,879 of 163,879 rows, and every feature identical. It builds 4 seasons in 26 s.
+  - The serving path (box scores before tonight + tonight's schedule) matched the full build on 2025-11-15,
+    2026-01-20, 2026-03-10 and 2026-04-12.
+- **The nightly Lambda matches the backtest.** minutes-projection, with S3 and email stubbed and box scores cut at
+  the night before, picked the same 8 players as `backtest_vs_dff.py` on 2025-11-05, 2025-12-30 and 2026-03-03.
+- **Head-to-head with DFF on the production code (no positions):** −12.0 per slate (CI −19.0..−5.1), 33% of
+  slates won; +7.9 over the Formula C control. With positions it was −11.1; the difference is within noise (one
+  slate's gap has an SD of 41).
+- **Preflight thresholds on learned projections** (Oct 30 – Jan 13, slate players):
+  - team totals p1/p5/p95/p99 = 132/162/243/254;
+  - projections ≥5 / ≥8 / ≥10 min above the season average (4.2% / 1.1% / 0.5% of rows) realized +0.2 / −1.0 /
+    −1.3 min against the projection;
+  - so the old "above role" rule (complex ran 6.7 high) was dropped.
+- **AI pieces:** the offline suite (fake Claude, real 2026-01-15 slate) passes every check, including the AI
+  lineup's invalid-then-retry path and the judge's new model context. It surfaced one more spelling miss: llm-analyst
+  gave PJ Washington and Bobby Portis no team; fixed with the shared matcher.
+
 ### Older backlog notes
 
 ### M3. Model DNP risk explicitly
@@ -700,6 +724,12 @@ See M7.
 ---
 
 ## Done log
+
+### 2026-10-18
+- Learned minutes model built into production (see "Production build"). The complex model and the `current` /
+  `fp_per_min` FP models were removed. Barebones and clustering are switched off but kept.
+- AI judge gets model context; the AI lineup replaces the head-to-head; the post-mortem is re-enabled; preflight
+  is retuned.
 
 ### 2026-10-09 .. 2026-10-11
 - Lineup-vs-DFF comparison located the 20 FP gap: injury minutes going to the wrong teammates.

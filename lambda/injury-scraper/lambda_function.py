@@ -76,6 +76,31 @@ def save_dataframe_to_s3(df, key):
     s3.put_object(Bucket=BUCKET_NAME, Key=key, Body=parquet_buffer.getvalue())
     logger.info(f"Saved {len(df)} records to s3://{BUCKET_NAME}/{key}")
 
+HISTORY_KEY = 'data/injuries/history.parquet'
+
+
+def append_history(df_statuses):
+    """
+    Add tonight's report to the history the learned minutes model trains on (D, PLAYER, STATUS, SOURCE).
+    A rerun the same day replaces that day's rows. The history starts with the archived 2022-26 pre-tip reports.
+    """
+    day = df_statuses['REPORT_DATE'].dropna().max() if 'REPORT_DATE' in df_statuses.columns else None
+    if day is None or pd.isna(day):
+        day = datetime.now(pytz.timezone('US/Eastern')).date()
+    # Same datetime resolution on both sides: pandas 2.1 can't concatenate datetime64[s] with [ns]
+    today = pd.DataFrame({'D': pd.to_datetime([day] * len(df_statuses)).astype('datetime64[ns]'),
+                          'PLAYER': df_statuses['PLAYER'].values,
+                          'STATUS': df_statuses['STATUS'].values, 'SOURCE': 'live'})
+    try:
+        history = pd.read_parquet(BytesIO(s3.get_object(Bucket=BUCKET_NAME, Key=HISTORY_KEY)['Body'].read()))
+        history['D'] = pd.to_datetime(history['D']).astype('datetime64[ns]')
+        history = history[history['D'] != pd.Timestamp(day)]
+    except s3.exceptions.NoSuchKey:
+        logger.warning(f"{HISTORY_KEY} missing; starting a new history")
+        history = pd.DataFrame(columns=today.columns)
+    save_dataframe_to_s3(pd.concat([history, today], ignore_index=True), HISTORY_KEY)
+
+
 def normalize_name(name):
     """Normalize player name for matching with other datasets"""
     # Convert "Last, First" to "first last"
@@ -519,6 +544,7 @@ def run_injury_scraper():
         # minutes-projection treats any listed player as injured. Doubtful players sat 98.8% of the time
         # (2022-26 pre-tip reports, scripts/fetch_injury_history.py), so they count as OUT.
         save_dataframe_to_s3(df_injuries, 'data/injuries/report_statuses.parquet')
+        append_history(df_injuries)
         df_injuries = df_injuries[df_injuries['STATUS'].isin(['OUT', 'DOUBTFUL'])].copy()
         df_injuries['STATUS'] = 'OUT'
 

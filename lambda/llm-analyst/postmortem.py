@@ -22,14 +22,16 @@ from s3_io import load_parquet, publish, save_json
 
 logger = logging.getLogger()
 
-MINUTES_MODELS = ['complex_position_overlap', 'formula_c_baseline', 'llm_head_to_head']
-FP_MODELS = ['current', 'fp_per_min', 'barebones']
+# learned_minutes is our #1 since 2026-10-18; formula_c_baseline is the control. FP = minutes x season FP/min.
+MINUTES_MODELS = ['learned_minutes', 'formula_c_baseline']
+LINEUP_MODELS = MINUTES_MODELS + ['daily_fantasy_fuel_baseline', 'ai_lineup']
 UNSAFE_FILTER_TOKENS = ('__', '@', 'import', 'lambda', 'eval', 'exec', 'open(', '`', 'getattr', 'globals')
 
 SYSTEM = """You are the weekly post-mortem analyst for an NBA DraftKings projection pipeline. Find systematic \
 patterns in how projections missed: which kinds of players are consistently over- or under-projected, \
-whether bias is drifting, whether a model or rule has stopped earning its place, how the LLM head-to-head \
-and the shadow-mode LLM adjustments are doing. Look at the last 7 days and compare with the season.
+whether bias is drifting, whether a model or rule has stopped earning its place, how the AI lineup \
+and the shadow-mode AI minutes adjustments are doing. ABSENCE_ADJ_MIN is how many minutes the learned model \
+added or removed because of teammates listed out. Look at the last 7 days and compare with the season.
 
 You can only see the data through run_query. Every finding must list the query_ids that show it and the \
 number of rows behind it (rows_matched of the query it rests on); findings are checked against the query \
@@ -103,13 +105,18 @@ def build_datasets(today):
         if df.empty:
             continue
         df = df.assign(MODEL=model)
+        if 'OUT_TONIGHT' in df.columns:
+            df = df[~df['OUT_TONIGHT'].fillna(False).astype(bool)]   # listed out: not a projection
+        if 'DFF_NAME' in df.columns:
+            df = df.assign(PLAYER=df['DFF_NAME'].fillna(df['PLAYER']))   # DFF spelling, to join the slate below
         minutes.append(df)
     minutes = pd.concat(minutes, ignore_index=True) if minutes else pd.DataFrame()
     if not minutes.empty:
         minutes['DATE'] = pd.to_datetime(minutes['DATE'])
-        minutes = minutes[minutes['DATE'].dt.date < today]
-        keep = ['DATE', 'MODEL', 'PLAYER', 'TEAM', 'POSITION', 'PROJECTED_MIN', 'ACTUAL_MIN', 'CONFIDENCE',
-                'PROJECTED_FP_current', 'PROJECTED_FP_fp_per_min', 'PROJECTED_FP_barebones', 'ACTUAL_FP']
+        # Graded rows only: actuals_updater writes 0 for a projected player who didn't play
+        minutes = minutes[(minutes['DATE'].dt.date < today) & minutes['ACTUAL_MIN'].notna()]
+        keep = ['DATE', 'MODEL', 'PLAYER', 'TEAM', 'PROJECTED_MIN', 'ACTUAL_MIN', 'PROJECTED_FP', 'ACTUAL_FP',
+                'S_MIN', 'GP', 'TEAM_GAMES_MISSED', 'ABSENCE_ADJ_MIN']
         minutes = minutes[[c for c in keep if c in minutes.columns]]
         dff = load_parquet('data/daily_predictions/current.parquet')
         if not dff.empty:
@@ -118,22 +125,17 @@ def build_datasets(today):
             minutes = minutes.merge(dff.rename(columns={'PPG_PROJECTION': 'DFF_FP'}), on=['DATE', 'PLAYER'], how='left')
         minutes['MIN_ERR'] = minutes['PROJECTED_MIN'] - minutes['ACTUAL_MIN']
         minutes['ABS_MIN_ERR'] = minutes['MIN_ERR'].abs()
-        minutes['DNP'] = minutes['ACTUAL_MIN'].isna() | (minutes['ACTUAL_MIN'] == 0)
-        if 'PROJECTED_FP_current' in minutes.columns:
-            minutes['FP_ERR_current'] = minutes['PROJECTED_FP_current'] - minutes['ACTUAL_FP']
+        minutes['DNP'] = minutes['ACTUAL_MIN'] == 0
+        minutes['FP_ERR'] = minutes['PROJECTED_FP'] - minutes['ACTUAL_FP']
         if 'DFF_FP' in minutes.columns:
             minutes['FP_ERR_dff'] = minutes['DFF_FP'] - minutes['ACTUAL_FP']
         minutes['LAST_7_DAYS'] = minutes['DATE'].dt.date >= week_start
 
     lineups = []
-    for model in MINUTES_MODELS:
-        for fp in FP_MODELS:
-            df = load_parquet(f'model_comparison/{model}/fp_{fp}/daily_lineups.parquet')
-            if not df.empty:
-                lineups.append(df.assign(MINUTES_MODEL=model, FP_MODEL=fp))
-    df = load_parquet('model_comparison/daily_fantasy_fuel_baseline/daily_lineups.parquet')
-    if not df.empty:
-        lineups.append(df.assign(MINUTES_MODEL='dff', FP_MODEL='dff'))
+    for model in LINEUP_MODELS:
+        df = load_parquet(f'model_comparison/{model}/daily_lineups.parquet')
+        if not df.empty:
+            lineups.append(df.assign(MODEL=model))
     lineups = pd.concat(lineups, ignore_index=True) if lineups else pd.DataFrame()
     if not lineups.empty:
         lineups['DATE'] = pd.to_datetime(lineups['DATE'])

@@ -241,22 +241,21 @@ def lambda_handler(event, context):
     # poll for it for up to 5 minutes, so an overrunning upstream step delays them rather than
     # silently skipping them.
     lambda_pipeline = [
-        ('cluster-scraper', 0, {}),
-        ('nba-clustering', 2, {}),
+        # Cluster pipeline switched off (Ian, 2026-10-18): it only fed the barebones FP model, also off
+        # ('cluster-scraper', 0, {}),
+        # ('nba-clustering', 2, {}),
         ('box-score-scraper', 4, {}),       # also writes the season schedule
         ('supervised-learning', 6, {}),
         ('daily-predictions', 9, {}),       # DFF slate
         ('injury-scraper', 11, {}),
-        ('llm-analyst', 12, {'action': 'research'}),      # L3 + research for L2 (needs the DFF slate)
-        ('minutes-projection', 13, {}),     # minutes + FP predictions + lineups + email
-        ('llm-analyst', 16, {'action': 'adjustments'}),   # L2 shadow mode (needs research + projections)
-        ('llm-analyst', 18, {'action': 'preflight'}),     # L1 email, ~12 minutes before lock
-        ('minutes-projection', 22, {'action': 'llm_lineups'}),  # L3 lineups, scored but never emailed
+        ('llm-analyst', 12, {'action': 'research'}),      # research + AI lineup (needs the DFF slate)
+        ('minutes-projection', 13, {}),     # learned minutes + lineups + email
+        ('llm-analyst', 16, {'action': 'adjustments'}),   # adjustments judge, shadow (needs research + projections)
+        ('llm-analyst', 18, {'action': 'preflight'}),     # preflight email, ~12 minutes before lock
     ]
-    # Weekly post-mortem on Mondays, covering the previous 7 days. Paused (Ian, 2026-10-11) until the learned
-    # minutes model is live; its datasets still describe the old models. Re-enable with the learned-model build.
-    # if main_slate_time.astimezone(pytz.timezone('America/New_York')).weekday() == 0:
-    #     lambda_pipeline.append(('llm-analyst', 0, {'action': 'postmortem'}))
+    # Weekly post-mortem on Mondays, covering the previous 7 days (re-enabled with the learned model, 2026-10-18)
+    if main_slate_time.astimezone(pytz.timezone('America/New_York')).weekday() == 0:
+        lambda_pipeline.append(('llm-analyst', 0, {'action': 'postmortem'}))
 
     # === CREATE RULES FOR MAIN SLATE ===
     try:

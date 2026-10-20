@@ -1,10 +1,10 @@
 # NBA_Machine_Learning
 
 ## Overview
-This repo is an AWS Lambda-based pipeline that scrapes NBA data, builds clustering + supervised-learning models, and generates DraftKings lineups and minutes projections. Data and models are stored in S3 as Parquet/PKL files (no Postgres in the current codebase).
+This repo is an AWS Lambda-based pipeline that scrapes NBA data, trains a learned minutes model, and generates DraftKings lineups and minutes projections. Data and models are stored in S3 as Parquet/PKL files (no Postgres in the current codebase).
 
 ## Key directories
-- `lambda/`: All Lambda functions (one directory each with `lambda_function.py`, `requirements.txt`, `Dockerfile`) plus `deploy.py`.
+- `lambda/`: All Lambda functions (one directory each with `lambda_function.py`, `requirements.txt`, `Dockerfile`) plus `deploy.py`. `lambda/shared/` holds modules several Lambdas copy in: `learned_minutes.py` (the minutes model's rows, features, training and prediction) and `player_names.py` (matching player names across sources).
 - `scripts/`: Local utilities — model evaluation (`evaluate_projections.py`, `evaluate_llm.py`, `analyze_model_performance*.py`), S3 inspection, notebooks.
 - `aws/`: Shared S3 utilities, inspection helpers, and the game-scheduler IAM policy document.
 - `frontend/`: React + Vite viewer for the `lineup-optimizer` API (see `frontend/README.md`).
@@ -13,31 +13,30 @@ This repo is an AWS Lambda-based pipeline that scrapes NBA data, builds clusteri
 
 ## Lambda pipeline (current code)
 The `lambda/game-scheduler` Lambda scrapes the DailyFantasyFuel main slate start time and schedules these functions at fixed offsets from 30 minutes before the slate (minutes in brackets):
-1. [+0] `cluster-scraper` -> `data/advanced_player_stats/current.parquet`
-2. [+2] `nba-clustering` -> `data/clustered_players/current.parquet`
-3. [+4] `box-score-scraper` -> `data/box_scores/{season}.parquet` for the current and three prior seasons; the current season is mirrored to `data/box_scores/current.parquet`; also writes the current season's schedule to `data/schedule/current.parquet` and its game dates to `data/schedule/game_dates.json`
-4. [+6] `supervised-learning` -> `models/{current,fp_per_min,barebones}.pkl` and `models/*_feature_names.json`
-5. [+9] `daily-predictions` -> `data/daily_predictions/current.parquet` (DFF projections only; no model FP here)
-6. [+11] `injury-scraper` -> `data/injuries/current.parquet` (Out + Doubtful from NBA PDF) and `report_statuses.parquet` (every status)
-7. [+12] `llm-analyst` `research` -> `llm/research/{date}.json` and L3 minutes in `model_comparison/llm_head_to_head/`
-8. [+13] `minutes-projection` -> `model_comparison/*` (minutes + lineups), `injury_context/*`, and the lineup email
-9. [+16] `llm-analyst` `adjustments` -> `llm/adjustments/` (L2, shadow mode)
-10. [+18] `llm-analyst` `preflight` -> `llm/preflight/{date}.json` and the preflight email (L1)
-11. [+22] `minutes-projection` `llm_lineups` -> lineups for the L3 minutes (never emailed)
-12. Mondays only, [+0] `llm-analyst` `postmortem` -> `llm/postmortem/{date}.json` and email (L4)
+1. [+4] `box-score-scraper` -> `data/box_scores/{season}.parquet` for the current and three prior seasons; the current season is mirrored to `data/box_scores/current.parquet`; also writes the current season's schedule to `data/schedule/current.parquet` and its game dates to `data/schedule/game_dates.json`
+2. [+6] `supervised-learning` -> `models/learned_minutes.pkl`, `models/learned_minutes_feature_names.json`, `models/learned_minutes_summary.json`
+3. [+9] `daily-predictions` -> `data/daily_predictions/current.parquet` (DFF projections only; no model FP here)
+4. [+11] `injury-scraper` -> `data/injuries/current.parquet` (Out + Doubtful from the NBA PDF), `report_statuses.parquet` (every status), and appends the night to `history.parquet`
+5. [+12] `llm-analyst` `research` -> `llm/research/{date}.json` and the AI lineup in `model_comparison/ai_lineup/`
+6. [+13] `minutes-projection` -> learned-minutes, Formula C and DFF lineups in `model_comparison/*`, and the lineup email
+7. [+16] `llm-analyst` `adjustments` -> `llm/adjustments/` (shadow mode)
+8. [+18] `llm-analyst` `preflight` -> `llm/preflight/{date}.json` and the preflight email
+9. Mondays only, [+0] `llm-analyst` `postmortem` -> `llm/postmortem/{date}.json` and email
 
-Early-season pause: until all 30 teams have played 4 games, minutes-projection builds only the DFF lineup, L2 is skipped, and L1 checks inputs only (see `findings.md`, "Reference: early-season pause").
+`cluster-scraper` and `nba-clustering` (formerly +0 and +2) are switched off but still deployed; they only fed the barebones FP model, which is also off.
+
+Early-season pause: until all 30 teams have played 4 games, minutes-projection builds only the DFF lineup, the adjustments judge is skipped, and preflight checks inputs only; research and the AI lineup still run (see `findings.md`, "Reference: early-season pause").
 
 ## What each Lambda does
-- `cluster-scraper`: Pulls advanced/scoring/defense stats from the NBA API (via `PROXY_URL`) and writes `data/advanced_player_stats/current.parquet` plus a per-season copy (`{YYYY}-{YYYY+1}.parquet`).
-- `nba-clustering`: Runs PCA + KMeans on multiple seasons of advanced stats and writes `data/clustered_players/current.parquet`.
-- `box-score-scraper`: Pulls box scores from the NBA API, calculates DraftKings FP, adds rolling/career features, joins clusters, and writes seasonal + current Parquet files. Also saves the season schedule (`GAME_DATE`, `GAME_ID`, `TEAM`, `OPPONENT`, `IS_HOME`) that minutes-projection uses for the `IS_HOME` feature.
-- `supervised-learning`: Trains three GradientBoosting FP models (`current`, `fp_per_min`, `barebones`) and saves models + feature lists to S3.
+- `cluster-scraper` (off): Pulls advanced/scoring/defense stats from the NBA API (via `PROXY_URL`) and writes `data/advanced_player_stats/current.parquet` plus a per-season copy (`{YYYY}-{YYYY+1}.parquet`).
+- `nba-clustering` (off): Runs PCA + KMeans on multiple seasons of advanced stats and writes `data/clustered_players/current.parquet`.
+- `box-score-scraper`: Pulls box scores from the NBA API, calculates DraftKings FP, adds rolling/career features, and writes seasonal + current Parquet files (the cluster join is switched off). Also saves the season schedule (`GAME_DATE`, `GAME_ID`, `TEAM`, `OPPONENT`, `IS_HOME`), which tells minutes-projection which teams play tonight.
+- `supervised-learning`: Trains the learned minutes model on the current season and the three before it, using the injury report history, and publishes it with its feature list and a training summary. The barebones FP model's training is kept but switched off (`TRAIN_BAREBONES`).
 - `daily-predictions`: Scrapes DailyFantasyFuel projections and writes `data/daily_predictions/current.parquet` (PPG projection, salary, position, starter status).
-- `injury-scraper`: Scrapes the official NBA injury report PDF and writes `data/injuries/current.parquet` with `OUT` players (Out and Doubtful) and estimated injury dates, and `data/injuries/report_statuses.parquet` with every listed status.
-- `minutes-projection`: Generates minutes projections (complex overlap, formula C) + DFF baseline lineups, updates `PROJECTED_MIN` in daily predictions, writes lineups/minutes to `model_comparison/*`, and persists injury context.
-- `llm-analyst`: Claude (Opus 5.5) components L1–L4: nightly per-game web research, LLM head-to-head minutes (L3), shadow-mode minutes adjustments (L2), the preflight check (L1), and the weekly post-mortem (L4). Reads the API key from the `CLAUDE_API_KEY` environment variable; spend is capped at $25/day and logged to `llm/usage/{date}.json`.
-- `lineup-optimizer` (standalone): A separate Lambda that optimizes a lineup from `daily_predictions` using `MY_MODEL_PREDICTED_FP`. It is not part of the game-scheduler pipeline.
+- `injury-scraper`: Scrapes the official NBA injury report PDF and writes `data/injuries/current.parquet` with `OUT` players (Out and Doubtful) and estimated injury dates, `data/injuries/report_statuses.parquet` with every listed status, and appends the night's statuses to `data/injuries/history.parquet` (the minutes model's training history; seeded with archived 2022-26 pre-tip reports).
+- `minutes-projection`: Projects minutes with the learned model (our #1) and Formula C (control), turns them into FP with each player's season FP per minute, builds those two lineups plus DFF's, writes them to `model_comparison/*`, and emails them. See `minutes-projection.md`.
+- `llm-analyst`: Claude (Opus 5.5) components: nightly per-game web research, the AI lineup (one AI-picked lineup per slate, scored but never emailed), the adjustments judge (shadow mode; it sees what the learned model already adjusted), the preflight check, and the weekly post-mortem. Reads the API key from the `CLAUDE_API_KEY` environment variable; spend is capped at $25/day and logged to `llm/usage/{date}.json`.
+- `lineup-optimizer` (standalone): Serves the lineup the email uses (learned model, or DFF's while paused) to the frontend through API Gateway. It is not part of the game-scheduler pipeline.
 
 ## S3 schemas and inspection
 - `s3_bucket_test_results.txt` is the authoritative schema snapshot for all S3 buckets.
@@ -53,7 +52,7 @@ Docker Desktop must be running. `python lambda/deploy.py <function> [...]` or `-
 Each Lambda raises on failure so the `AWS/Lambda Errors` metric fires. CloudWatch alarms `nba-lambda-errors-<function>` (all nine pipeline functions, including `llm-analyst`) publish to the `lineup-optimizer-notifications` SNS topic (email). `game-scheduler` treats a missing DailyFantasyFuel slate as an error only between Oct 15 and Jun 25, and schedules nothing on days with no regular-season games per `data/schedule/game_dates.json` (preseason, All-Star break).
 
 ## Evaluation
-`scripts/evaluate_projections.py` scores stored minutes projections and lineups against actuals, split by data-freshness regime (see the docstring for the 2025-26 regimes). Run it before judging any model change. `scripts/evaluate_llm.py` scores L2 and L3 and reports LLM spend.
+`scripts/evaluate_projections.py` scores stored minutes projections and lineups against actuals, split by data-freshness regime (see the docstring for the 2025-26 regimes). Run it before judging any model change. `scripts/evaluate_llm.py` scores the adjustments judge and the AI lineup and reports LLM spend. `scripts/backtest_vs_dff.py` is the head-to-head with DFF on 2025-26.
 
 ## Roadmap
 `documentation/roadmap.md` is the plan: status, decisions in force, the ordered steps with how each is judged, and the AI pieces with their kill rules. `documentation/findings.md` holds the evidence: every backtest, negative result and the done log.
@@ -68,35 +67,32 @@ Recommended pins for Lambda: numpy==1.24.3, scipy==1.11.4, pandas==2.1.3, scikit
 ## FlowChart (current pipeline)
 ```mermaid
 graph TD;
-    game-scheduler-->cluster-scraper;
-    cluster-scraper-->advanced_player_stats_S3;
-    advanced_player_stats_S3-->nba-clustering;
-    nba-clustering-->clustered_players_S3;
+    game-scheduler-->box-score-scraper;
     box-score-scraper-->box_scores_S3;
-    clustered_players_S3-->box-score-scraper;
+    box-score-scraper-->schedule_S3;
+    injury-scraper-->injuries_S3;
+    injuries_S3-->supervised-learning;
     box_scores_S3-->supervised-learning;
     supervised-learning-->models_S3;
     daily-predictions-->daily_predictions_S3;
-    injury-scraper-->injuries_S3;
 
     daily_predictions_S3-->minutes-projection;
     box_scores_S3-->minutes-projection;
+    schedule_S3-->minutes-projection;
     injuries_S3-->minutes-projection;
     models_S3-->minutes-projection;
-
-    box-score-scraper-->schedule_S3;
-    schedule_S3-->minutes-projection;
-
-    minutes-projection-->model_comparison_complex;
+    minutes-projection-->model_comparison_learned_minutes;
     minutes-projection-->model_comparison_formula_c;
     minutes-projection-->model_comparison_dff;
-    minutes-projection-->injury_context_S3;
 
     daily_predictions_S3-->llm-analyst;
     schedule_S3-->llm-analyst;
     box_scores_S3-->llm-analyst;
-    llm-analyst-->model_comparison_llm_head_to_head;
-    model_comparison_llm_head_to_head-->minutes-projection;
-    model_comparison_complex-->llm-analyst;
+    model_comparison_learned_minutes-->llm-analyst;
+    llm-analyst-->model_comparison_ai_lineup;
     llm-analyst-->llm_S3;
+
+    model_comparison_learned_minutes-->lineup-optimizer;
+    model_comparison_dff-->lineup-optimizer;
+    lineup-optimizer-->frontend;
 ```

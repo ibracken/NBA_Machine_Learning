@@ -28,7 +28,8 @@ pre-lineup check instead).
 Rate model: actual FP per minute, players who played 8+ minutes, weighted by minutes.
 
 Usage: python scripts/injury_response.py [--predict-only]
-  --predict-only  skip the evaluation; fit only the models behind learned_2025_26.parquet (a few minutes)
+  --predict-only  skip the evaluation; write learned_2025_26.parquet from the production model code
+                  (lambda/shared/learned_minutes.py: no position inputs, no per-minute model)
 """
 
 import sys
@@ -40,8 +41,11 @@ from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.linear_model import LinearRegression
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "lambda" / "minutes-projection"))
-from projection_models import position_overlap_complex  # noqa: E402
+
+
+def position_overlap_complex(pos1, pos2):
+    """Same or adjacent position (PG-SG, SG-SF, SF-PF, PF-C): the retired complex model's overlap rule."""
+    return pos1 == pos2 or any(pos1 in g and pos2 in g for g in ({"PG", "SG"}, {"SG", "SF"}, {"SF", "PF"}, {"PF", "C"}))
 
 REPLAY = ROOT / "data" / "replay" / "replay.parquet"
 REPORTS = ROOT / "data" / "replay" / "injury_reports.parquet"
@@ -169,17 +173,20 @@ def report(name, d, cols):
     print(f"  {name:36s} n={len(d):6,d} | " + " | ".join(out))
 
 
-def predict_last_season(r):
-    """2025-26 predictions from models trained on 2022-25 only (the same fits the evaluation's last fold makes)."""
-    base = r[r.S_MIN.notna() & r.HAS_REPORT]
-    train, test = base[base.SEASON != SEASONS[-1]], base[base.SEASON == SEASONS[-1]]
-    elig_tr, elig_te = train[~train.LISTED_OUT], test[~test.LISTED_OUT].copy()
-    pre = OWN_FEATS + suffixed(ABS_FEATS, "_R")
-    elig_te["LEARNED_MIN"] = np.clip(gbr(elig_tr, pre, "ACT_MIN").predict(elig_te[pre].fillna(0)), 0, 48)
-    rated = train[train.PLAYED & (train.ACT_MIN >= 8) & train.S_RATE.notna()]
-    rate_pre = RATE_OWN + suffixed(RATE_ABS, "_R")
-    elig_te["LEARNED_RATE"] = gbr(rated, rate_pre, "ACT_RATE", rated.ACT_MIN).predict(elig_te[rate_pre].fillna(0))
-    return elig_te[["D", "PLAYER", "TEAM", "LEARNED_MIN", "LEARNED_RATE", "S_RATE"]]
+def predict_last_season(r=None):
+    """2025-26 predictions from the production model code (lambda/shared/learned_minutes.py), trained on 2022-25."""
+    sys.path.insert(0, str(ROOT / "lambda" / "shared"))
+    import learned_minutes as lm
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import backtest_shrinkage as bs
+    box = pd.concat([bs.load(f"data/box_scores/{s}.parquet").assign(SEASON=s) for s in SEASONS], ignore_index=True)
+    reports = pd.read_parquet(REPORTS)
+    rows, _ = lm.build(box, reports[~reports.GLEAGUE])
+    elig = lm.training_rows(rows)
+    model = lm.train(elig[elig.SEASON != SEASONS[-1]])
+    test = elig[elig.SEASON == SEASONS[-1]].copy()
+    test["LEARNED_MIN"] = lm.predict(model, test)
+    return test[["D", "PLAYER", "TEAM", "LEARNED_MIN", "S_RATE"]]
 
 
 def main():
@@ -187,7 +194,7 @@ def main():
     r = build_features(pd.read_parquet(REPLAY), reports)
     r.to_parquet(OUT, index=False)
     if "--predict-only" in sys.argv:
-        predict_last_season(r).to_parquet(PRED_OUT, index=False)
+        predict_last_season().to_parquet(PRED_OUT, index=False)
         print(f"wrote {PRED_OUT}")
         return
     print(f"Report coverage: {r.HAS_REPORT.mean():.1%} of rows; listed Out and played anyway: "

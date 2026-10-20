@@ -22,8 +22,8 @@ Set in `frontend/.env.local` (not committed) or the shell:
 
 ## What it shows
 
-`lineup-optimizer` (API mode) returns the lineup the nightly email uses: the in-house lineup, or DFF's while in-house
-projections are paused. It reads both files (`API_LINEUP_SOURCES` in the Lambda) and returns the most recent slate,
+`lineup-optimizer` (API mode) returns the lineup the nightly email uses: the learned-minutes lineup, or DFF's while
+in-house projections are paused. It reads both files (`API_LINEUP_SOURCES` in the Lambda) and returns the most recent slate,
 preferring in-house on a tie. The response says which one (`source`) and for which slate (`slate_date`). The page warns
 when that isn't today; outside game days it shows the last slate played. Actual FP appears once games are graded.
 
@@ -37,7 +37,7 @@ The API response is normalized to `PREDICTED_FP`/`GAME_DATE` and the UI computes
 ```json
 {
   "success": true,
-  "source": "In-house",
+  "source": "Learned minutes",
   "slate_date": "2026-01-17",
   "lineup_size": 8,
   "total_salary": 48500,

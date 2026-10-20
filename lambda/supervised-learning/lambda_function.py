@@ -1,3 +1,11 @@
+"""
+Nightly training. Trains the learned minutes model (lambda/shared/learned_minutes.py), the #1 projection since
+2026-10-18, and publishes models/learned_minutes.pkl with its feature names and a training summary.
+
+The barebones FP model (train_fp_models) is switched off but kept (Ian, 2026-10-18): FP is now projected
+minutes x season FP per minute. The current and fp_per_min FP models were removed.
+"""
+
 import pandas as pd
 import numpy as np
 from sklearn.ensemble import GradientBoostingRegressor
@@ -8,7 +16,20 @@ import json
 import pickle
 from io import BytesIO
 import logging
+import sys
 from datetime import datetime
+from pathlib import Path
+
+try:
+    import learned_minutes as lm
+except ImportError:   # local run: the shared modules live in lambda/shared
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'shared'))
+    import learned_minutes as lm
+
+# The barebones FP model is kept but not trained or served (Ian, 2026-10-18)
+TRAIN_BAREBONES = False
+INJURY_HISTORY_KEY = 'data/injuries/history.parquet'   # D, PLAYER, STATUS; injury-scraper appends nightly
+LEARNED_MODEL_KEY = 'models/learned_minutes.pkl'
 
 # Configure logging
 logger = logging.getLogger()
@@ -91,9 +112,45 @@ def calculate_rest_days(df):
     
     return df_sorted
 
-def run_supervised_learning(publish=True):
+def train_learned_minutes(publish=True):
+    """Train the learned minutes model on the current season and the three before it, and publish it."""
+    start_year = season_start_year()
+    frames = []
+    for year in range(start_year - 3, start_year + 1):
+        season = f'{year}-{str(year + 1)[2:]}'
+        key = f'data/box_scores/{season}.parquet'
+        if s3_key_exists(key):
+            frames.append(load_dataframe_from_s3(key).assign(SEASON=season))
+        else:
+            logger.info(f"{key} not found (season has not started yet)")
+    box = pd.concat(frames, ignore_index=True)
+    reports = load_dataframe_from_s3(INJURY_HISTORY_KEY)
+    rows, _ = lm.build(box, reports)
+    train = lm.training_rows(rows)
+    logger.info(f"Learned minutes: {len(rows)} roster rows, {len(train)} training rows, "
+                f"seasons {sorted(train['SEASON'].unique())}, report days {rows.loc[rows['HAS_REPORT'], 'D'].nunique()}")
+
+    model = lm.train(train)
+    mae = float(np.abs(lm.predict(model, train) - train['ACT_MIN']).mean())
+    summary = {'trained_at': datetime.utcnow().isoformat(timespec='seconds') + 'Z', 'rows': int(len(train)),
+               'seasons': sorted(train['SEASON'].unique().tolist()), 'last_game': str(train['D'].max().date()),
+               'in_sample_mae': round(mae, 3),
+               'importances': dict(zip(lm.FEATURES, np.round(model.feature_importances_, 4).tolist()))}
+    # In-sample MAE only confirms training worked; out-of-sample results are in documentation/findings.md
+    logger.info(f"Learned minutes: in-sample MAE {mae:.3f}; importances {summary['importances']}")
+
+    if publish:
+        # Feature names, summary and model are published together, right after the fit
+        s3.put_object(Bucket=BUCKET_NAME, Key='models/learned_minutes_feature_names.json',
+                      Body=json.dumps({'features': lm.FEATURES}))
+        s3.put_object(Bucket=BUCKET_NAME, Key='models/learned_minutes_summary.json', Body=json.dumps(summary))
+        save_model_to_s3(model, LEARNED_MODEL_KEY)
+    return {'success': True, 'models_trained': ['learned_minutes'], 'results': {'learned_minutes': summary}}
+
+
+def train_fp_models(publish=True):
     """
-    Main function to train supervised learning model for fantasy point prediction
+    Barebones FP model (off: TRAIN_BAREBONES). Kept so it can be switched back on.
 
     publish=False trains and reports R2/importances without writing models or feature names to S3.
     """
@@ -278,19 +335,9 @@ def run_supervised_learning(publish=True):
 
         logger.info(f"Calculated FP_PER_MIN feature - mean: {df['FP_PER_MIN'].mean():.3f}, max: {df['FP_PER_MIN'].max():.3f}")
 
-        # Define three feature sets for three models
-        # Note: OPPONENT removed - will be replaced with opponent defensive rating later
+        # current and fp_per_min were removed 2026-10-18 (barebones was best or tied in every test).
+        # barebones needs the CLUSTER column, which box-score-scraper no longer adds while clustering is off.
         feature_sets = {
-            'current': ['Last3_FP_Avg', 'Last7_FP_Avg', 'Season_FP_Avg',
-                        'Career_FP_Avg', 'Games_Played_Career', 'CLUSTER', 'MIN',
-                        'Last7_MIN_Avg', 'Season_MIN_Avg', 'Career_MIN_Avg',
-                        'IS_HOME', 'REST_DAYS'],
-
-            'fp_per_min': ['Last3_FP_Avg', 'Last7_FP_Avg', 'Season_FP_Avg',
-                           'Career_FP_Avg', 'Games_Played_Career', 'CLUSTER', 'MIN',
-                           'Last7_MIN_Avg', 'Season_MIN_Avg', 'Career_MIN_Avg',
-                           'IS_HOME', 'REST_DAYS', 'FP_PER_MIN'],
-
             'barebones': ['FP_PER_MIN', 'MIN', 'REST_DAYS', 'CLUSTER']
         }
 
@@ -385,9 +432,9 @@ def run_supervised_learning(publish=True):
         logger.info(f"{'='*60}")
         for model_name, results in models_results.items():
             logger.info(f"{model_name}: R²={results['r2_score']:.4f}, Features={results['feature_count']}")
-        # Presentation-friendly report for the "current" model feature importances
-        if 'current' in models_results:
-            current_results = models_results['current']
+        # Presentation-friendly report for the barebones model feature importances
+        if 'barebones' in models_results:
+            current_results = models_results['barebones']
             feature_names = current_results.get('feature_names', [])
             feature_importances = current_results.get('feature_importances', [])
 
@@ -404,7 +451,7 @@ def run_supervised_learning(publish=True):
                     importance_df['importance_pct'] = 0.0
 
                 logger.info(f"\n{'='*60}")
-                logger.info("CURRENT MODEL FEATURE IMPORTANCE")
+                logger.info("BAREBONES MODEL FEATURE IMPORTANCE")
                 logger.info("(Relative split importance; not linear coefficients)")
                 logger.info(f"{'='*60}")
                 for _, row in importance_df.iterrows():
@@ -432,25 +479,31 @@ def lambda_handler(event, context):
     logger.info("Supervised learning Lambda function started")
 
     try:
-        result = run_supervised_learning()
+        result = train_learned_minutes()
+        if TRAIN_BAREBONES:
+            fp = train_fp_models()
+            if not fp['success']:
+                raise RuntimeError(f"Barebones FP model training failed: {fp['error']}")
+            result['models_trained'] += fp['models_trained']
+            result['results'].update(fp['results'])
 
         if result['success']:
             return {
                 'statusCode': 200,
                 'body': json.dumps({
-                    'message': 'Supervised learning models training completed successfully',
+                    'message': 'Model training completed successfully',
                     'models_trained': result['models_trained'],
                     'results': result['results']
                 })
             }
-        raise RuntimeError(f"Supervised learning model training failed: {result['error']}")
+        raise RuntimeError(f"Model training failed: {result.get('error')}")
 
     except Exception as e:
         logger.error(f"Lambda handler error: {str(e)}")
         raise
 
 # For local testing. Local runs never publish: production pickles must come from the Lambda's pinned
-# environment (see AGENTS.md), so this reports R2 and importances only.
+# environment (see AGENTS.md), so this reports the training summary only.
 if __name__ == "__main__":
-    result = run_supervised_learning(publish=False)
+    result = train_learned_minutes(publish=False)
     print(f"Supervised learning result: {result}")

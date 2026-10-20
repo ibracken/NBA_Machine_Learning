@@ -11,11 +11,22 @@ from config import (NBA_TEAM_COUNT, PROJECTION_START_MIN_TEAM_GAMES, UPSTREAM_PO
                     UPSTREAM_WAIT_SECONDS)
 from s3_io import load_parquet
 
+try:
+    from player_names import match_names
+except ImportError:   # local run: the shared modules live in lambda/shared
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'shared'))
+    from player_names import match_names
+
 logger = logging.getLogger()
 
-COMPLEX_PROJECTIONS = 'model_comparison/complex_position_overlap/minutes_projections.parquet'
+# Our #1 projection since 2026-10-18. Rows cover every roster player for tonight's teams, box-score spelling in
+# PLAYER and DFF's spelling in DFF_NAME (slate players only); slate_projections() lines them up with the slate.
+LEARNED_PROJECTIONS = 'model_comparison/learned_minutes/minutes_projections.parquet'
 FORMULA_C_PROJECTIONS = 'model_comparison/formula_c_baseline/minutes_projections.parquet'
-HEAD_TO_HEAD_PROJECTIONS = 'model_comparison/llm_head_to_head/minutes_projections.parquet'
+# One AI-picked lineup per slate (research.ai_lineup); scored, never emailed
+AI_LINEUP = 'model_comparison/ai_lineup/daily_lineups.parquet'
 
 
 def load_box_scores():
@@ -91,7 +102,11 @@ def tonight(today):
 
     current, previous = load_box_scores()
     teams = latest_team(current, previous)
-    slate['TEAM'] = slate['PLAYER'].map(teams)
+    # DFF and box scores spell some players differently ("bobby portis" / "bobby portis jr."); match against
+    # the players whose last team plays tonight
+    candidates = [p for p, t in teams.items() if t in opponent]
+    mapping, _ = match_names(slate['PLAYER'], candidates, set(teams))
+    slate['TEAM'] = slate['PLAYER'].map(lambda p: teams.get(mapping.get(p) or p))
     slate.loc[~slate['TEAM'].isin(opponent.keys()), 'TEAM'] = 'UNKNOWN'
     slate['OPPONENT'] = slate['TEAM'].map(opponent)
     slate['IS_HOME'] = slate['TEAM'].map(is_home)
@@ -140,6 +155,13 @@ def todays_rows(key, today):
         return df
     df['DATE'] = pd.to_datetime(df['DATE']).dt.date
     return df[df['DATE'] == today].copy()
+
+
+def slate_projections(rows):
+    """Learned projection rows renamed to DFF's spelling where we have it, so they join the DFF slate."""
+    if rows.empty or 'DFF_NAME' not in rows.columns:
+        return rows
+    return rows.assign(BOX_NAME=rows['PLAYER'], PLAYER=rows['DFF_NAME'].fillna(rows['PLAYER']))
 
 
 def wait_for_todays_rows(key, today):

@@ -17,9 +17,8 @@ BUCKET_NAME = 'nba-prediction-ibracken'
 SNS_TOPIC_ARN = 'arn:aws:sns:us-east-1:349928386418:lineup-optimizer-notifications'  # Replace with your SNS topic ARN
 # The lineup the email uses: the in-house #1 model, or DFF's while in-house projections are paused.
 # The most recent slate wins; on the same slate the earlier entry wins.
-# TODO(learned model build): replace the in-house key with the learned model's lineup file.
 API_LINEUP_SOURCES = [
-    ('In-house', 'model_comparison/complex_position_overlap/fp_current/daily_lineups.parquet'),
+    ('Learned minutes', 'model_comparison/learned_minutes/daily_lineups.parquet'),
     ('DFF baseline', 'model_comparison/daily_fantasy_fuel_baseline/daily_lineups.parquet'),
 ]
 

@@ -28,6 +28,11 @@ routed through it — the NBA's CDN has throttled AWS egress IPs before (10s tim
 `s3://nba-prediction-ibracken/data/injuries/report_statuses.parquet`: every listed player (G League excluded) with
 `STATUS` in `OUT` / `DOUBTFUL` / `QUESTIONABLE` / `PROBABLE` / `AVAILABLE`, plus `PLAYER`, `TEAM` and the report columns.
 
+`s3://nba-prediction-ibracken/data/injuries/history.parquet`: `D`, `PLAYER`, `STATUS`, `SOURCE` (`archive` /
+`live`). The learned minutes model trains on it. It was seeded with the archived 2022-26 pre-tip reports
+(`scripts/fetch_injury_history.py`, G League excluded), and each run appends its report, replacing that day's
+rows on a rerun.
+
 Before 2026-10-09 hyphenated names were never parsed, and the suffix rule split names containing "ii" or "iv"
 (`joel emb iid`, `trey murphy i ii`), so those players were never matched as injured.
 

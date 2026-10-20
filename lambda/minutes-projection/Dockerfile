@@ -7,11 +7,11 @@ COPY lambda_function.py ${LAMBDA_TASK_ROOT}
 COPY config.py ${LAMBDA_TASK_ROOT}
 COPY s3_utils.py ${LAMBDA_TASK_ROOT}
 COPY actuals_updater.py ${LAMBDA_TASK_ROOT}
-COPY projection_models.py ${LAMBDA_TASK_ROOT}
-COPY injury_system.py ${LAMBDA_TASK_ROOT}
 COPY process_model.py ${LAMBDA_TASK_ROOT}
 COPY lineup_optimizer.py ${LAMBDA_TASK_ROOT}
 COPY serving_features.py ${LAMBDA_TASK_ROOT}
+# Shared modules from lambda/shared (deploy.py passes it as the 'shared' build context)
+COPY --from=shared player_names.py learned_minutes.py ${LAMBDA_TASK_ROOT}/
 
 # Install Python dependencies
 RUN pip install -r requirements.txt

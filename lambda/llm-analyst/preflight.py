@@ -13,23 +13,21 @@ from datetime import datetime, timezone
 import pandas as pd
 
 from claude_client import extract
-from config import (ABOVE_ROLE_WARNING_MIN, MAX_INPUT_AGE_HOURS, MIN_SLATE_COVERAGE, PREFLIGHT_EFFORT,
-                    PREFLIGHT_MODEL, TEAM_TOTAL_CRITICAL, TEAM_TOTAL_WARNING, ZEROED_REGULAR_LAST3_MIN)
+from config import (MAX_INPUT_AGE_HOURS, MIN_SLATE_COVERAGE, PREFLIGHT_EFFORT, PREFLIGHT_MODEL,
+                    TEAM_TOTAL_CRITICAL, TEAM_TOTAL_WARNING, ZEROED_REGULAR_LAST3_MIN)
 from s3_io import last_modified, load_json, load_parquet, publish, save_json
-from slate import (COMPLEX_PROJECTIONS, FORMULA_C_PROJECTIONS, HEAD_TO_HEAD_PROJECTIONS, load_box_scores,
-                   projection_gate, recent_minutes, todays_rows, tonight, wait_for_todays_rows)
+from slate import (FORMULA_C_PROJECTIONS, LEARNED_PROJECTIONS, load_box_scores, projection_gate,
+                   recent_minutes, slate_projections, todays_rows, tonight, wait_for_todays_rows)
 
 logger = logging.getLogger()
 
-LINEUP_KEYS = [f'model_comparison/{m}/fp_{f}/daily_lineups.parquet'
-               for m in ('complex_position_overlap', 'formula_c_baseline')
-               for f in ('current', 'fp_per_min', 'barebones')]
+LINEUP_KEYS = [f'model_comparison/{m}/daily_lineups.parquet' for m in ('learned_minutes', 'formula_c_baseline')]
 
 REVIEW_SYSTEM = """You audit tonight's NBA minutes and fantasy-point projections before they are used to \
 build DraftKings lineups. Automated rules have already run; their findings are listed. Find problems the \
 rules did not catch: contradictions between a projection and the player's recent minutes, status, salary \
 or the DFF projection; teams whose projections do not add up; anything that suggests an upstream input is \
-wrong. Do not repeat a rule finding. Every finding must quote the specific numbers from the table that \
+wrong. "absence adj" is how many minutes the model added or removed because of teammates out tonight. Do not repeat a rule finding. Every finding must quote the specific numbers from the table that \
 show the problem. Report nothing you cannot support from the table - an empty list is a normal answer. \
 critical means a lineup built tonight would likely be wrong because of it; warning means worth a look."""
 
@@ -108,13 +106,12 @@ def projection_rules(slate, proj, formula_c, recent, injured):
                            f"only {len(covered)}/{len(slate_players)} DFF slate players have an in-house "
                            f"projection ({coverage:.0%}); highest-salary missing: {missing[:8]}"))
 
-    if 'PROJECTED_FP_current' in proj.columns and len(proj):
-        zero_fp = (proj[['PROJECTED_FP_current', 'PROJECTED_FP_fp_per_min', 'PROJECTED_FP_barebones']]
-                   .fillna(0) <= 0).all(axis=1).mean()
+    if 'PROJECTED_FP' in proj.columns and len(proj):
+        zero_fp = (proj['PROJECTED_FP'].fillna(0) <= 0).mean()
         if zero_fp > 0.5:
-            out.append(finding('critical', 'fp_models_zero', 'FP models',
-                               f"{zero_fp:.0%} of projected players have 0 FP from all three FP models - "
-                               "models likely failed to load"))
+            out.append(finding('critical', 'fp_zero', 'projections',
+                               f"{zero_fp:.0%} of projected slate players have 0 FP - the model or the season "
+                               "FP-per-minute input likely failed"))
 
     for r in proj.itertuples():
         info = recent.get(r.PLAYER)
@@ -126,11 +123,6 @@ def projection_rules(slate, proj, formula_c, recent, injured):
             out.append(finding('critical', 'zeroed_regular', r.PLAYER,
                                f"projected {r.PROJECTED_MIN:.1f} min but last 3 games {last3} "
                                "and not on the injury report"))
-        gap = r.PROJECTED_MIN - info['season_avg']
-        if gap >= ABOVE_ROLE_WARNING_MIN:
-            out.append(finding('warning', 'above_role', r.PLAYER,
-                               f"projected {r.PROJECTED_MIN:.1f} min vs season avg {info['season_avg']} "
-                               f"(+{gap:.1f}); historically such projections ran ~6.7 min high"))
 
     totals = proj.groupby('TEAM')['PROJECTED_MIN'].sum()
     for team, total in totals.items():
@@ -167,21 +159,21 @@ def conflict_findings(today):
     return out
 
 
-def review_table(slate, proj, formula_c, h2h, recent, injured):
+def review_table(slate, proj, formula_c, recent, injured):
     fc = dict(zip(formula_c['PLAYER'], formula_c['PROJECTED_MIN'])) if not formula_c.empty else {}
-    llm = dict(zip(h2h['PLAYER'], h2h['PROJECTED_MIN'])) if not h2h.empty else {}
-    proj_by = proj.set_index('PLAYER')
-    lines = ["player | team vs opp | salary | DFF FP | our FP | our min | formula C min | LLM min | "
+    proj_by = proj.drop_duplicates('PLAYER').set_index('PLAYER')
+    lines = ["player | team vs opp | salary | DFF FP | our FP | our min | absence adj | formula C min | "
              "last 5 min | season avg (games) | injury report"]
     for s in slate.sort_values('SALARY', ascending=False).itertuples():
         p = proj_by.loc[s.PLAYER] if s.PLAYER in proj_by.index else None
         info = recent.get(s.PLAYER, {})
-        our_fp = f"{float(p['PROJECTED_FP_current']):.1f}" if p is not None and 'PROJECTED_FP_current' in p else '-'
+        our_fp = f"{float(p['PROJECTED_FP']):.1f}" if p is not None else '-'
         our_min = f"{float(p['PROJECTED_MIN']):.1f}" if p is not None else 'NOT PROJECTED'
+        adj = f"{float(p['ABSENCE_ADJ_MIN']):+.1f}" if p is not None and 'ABSENCE_ADJ_MIN' in p else '-'
         lines.append(
             f"{s.PLAYER} | {s.TEAM} vs {s.OPPONENT if pd.notna(s.OPPONENT) else '?'} | "
-            f"{int(s.SALARY) if pd.notna(s.SALARY) else '?'} | {s.PPG_PROJECTION} | {our_fp} | {our_min} | "
-            f"{fc.get(s.PLAYER, '-')} | {llm.get(s.PLAYER, '-')} | {info.get('last_minutes', '-')} | "
+            f"{int(s.SALARY) if pd.notna(s.SALARY) else '?'} | {s.PPG_PROJECTION} | {our_fp} | {our_min} | {adj} | "
+            f"{fc.get(s.PLAYER, '-')} | {info.get('last_minutes', '-')} | "
             f"{info.get('season_avg', '-')} ({info.get('games', 0)}) | {'OUT' if s.PLAYER in injured else '-'}")
     return '\n'.join(lines)
 
@@ -189,9 +181,6 @@ def review_table(slate, proj, formula_c, h2h, recent, injured):
 def run_paused(today, slate, current, reason):
     """Early-season pause: no in-house projections to check. Input checks only; email only if critical."""
     findings, _, _ = input_checks(today, current, set(slate['TEAM']))
-    if todays_rows(HEAD_TO_HEAD_PROJECTIONS, today).empty:
-        findings.append(finding('warning', 'no_head_to_head', 'llm-analyst',
-                                "no LLM head-to-head projections for today (L3)"))
     save_json({'date': today, 'paused': reason, 'rule_findings': findings, 'llm_findings': [],
                'llm_error': None}, f'llm/preflight/{today}.json')
     n_crit = sum(f['severity'] == 'critical' for f in findings)
@@ -212,10 +201,9 @@ def run(today):
     paused, reason = projection_gate(current, today)
     if paused:
         return run_paused(today, slate, current, reason)
-    proj = wait_for_todays_rows(COMPLEX_PROJECTIONS, today)
+    proj = slate_projections(wait_for_todays_rows(LEARNED_PROJECTIONS, today))
     proj = proj[proj['PLAYER'].isin(slate['PLAYER'])] if not proj.empty else proj
-    formula_c = todays_rows(FORMULA_C_PROJECTIONS, today)
-    h2h = todays_rows(HEAD_TO_HEAD_PROJECTIONS, today)
+    formula_c = slate_projections(todays_rows(FORMULA_C_PROJECTIONS, today))
     recent = recent_minutes(current)
 
     rule_findings, injuries, injury_age = input_checks(today, current, set(slate['TEAM']))
@@ -223,15 +211,12 @@ def run(today):
     coverage, totals = 0.0, pd.Series(dtype=float)
     if proj.empty:
         rule_findings.append(finding('critical', 'no_projections', 'minutes-projection',
-                                     "no complex_position_overlap projections for today"))
+                                     "no learned-minutes projections for today"))
     else:
         found, coverage, totals = projection_rules(slate, proj, formula_c, recent, injured)
         rule_findings += found
     rule_findings += output_rules(today)
     rule_findings += conflict_findings(today)
-    if h2h.empty:
-        rule_findings.append(finding('warning', 'no_head_to_head', 'llm-analyst',
-                                     "no LLM head-to-head projections for today (L3)"))
 
     rules_text = '\n'.join(f"- [{f['severity']}] {f['rule']} {f['subject']}: {f['issue']}"
                            for f in rule_findings) or '(none)'
@@ -240,7 +225,7 @@ def run(today):
               f"{f'{injury_age:.1f}h' if injury_age is not None else 'missing'}. "
               f"Slate coverage: {coverage:.0%}.\n\nRule findings already reported:\n{rules_text}\n\n"
               f"Team projected minute totals (slate players only; ~190-274 is normal): {team_text}\n\n"
-              f"Players:\n{review_table(slate, proj, formula_c, h2h, recent, injured)}")
+              f"Players:\n{review_table(slate, proj, formula_c, recent, injured)}")
     llm_findings, llm_error = [], None
     try:
         review = extract('preflight review', PREFLIGHT_MODEL, PREFLIGHT_EFFORT, REVIEW_SYSTEM, prompt,

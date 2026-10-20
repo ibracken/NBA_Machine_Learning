@@ -1,509 +1,285 @@
 """
-NBA Minutes Projection Lambda
-Generates projections for 3 models:
-1. Complex Position Overlap (injury-aware redistribution, damped)
-2. Formula C Baseline (no injury handling)
-3. DailyFantasyFuel Baseline (DFF fantasy projections)
+NBA Minutes Projection Lambda. Nightly lineups from three projections:
+1. Learned minutes (our #1): lambda/shared/learned_minutes.py, trained nightly by supervised-learning
+2. Formula C (control)
+3. DailyFantasyFuel: DFF's own projections
+For 1 and 2, FP = projected minutes x the player's season FP per minute. Lineups use the production optimizer with
+DFF's salaries and positions.
 
-direct_position_only was removed 2026-09-20: it matched complex_position_overlap on 89.5% of
-rows and was statistically indistinguishable where it differed (MAE 5.833 vs 5.842).
+The complex model was removed 2026-10-18. The barebones FP model is kept but not served (process_model.py,
+lineup_optimizer.predict_fantasy_points).
 """
 
-import pandas as pd
 import logging
-import pytz
+import sys
 from datetime import datetime
+from pathlib import Path
 
-# Import from our new modules
-from s3_utils import load_from_s3, send_multi_model_notification, save_to_s3
+import pandas as pd
+import pytz
+
+try:
+    import learned_minutes as lm
+except ImportError:   # local run: the shared modules live in lambda/shared
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'shared'))
+    import learned_minutes as lm
 from actuals_updater import update_actual_minutes
-from projection_models import (
-    project_minutes_complex,
-    project_minutes_formula_c,
-    position_overlap_complex,
-    generate_team_based_projections,
-    build_projection_dict
-)
-from injury_system import transition_beneficiaries_to_ex
-from process_model import process_model
-from serving_features import latest_rows_as_of_tonight, projection_gate
 from lineup_optimizer import optimize_lineup
+from player_names import match_names
+from s3_utils import load_from_s3, load_model_from_s3, save_to_s3, send_multi_model_notification
+from serving_features import projection_gate
 
-# Configure logging
 logger = logging.getLogger()
-logger.setLevel(logging.WARNING)  # Set to DEBUG to capture all messages
-
-# Add console handler for local testing (Lambda provides its own handlers)
+logger.setLevel(logging.INFO)
 if not logger.handlers:
-    # Console handler - only show INFO and above
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
-    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-    console_handler.setFormatter(formatter)
-    logger.addHandler(console_handler)
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    logger.addHandler(handler)
 
-    # File handler - capture everything including DEBUG
-    file_handler = logging.FileHandler('minutes_projection_debug.log', mode='w')
-    file_handler.setLevel(logging.DEBUG)
-    file_handler.setFormatter(formatter)
-    logger.addHandler(file_handler)
+LEARNED_PATH = 'model_comparison/learned_minutes'
+FORMULA_C_PATH = 'model_comparison/formula_c_baseline'
+DFF_PATH = 'model_comparison/daily_fantasy_fuel_baseline'
+LEARNED_MODEL_KEY = 'models/learned_minutes.pkl'
+ABSENCE_FEATURES = ['OUT_MIN_FRESH', 'OUT_MIN_ONGOING', 'WOWY_MIN', 'WOWY_N']
 
 
-LLM_HEAD_TO_HEAD_PATH = 'model_comparison/llm_head_to_head'
+def save_day(df, key, today, date_col='DATE'):
+    """Replace today's rows in an accumulating S3 file."""
+    existing = load_from_s3(key)
+    if not existing.empty:
+        existing[date_col] = pd.to_datetime(existing[date_col]).dt.date
+        existing = existing[existing[date_col] != today]
+        df = pd.concat([existing, df], ignore_index=True)
+    save_to_s3(df, key)
 
 
-def build_llm_lineups(box_scores, today):
-    """Run the FP models and lineup optimizer on llm-analyst's head-to-head minutes for `today`."""
-    h2h = load_from_s3(f'{LLM_HEAD_TO_HEAD_PATH}/minutes_projections.parquet')
-    if h2h.empty:
-        logger.warning("No LLM head-to-head projections in S3")
-        return {'statusCode': 200, 'body': 'No LLM head-to-head projections'}
-    h2h['DATE'] = pd.to_datetime(h2h['DATE']).dt.date
-    todays = h2h[h2h['DATE'] == today].copy()
-    if todays.empty:
-        logger.warning(f"No LLM head-to-head projections for {today}")
-        return {'statusCode': 200, 'body': f'No LLM head-to-head projections for {today}'}
-
+def load_daily_preds():
     daily_preds = load_from_s3('data/daily_predictions/current.parquet')
     if not daily_preds.empty:
         daily_preds['GAME_DATE'] = pd.to_datetime(daily_preds['GAME_DATE']).dt.date
+    return daily_preds
 
-    # Recomputed below; drop any from an earlier run today
-    fp_cols = [c for c in todays.columns if c.startswith('PROJECTED_FP')]
-    todays = todays.drop(columns=fp_cols)
 
-    _, lineups = process_model(
-        "LLM Head-to-Head",
-        LLM_HEAD_TO_HEAD_PATH,
-        todays,
-        daily_preds,
-        today,
-        box_scores,
-        fp_model_names=['current', 'fp_per_min', 'barebones']
-    )
-    built = {fp: int((lineup['DATE'] == today).sum()) if not lineup.empty else 0 for fp, lineup in lineups.items()}
-    logger.info(f"LLM head-to-head lineups for {today}: {built}")
-    return {'statusCode': 200, 'body': f'LLM head-to-head lineups for {today}: {built}'}
+def tonights_injury_report(today):
+    """Tonight's Out/Doubtful list (injury-scraper writes both as OUT). Empty if missing or not from today."""
+    injuries = load_from_s3('data/injuries/current.parquet')
+    empty = pd.DataFrame(columns=['D', 'PLAYER', 'STATUS'])
+    if injuries.empty:
+        logger.warning("No injury report: no teammates treated as out tonight")
+        return empty
+    report_dates = pd.to_datetime(injuries.get('REPORT_DATE', pd.Series(dtype=object))).dropna()
+    if report_dates.empty or report_dates.max().date() != today:
+        latest = report_dates.max().date() if not report_dates.empty else 'unknown'
+        logger.warning(f"Injury report is from {latest}, not {today}: no teammates treated as out tonight")
+        return empty
+    return pd.DataFrame({'D': pd.Timestamp(today), 'PLAYER': injuries['PLAYER'], 'STATUS': injuries['STATUS']})
+
+
+def tonight_rows(box_scores, today):
+    """Roster rows for tonight's games with the learned model's features (lambda/shared/learned_minutes.py)."""
+    schedule = load_from_s3('data/schedule/current.parquet')
+    if schedule.empty:
+        raise RuntimeError("data/schedule/current.parquet missing: can't tell which teams play tonight")
+    games = schedule[pd.to_datetime(schedule['GAME_DATE']).dt.date == today]
+    if games.empty:
+        logger.warning(f"No scheduled games for {today}")
+        return pd.DataFrame()
+    tonight = games.assign(SEASON=str(box_scores['SEASON'].max()))[['GAME_DATE', 'GAME_ID', 'TEAM', 'SEASON']]
+    rows, unmatched = lm.build(box_scores, tonights_injury_report(today), tonight)
+    rows = rows[rows['D'] == pd.Timestamp(today)].copy()
+    if unmatched:
+        logger.info(f"Injury report names not on tonight's rosters (long-term or two-way): "
+                    f"{sorted(n for names in unmatched.values() for n in names)}")
+    logger.info(f"{len(rows)} roster rows for {rows['TEAM'].nunique()} teams; {int(rows['LISTED_OUT'].sum())} listed out")
+    return rows
+
+
+def add_learned_minutes(rows, model):
+    """LEARNED_MIN for everyone not listed out, plus how much tonight's absences moved it (for the AI judge)."""
+    rows = rows.copy()
+    projectable = rows['S_MIN'].notna() & ~rows['LISTED_OUT']
+    rows['LEARNED_MIN'] = 0.0
+    rows['LEARNED_MIN_NO_ABSENCES'] = 0.0
+    if projectable.any():
+        rows.loc[projectable, 'LEARNED_MIN'] = lm.predict(model, rows[projectable])
+        no_absences = rows[projectable].assign(**{c: 0.0 for c in ABSENCE_FEATURES})
+        rows.loc[projectable, 'LEARNED_MIN_NO_ABSENCES'] = lm.predict(model, no_absences)
+    rows['ABSENCE_ADJ_MIN'] = rows['LEARNED_MIN'] - rows['LEARNED_MIN_NO_ABSENCES']
+    return rows
+
+
+def slate_pool(rows, daily_preds, today, minutes_col, known_names):
+    """
+    Tonight's DFF slate joined to our projections. PLAYER stays DFF's spelling (the optimizer takes salaries from
+    daily_preds by name); BOX_NAME is the box-score spelling, matched against tonight's rosters.
+    """
+    slate = daily_preds[daily_preds['GAME_DATE'] == today].drop_duplicates('PLAYER')
+    if slate.empty or rows.empty:
+        return pd.DataFrame()
+    mapping, unmatched = match_names(slate['PLAYER'], rows['PLAYER'], known_names)
+    if unmatched:
+        logger.info(f"DFF slate players with no roster row tonight: {unmatched}")
+    slate = slate.assign(BOX_NAME=slate['PLAYER'].map(mapping)).dropna(subset=['BOX_NAME'])
+    pool = slate[['PLAYER', 'BOX_NAME', 'POSITION']].merge(
+        rows.rename(columns={'PLAYER': 'BOX_NAME'})[['BOX_NAME', 'TEAM', minutes_col, 'S_RATE']], on='BOX_NAME')
+    # Unrounded: rounding can flip near-ties in the optimizer (the email and saved files round for display)
+    pool['PROJECTED_MIN'] = pool[minutes_col]
+    pool['PROJECTED_FP'] = pool[minutes_col] * pool['S_RATE']
+    return pool[pool['PROJECTED_FP'] > 0]
+
+
+def build_lineup(label, path, pool, daily_preds, today):
+    if pool.empty:
+        logger.warning(f"{label}: empty pool for {today}")
+        return pd.DataFrame()
+    lineup = optimize_lineup(pool[['PLAYER', 'TEAM', 'POSITION', 'PROJECTED_MIN', 'PROJECTED_FP']], daily_preds, today)
+    if lineup.empty:
+        logger.warning(f"{label}: optimizer returned no lineup for {today}")
+        return lineup
+    save_day(lineup, f'{path}/daily_lineups.parquet', today)
+    logger.info(f"{label} lineup: {lineup['PROJECTED_FP'].sum():.1f} projected FP")
+    return lineup
+
+
+def save_projections(rows, path, minutes_col, today, extra_cols=()):
+    out = rows.assign(DATE=pd.Timestamp(today), PROJECTED_MIN=rows[minutes_col].round(1),
+                      PROJECTED_FP=(rows[minutes_col] * rows['S_RATE']).round(1),
+                      OUT_TONIGHT=rows['LISTED_OUT'], ACTUAL_MIN=None, ACTUAL_FP=None)
+    cols = ['DATE', 'PLAYER', 'TEAM', 'PROJECTED_MIN', 'PROJECTED_FP', 'S_RATE', 'S_MIN', 'L7_MIN', 'GP',
+            'TEAM_GAMES_MISSED', 'OUT_TONIGHT', *extra_cols, 'ACTUAL_MIN', 'ACTUAL_FP']
+    save_day(out[cols], f'{path}/minutes_projections.parquet', today)
+
+
+def update_daily_predictions_minutes(daily_preds, pool, today):
+    """Write learned minutes and teams into today's DFF rows (read by the standalone lineup-optimizer)."""
+    if daily_preds.empty or pool.empty:
+        return
+    by_name = pool.set_index('PLAYER')
+    mask = (daily_preds['GAME_DATE'] == today) & daily_preds['PLAYER'].isin(by_name.index)
+    daily_preds.loc[mask, 'PROJECTED_MIN'] = daily_preds.loc[mask, 'PLAYER'].map(by_name['PROJECTED_MIN'])
+    daily_preds.loc[mask, 'TEAM_ABBREVIATION'] = daily_preds.loc[mask, 'PLAYER'].map(by_name['TEAM'])
+    save_to_s3(daily_preds, 'data/daily_predictions/current.parquet')
 
 
 def build_dff_lineup(daily_preds, today, team_mapping):
-    """Optimize and save today's lineup from DFF's own FP projections. Returns all saved rows."""
+    """Optimize and save today's lineup from DFF's own FP projections."""
     logger.info("Generating lineup: DailyFantasyFuel Baseline")
     if daily_preds.empty:
         return pd.DataFrame()
-
     todays_dff = daily_preds[daily_preds['GAME_DATE'] == today].copy()
     logger.info(f"Found {len(todays_dff)} DailyFantasyFuel projections for {today}")
-
     # daily-predictions has no TEAM column
     team_mapping = team_mapping.drop_duplicates(subset='PLAYER', keep='last')
     todays_dff = todays_dff.merge(team_mapping, on='PLAYER', how='left')
     todays_dff['TEAM'] = todays_dff['TEAM'].fillna('UNKNOWN')
-
     todays_dff['PROJECTED_FP'] = todays_dff['PPG_PROJECTION']
-    todays_dff['PROJECTED_MIN'] = 0  # DFF doesn't provide minutes - placeholder only
-
-    # No SALARY here: optimize_lineup merges it from daily_preds
-    dff_projections = todays_dff[['PLAYER', 'TEAM', 'POSITION', 'PROJECTED_MIN', 'PROJECTED_FP']].copy()
-    lineup_dff = optimize_lineup(dff_projections, daily_preds, today)
-    if not lineup_dff.empty:
-        existing_lineup = load_from_s3('model_comparison/daily_fantasy_fuel_baseline/daily_lineups.parquet')
-        if not existing_lineup.empty:
-            existing_lineup['DATE'] = pd.to_datetime(existing_lineup['DATE']).dt.date
-            existing_lineup = existing_lineup[existing_lineup['DATE'] != today]
-            lineup_dff = pd.concat([existing_lineup, lineup_dff], ignore_index=True)
-        save_to_s3(lineup_dff, 'model_comparison/daily_fantasy_fuel_baseline/daily_lineups.parquet')
-        logger.info(f"DailyFantasyFuel lineup saved: {len(lineup_dff[lineup_dff['DATE'] == today])} players")
-    return lineup_dff
+    todays_dff['PROJECTED_MIN'] = 0  # DFF doesn't provide minutes
+    lineup = optimize_lineup(todays_dff[['PLAYER', 'TEAM', 'POSITION', 'PROJECTED_MIN', 'PROJECTED_FP']],
+                             daily_preds, today)
+    if not lineup.empty:
+        save_day(lineup, f'{DFF_PATH}/daily_lineups.parquet', today)
+    return lineup
 
 
 def run_paused(box_scores, today, reason):
     """Early-season pause: DFF lineup and email only; no in-house projections or lineups."""
     logger.warning(f"In-house projections paused for {today}: {reason}")
-    daily_preds = load_from_s3('data/daily_predictions/current.parquet')
-    if not daily_preds.empty:
-        daily_preds['GAME_DATE'] = pd.to_datetime(daily_preds['GAME_DATE']).dt.date
+    daily_preds = load_daily_preds()
     latest = box_scores.sort_values('GAME_DATE').groupby('PLAYER').tail(1)
     team_mapping = latest[['PLAYER', 'TEAM_ABBREVIATION']].rename(columns={'TEAM_ABBREVIATION': 'TEAM'})
-
     lineup_dff = build_dff_lineup(daily_preds, today, team_mapping)
-    todays = lineup_dff[lineup_dff['DATE'] == today] if not lineup_dff.empty else pd.DataFrame()
     send_multi_model_notification(
-        {f"In-house projections paused ({reason})": pd.DataFrame(), "DailyFantasyFuel": todays}, today)
-    return {'statusCode': 200, 'body': f'Projections paused ({reason}); DFF lineup {len(todays)} players'}
+        {f"In-house projections paused ({reason})": pd.DataFrame(), "DailyFantasyFuel": lineup_dff}, today)
+    return {'statusCode': 200, 'body': f'Projections paused ({reason}); DFF lineup {len(lineup_dff)} players'}
 
 
-# ==================== Main Lambda Handler ====================
+def check_model(box_scores):
+    """
+    Release check (AGENTS.md): load the published model in this environment and predict the last graded game day
+    from stored box scores and that day's report in the injury history, as the nightly run would. No writes, no
+    email. Normal range on 2025-26: MAE about 4-6 min. Without the report it reads far higher (10.8 on the season's
+    last day, when 47% of roster players sat).
+    """
+    model = load_model_from_s3(LEARNED_MODEL_KEY)
+    if model is None:
+        raise RuntimeError(f"could not load {LEARNED_MODEL_KEY}")
+    rows, _ = lm.build(box_scores, load_from_s3('data/injuries/history.parquet'))
+    last = rows[(rows['D'] == rows['D'].max()) & rows['S_MIN'].notna() & ~rows['LISTED_OUT']]
+    pred = lm.predict(model, last)
+    mae = float(abs(pred - last['ACT_MIN']).mean())
+    body = (f"{LEARNED_MODEL_KEY} loaded and predicted {len(last)} players not listed out for "
+            f"{last['D'].max().date()}: MAE {mae:.2f} min (injury report {'found' if last['HAS_REPORT'].any() else 'MISSING'})")
+    logger.info(body)
+    return {'statusCode': 200, 'body': body}
+
+
+def run_projections(box_scores, today):
+    daily_preds = load_daily_preds()
+    known = set(box_scores['PLAYER'])
+    rows = tonight_rows(box_scores, today)
+    lineups, failures = {}, []
+
+    # 1. Learned minutes, our #1
+    model = load_model_from_s3(LEARNED_MODEL_KEY)
+    if model is None:
+        failures.append(f"could not load {LEARNED_MODEL_KEY}")
+        lineups["1. Learned minutes (#1) - MODEL FAILED TO LOAD"] = pd.DataFrame()
+    elif not rows.empty:
+        rows = add_learned_minutes(rows, model)
+        pool = slate_pool(rows, daily_preds, today, 'LEARNED_MIN', known)
+        # DFF's spelling, for llm-analyst, which works from the DFF slate
+        rows['DFF_NAME'] = rows['PLAYER'].map(dict(zip(pool['BOX_NAME'], pool['PLAYER']))) if not pool.empty else None
+        save_projections(rows, LEARNED_PATH, 'LEARNED_MIN', today,
+                         extra_cols=['DFF_NAME', 'LEARNED_MIN_NO_ABSENCES', 'ABSENCE_ADJ_MIN', *ABSENCE_FEATURES])
+        logger.info(f"Learned minutes: {len(pool)} slate players projected")
+        lineups["1. Learned minutes (#1)"] = build_lineup("Learned minutes", LEARNED_PATH, pool, daily_preds, today)
+        update_daily_predictions_minutes(daily_preds, pool, today)
+
+    # 2. Formula C, the control
+    if not rows.empty:
+        fc_rows = rows.assign(FC_MIN=rows['FC_MIN'].where(~rows['LISTED_OUT'], 0.0))
+        save_projections(fc_rows, FORMULA_C_PATH, 'FC_MIN', today)
+        lineups["2. Formula C (control)"] = build_lineup(
+            "Formula C", FORMULA_C_PATH, slate_pool(fc_rows, daily_preds, today, 'FC_MIN', known), daily_preds, today)
+
+    # 3. DailyFantasyFuel
+    team_mapping = (rows[['PLAYER', 'TEAM']] if not rows.empty else
+                    box_scores[['PLAYER', 'TEAM_ABBREVIATION']].rename(columns={'TEAM_ABBREVIATION': 'TEAM'}))
+    lineups["3. DailyFantasyFuel"] = build_dff_lineup(daily_preds, today, team_mapping)
+
+    send_multi_model_notification(lineups, today)
+    if failures:
+        # Lineups that could be built were saved and emailed; fail loudly so the error alarm fires
+        raise RuntimeError(f"minutes-projection for {today}: {failures}")
+    return {'statusCode': 200, 'body': f"Lineups for {today}: " + ", ".join(
+        f"{k} {len(v)}" for k, v in lineups.items())}
+
 
 def lambda_handler(event, context):
     """
-    Generate projections for all 5 models OR update actual minutes
-
     Event parameters:
-        - action: 'project' (default) or 'update_actuals'
-        - date: Optional date override (YYYY-MM-DD format)
+        action: 'project' (default), 'update_actuals' or 'check_model' (load + predict, no side effects)
+        date: optional date override (YYYY-MM-DD)
     """
-    try:
-        # Check event for action type
-        action = event.get('action', 'project') if event else 'project'
+    event = event or {}
+    action = event.get('action', 'project')
+    today = (datetime.strptime(event['date'], '%Y-%m-%d').date() if event.get('date')
+             else datetime.now(pytz.timezone('US/Eastern')).date())
+    box_scores = load_from_s3('data/box_scores/current.parquet')
+
+    if action == 'check_model':
+        return check_model(box_scores)
+    if action == 'update_actuals':
+        return {'statusCode': 200, 'body': f'Updated {update_actual_minutes(box_scores)} actual records'}
+
+    if box_scores.empty:
+        raise RuntimeError("No box scores in data/box_scores/current.parquet")
+    paused, reason = projection_gate(box_scores, today)
+    update_actual_minutes(box_scores.copy())
+    if paused:
+        return run_paused(box_scores, today, reason)
+    return run_projections(box_scores, today)
 
-        # Load common dependencies
-        eastern = pytz.timezone('US/Eastern')
-        today = datetime.now(eastern).date()
 
-        logger.info("Loading player stats from box scores...")
-        box_scores = load_from_s3('data/box_scores/current.parquet')
-
-        # Update actual minutes mode
-        if action == 'update_actuals':
-            target_date = event.get('date') if event and 'date' in event else None
-            if target_date:
-                target_date = datetime.strptime(target_date, '%Y-%m-%d').date()
-
-            updated_count = update_actual_minutes(box_scores, target_date, today)
-
-            return {
-                'statusCode': 200,
-                'body': f'Updated {updated_count} actual minutes records'
-            }
-
-        # Roadmap L3: FP + lineups for the LLM head-to-head minutes, so they are scored on realized
-        # lineup FP with the same FP models and optimizer as every other minutes model. Not emailed.
-        if action == 'llm_lineups':
-            if event.get('date'):
-                today = datetime.strptime(event['date'], '%Y-%m-%d').date()
-            paused, reason = projection_gate(box_scores, today)
-            if paused:
-                logger.warning(f"LLM head-to-head lineups skipped for {today}: {reason}")
-                return {'statusCode': 200, 'body': f'Projections paused ({reason})'}
-            return build_llm_lineups(box_scores, today)
-
-        # Default: Generate projections (and update actuals first)
-        logger.info("Running actuals update before projections")
-        update_actual_minutes(box_scores)
-
-        # Default: Generate projections
-        logger.info(f"Starting minutes projection for {today}")
-
-        if box_scores.empty:
-            logger.error("No box scores data available")
-            return {'statusCode': 400, 'body': 'No box scores data available'}
-
-        gate_date = datetime.strptime(event['date'], '%Y-%m-%d').date() if event and event.get('date') else today
-        paused, reason = projection_gate(box_scores, gate_date)
-        if paused:
-            return run_paused(box_scores, gate_date, reason)
-
-        # Get each player's most recent game, with rolling averages that include that game
-        box_scores['GAME_DATE'] = pd.to_datetime(box_scores['GAME_DATE'])
-        player_stats = latest_rows_as_of_tonight(box_scores)
-
-        # Load LAST season's box scores for players with 0 games this season
-        # BUT only for players on the current injury report (filters out free agents/retired players)
-        logger.info("Loading previous season box scores for season-long injuries...")
-        # "Previous" is relative to the season actually in current.parquet, which lags the calendar
-        # in the offseason and on opening day
-        prev_start_year = int(str(box_scores['SEASON'].max()).split('-')[0]) - 1
-        prev_season_box_scores = load_from_s3(f'data/box_scores/{prev_start_year}-{str(prev_start_year + 1)[2:]}.parquet')
-
-        if not prev_season_box_scores.empty:
-            prev_season_box_scores['GAME_DATE'] = pd.to_datetime(prev_season_box_scores['GAME_DATE'])
-            prev_season_stats = latest_rows_as_of_tonight(prev_season_box_scores)
-
-            # Mark these as previous season data
-            prev_season_stats['FROM_PREV_SEASON'] = True
-            player_stats['FROM_PREV_SEASON'] = False
-
-            # Keep only players NOT in current season (season-long injuries)
-            prev_season_only = prev_season_stats[~prev_season_stats['PLAYER'].isin(player_stats['PLAYER'])].copy()
-
-            if not prev_season_only.empty:
-                logger.info(f"Found {len(prev_season_only)} players with 0 games this season (using last season data)")
-                player_stats = pd.concat([player_stats, prev_season_only], ignore_index=True)
-
-        # Map columns to what the projection functions expect
-        player_stats = player_stats.rename(columns={
-            'Season_MIN_Avg': 'SEASON_AVG_MIN',
-            'Last7_MIN_Avg': 'LAST_7_AVG_MIN',
-            'MIN': 'PREV_GAME_MIN',
-            'Career_MIN_Avg': 'CAREER_AVG_MIN',
-            'TEAM_ABBREVIATION': 'TEAM'
-        })
-
-        # Calculate games played THIS season (will be 0 for prev season players)
-        current_season = box_scores['SEASON'].max() if 'SEASON' in box_scores.columns else None
-        if current_season:
-            games_by_player = box_scores[box_scores['SEASON'] == current_season].groupby('PLAYER').size()
-            player_stats['GAMES_PLAYED'] = player_stats['PLAYER'].map(games_by_player).fillna(0)
-        else:
-            player_stats['GAMES_PLAYED'] = 0
-
-        # Load injury status from S3 (scraped by injury-scraper lambda)
-        injury_data = load_from_s3('data/injuries/current.parquet')
-
-        if not injury_data.empty:
-            logger.info(f"Loaded {len(injury_data)} injury records from S3")
-
-            # Merge injury status with player stats
-            # ESTIMATED_INJURY_DATE helps with baseline calculations (estimated from last game)
-            # RETURN_DATE_DT helps identify players returning today (shouldn't redistribute their minutes)
-            merge_cols = ['PLAYER', 'STATUS']
-            if 'ESTIMATED_INJURY_DATE' in injury_data.columns:
-                merge_cols.append('ESTIMATED_INJURY_DATE')
-            if 'RETURN_DATE_DT' in injury_data.columns:
-                merge_cols.append('RETURN_DATE_DT')
-
-            player_stats = player_stats.merge(
-                injury_data[merge_cols],
-                on='PLAYER',
-                how='left'
-            )
-
-            # Update TEAM for injured players who may have been traded while injured
-            # Problem: player_stats['TEAM'] = team from LAST GAME PLAYED (could be old team if traded while out)
-            # Solution: Use injury_data['TEAM'] = CURRENT team from ESPN injury report
-            # Catches: Season-long injuries + trade, AND mid-season injury + trade while still out
-            if 'TEAM' in injury_data.columns:
-                # STATUS.notna() = player has injury status (OUT, QUESTIONABLE, etc.) - checks ALL injured players
-                injured_mask = player_stats['STATUS'].notna()
-
-                if injured_mask.any():
-                    # Get current team for each injured player (drop_duplicates in case player listed twice on injury report)
-                    injury_teams = injury_data[['PLAYER', 'TEAM']].drop_duplicates(subset='PLAYER', keep='last')
-
-                    for idx in player_stats[injured_mask].index:
-                        player_name = player_stats.loc[idx, 'PLAYER']
-                        injury_team_match = injury_teams[injury_teams['PLAYER'] == player_name]
-
-                        if not injury_team_match.empty:
-                            old_team = player_stats.loc[idx, 'TEAM']  # Team from last game (could be stale)
-                            new_team = injury_team_match['TEAM'].iloc[0]  # .iloc[0] = first row's TEAM value (current team from ESPN)
-
-                            # If mismatch detected → player was traded while injured
-                            if old_team != new_team:
-                                logger.info(f"{player_name} traded while injured: {old_team} -> {new_team}")
-                                player_stats.loc[idx, 'PREV_TEAM'] = old_team  # Store old team before overwriting
-                                player_stats.loc[idx, 'TEAM'] = new_team
-
-            # Log injury summary
-            injured_players = player_stats[player_stats['STATUS'].notna()]
-            if not injured_players.empty:
-                status_counts = injured_players['STATUS'].value_counts()
-                logger.info(f"Injury status breakdown: {status_counts.to_dict()}")
-
-                # Log estimated injury dates for OUT players
-                out_players = injured_players[injured_players['STATUS'] == 'OUT']
-                if 'ESTIMATED_INJURY_DATE' in out_players.columns:
-                    with_dates = out_players['ESTIMATED_INJURY_DATE'].notna().sum()
-                    logger.info(f"OUT players with estimated injury dates: {with_dates}/{len(out_players)}")
-        else:
-            logger.warning("No injury data available in S3 - all players treated as healthy")
-            logger.warning("Make sure injury-scraper lambda has run successfully")
-            player_stats['STATUS'] = None
-
-        # Load position data from daily-predictions (has salary/position from DraftKings)
-        logger.info("Loading position data from daily predictions...")
-        try:
-            daily_preds = load_from_s3('data/daily_predictions/current.parquet')
-            if not daily_preds.empty and 'GAME_DATE' in daily_preds.columns:
-                daily_preds['GAME_DATE'] = pd.to_datetime(daily_preds['GAME_DATE']).dt.date
-
-            # Optional projection date override for local/backfill runs
-            if event and event.get('date'):
-                today = datetime.strptime(event['date'], '%Y-%m-%d').date()
-                logger.info(f"Using overridden projection date: {today}")
-
-            if not daily_preds.empty and 'POSITION' in daily_preds.columns:
-                # Get most recent position for each player
-                position_map = daily_preds[['PLAYER', 'POSITION']].drop_duplicates(subset='PLAYER', keep='last')
-
-                # Merge positions
-                if 'POSITION' in player_stats.columns:
-                    player_stats = player_stats.drop(columns=['POSITION'])
-
-                player_stats = player_stats.merge(position_map, on='PLAYER', how='left')
-
-                # Fill missing with UNKNOWN
-                player_stats['POSITION'] = player_stats['POSITION'].fillna('UNKNOWN')
-
-                filled_positions = (player_stats['POSITION'] != 'UNKNOWN').sum()
-                logger.info(f"Loaded positions for {filled_positions}/{len(player_stats)} players from daily predictions")
-
-                # Also load starter status if available
-                if 'STARTER_STATUS' in daily_preds.columns:
-                    starter_map = daily_preds[['PLAYER', 'STARTER_STATUS']].drop_duplicates(subset='PLAYER', keep='last')
-                    if 'STARTER_STATUS' in player_stats.columns:
-                        player_stats = player_stats.drop(columns=['STARTER_STATUS'])
-                    player_stats = player_stats.merge(starter_map, on='PLAYER', how='left')
-
-                    confirmed = (player_stats['STARTER_STATUS'] == 'CONFIRMED').sum()
-                    expected = (player_stats['STARTER_STATUS'] == 'EXPECTED').sum()
-                    logger.info(f"Loaded starter status: {confirmed} confirmed, {expected} expected starters")
-                else:
-                    player_stats['STARTER_STATUS'] = None
-                    logger.warning("No STARTER_STATUS column in daily predictions")
-            else:
-                logger.warning("Daily predictions unavailable - using UNKNOWN for positions")
-                player_stats['POSITION'] = 'UNKNOWN'
-                player_stats['STARTER_STATUS'] = None
-        except Exception as e:
-            logger.warning(f"Could not load positions from daily predictions: {e}")
-            player_stats['POSITION'] = player_stats.get('POSITION', 'UNKNOWN')
-            player_stats['STARTER_STATUS'] = None
-
-        logger.info(f"Loaded stats for {len(player_stats)} players")
-
-        # Filter out free agents: Previous season players NOT on injury report
-        # These are retired/unsigned players who shouldn't be projected
-        prev_season_mask = player_stats.get('FROM_PREV_SEASON', False) == True
-        if prev_season_mask.any():
-            if not injury_data.empty:
-                injured_players = set(injury_data['PLAYER'].unique())
-                free_agent_mask = prev_season_mask & ~player_stats['PLAYER'].isin(injured_players)
-
-                if free_agent_mask.any():
-                    free_agents = player_stats[free_agent_mask]['PLAYER'].head(10).tolist()
-                    free_agent_count = free_agent_mask.sum()
-                    logger.info(f"Filtering out {free_agent_count} free agents/retired players (0 games this season, not on injury report): {free_agents}...")
-                    player_stats = player_stats[~free_agent_mask].copy()
-            else:
-                # No injury data - remove ALL previous season players
-                free_agent_count = prev_season_mask.sum()
-                player_stats = player_stats[~prev_season_mask].copy()
-                logger.warning(f"No injury data - filtered out {free_agent_count} previous season players")
-
-        logger.info(f"After filtering free agents: {len(player_stats)} players remaining")
-
-        # Load injury context for the injury-aware model
-        injury_context_complex = load_from_s3('injury_context/complex_position_overlap.parquet')
-
-        # Transition beneficiaries whose injured players have returned: BENEFICIARY → EX_BENEFICIARY
-        # If a player was BENEFICIARY_OF someone who's no longer in injury_data, they returned
-        if not injury_data.empty:
-            currently_injured = set(injury_data['PLAYER'].unique())
-        else:
-            currently_injured = set()
-
-        injury_context_complex = transition_beneficiaries_to_ex(
-            injury_context_complex, currently_injured, today, box_scores=box_scores
-        )
-
-        if injury_context_complex.empty:
-            injury_context_complex = pd.DataFrame(columns=[
-                'PLAYER', 'TEAM', 'STATUS', 'INJURY_DATE', 'RETURN_DATE',
-                'TRUE_BASELINE', 'BENEFICIARY_OF', 'UPDATED_DATE'
-            ])
-
-        # Load games log (used for confidence tracking after injuries)
-        # Games log tracks when players returned from injury
-        games_log = box_scores[['PLAYER', 'GAME_DATE', 'TEAM_ABBREVIATION']].copy()
-        games_log = games_log.rename(columns={'TEAM_ABBREVIATION': 'TEAM'})
-        logger.info(f"Loaded games log with {len(games_log)} game records")
-
-        # ========== Model 1: Complex Position Overlap ==========
-        logger.info("Generating projections: Complex Position Overlap")
-
-        projections_complex, injury_ctx_complex = generate_team_based_projections(
-            player_stats=player_stats,
-            injury_context=injury_context_complex,
-            today=today,
-            box_scores=box_scores,
-            injury_data=injury_data,
-            games_log=games_log,
-            position_overlap_func=position_overlap_complex,
-            project_func=project_minutes_complex,
-            use_multiplier=True
-        )
-
-        df_complex, lineups_complex = process_model(
-            "Complex Position Overlap",
-            "model_comparison/complex_position_overlap",
-            projections_complex,
-            daily_preds,
-            today,
-            box_scores,
-            injury_context=injury_ctx_complex,
-            fp_model_names=['current', 'fp_per_min', 'barebones']
-        )
-
-        # ========== Update daily_predictions with complex-position minutes ==========
-        logger.info("Updating daily_predictions/current.parquet with complex-position minutes")
-        if not daily_preds.empty and projections_complex:
-            # Convert projections to DataFrame for easier merging
-            complex_minutes_df = pd.DataFrame([
-                {'PLAYER': proj['PLAYER'], 'PROJECTED_MIN': proj['PROJECTED_MIN'], 'TEAM': proj['TEAM']}
-                for proj in projections_complex
-            ])
-
-            # Update PROJECTED_MIN and TEAM for today's players
-            for idx, row in daily_preds[daily_preds['GAME_DATE'] == today].iterrows():
-                player_proj = complex_minutes_df[complex_minutes_df['PLAYER'] == row['PLAYER']]
-                if not player_proj.empty:
-                    daily_preds.at[idx, 'PROJECTED_MIN'] = player_proj.iloc[0]['PROJECTED_MIN']
-                    # Add TEAM_ABBREVIATION for FP predictor
-                    daily_preds.at[idx, 'TEAM_ABBREVIATION'] = player_proj.iloc[0]['TEAM']
-
-            logger.info(f"Updated PROJECTED_MIN for {len(complex_minutes_df)} players in daily_predictions")
-
-            # Save updated daily_predictions with complex-position minutes
-            save_to_s3(daily_preds, 'data/daily_predictions/current.parquet')
-            logger.info("Saved daily_predictions with complex-position minutes")
-
-        # ========== Model 2: Formula C Baseline ==========
-        logger.info("Generating projections: Formula C Baseline")
-        projections_formula_c = []
-
-        for _, player in player_stats.iterrows():
-            projected_min, confidence = project_minutes_formula_c(player, today, games_log)
-            projections_formula_c.append(build_projection_dict(player, projected_min, confidence, today))
-
-        df_formula_c, lineups_formula_c = process_model(
-            "Formula C Baseline",
-            "model_comparison/formula_c_baseline",
-            projections_formula_c,
-            daily_preds,
-            today,
-            box_scores,
-            fp_model_names=['current', 'fp_per_min', 'barebones']
-        )
-
-        # ========== Model 3: DailyFantasyFuel Baseline ==========
-        lineup_dff = build_dff_lineup(daily_preds, today, player_stats[['PLAYER', 'TEAM']])
-
-        # === NEW: Send Notification ===
-        # Collect only today's data for the email
-        lineups_to_send = {}
-        fp_models = ['current', 'fp_per_min', 'barebones']
-
-        for fp_model in fp_models:
-            lineup_df = lineups_complex.get(fp_model, pd.DataFrame())
-            label = f"1. Complex Position Overlap (FP: {fp_model})"
-            lineups_to_send[label] = lineup_df[lineup_df['DATE'] == today] if not lineup_df.empty else pd.DataFrame()
-
-        for fp_model in fp_models:
-            lineup_df = lineups_formula_c.get(fp_model, pd.DataFrame())
-            label = f"2. Formula C Baseline (FP: {fp_model})"
-            lineups_to_send[label] = lineup_df[lineup_df['DATE'] == today] if not lineup_df.empty else pd.DataFrame()
-
-        lineups_to_send["3. DailyFantasyFuel"] = lineup_dff[lineup_dff['DATE'] == today] if not lineup_dff.empty else pd.DataFrame()
-
-        # Send the email
-        send_multi_model_notification(lineups_to_send, today)
-        # ==============================
-
-        logger.info(f"Successfully generated projections for all 3 models ({len(projections_complex)} players)")
-
-        return {
-            'statusCode': 200,
-            'body': f'Generated 3 model projections for {len(projections_complex)} players on {today}'
-        }
-
-    except Exception as e:
-        logger.error(f"Error in lambda_handler: {str(e)}", exc_info=True)
-        raise
-
-
-# For local testing
 if __name__ == "__main__":
-    result = lambda_handler({}, None)
-    print(result)
+    print(lambda_handler({'date': sys.argv[1]} if len(sys.argv) > 1 else {}, None))

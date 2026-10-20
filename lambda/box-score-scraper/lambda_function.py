@@ -454,8 +454,9 @@ def run_box_score_scraper():
         combined_df = combined_df.sort_values(by=['PLAYER', 'GAME_DATE'], ascending=[True, True])
         logger.info(f"Combined dataset has {len(combined_df)} records from {len(combined_df['PLAYER'].unique())} unique players")
 
-        # Add cluster information to combined dataset
-        combined_df = enrich_with_clusters(combined_df)
+        # Cluster join switched off with the cluster pipeline (Ian, 2026-10-18); only the barebones FP model,
+        # also off, used CLUSTER. Re-enable both together.
+        # combined_df = enrich_with_clusters(combined_df)
 
         # Calculate rolling averages and career features on combined dataset
         # This ensures Career_FP_Avg and Games_Played_Career span across all seasons

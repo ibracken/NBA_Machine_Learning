@@ -2,136 +2,87 @@
 
 ## Overview
 
-The minutes-projection Lambda generates NBA minutes projections and then builds DraftKings lineups using multiple fantasy-point (FP) models. It produces:
+The minutes-projection Lambda builds three DraftKings lineups each night and emails them:
 
-Minutes models (2; direct_position_only was retired 2026-09-20):
-1. complex_position_overlap
-2. formula_c_baseline
+1. **Learned minutes (our #1):** a gradient-boosted minutes model (`lambda/shared/learned_minutes.py`), trained
+   nightly by supervised-learning.
+2. **Formula C (control):** `0.5·season + 0.3·last-7 + 0.2·previous game`, capped at 37; a flat 10 with fewer than
+   4 games; ×0.75 after missing 10+ team games.
+3. **DailyFantasyFuel:** DFF's own projections.
 
-FP models (3) applied to each minutes model for lineup optimization:
-- current
-- fp_per_min
-- barebones
+For 1 and 2, **FP = projected minutes × the player's season FP per minute.** Lineups use the production optimizer
+(`lineup_optimizer.optimize_lineup`) with DFF's salaries and positions.
 
-Additional lineup-only baseline:
-- daily_fantasy_fuel_baseline (DFF)
+Removed 2026-10-18: the complex injury-redistribution model and the `current` / `fp_per_min` FP models. The
+barebones FP model is kept but not served (`process_model.py`, `lineup_optimizer.predict_fantasy_points`), and the
+cluster pipeline that fed it is switched off. Backtest results are in `findings.md`.
 
-Total lineups per run: 6 (minutes x FP) + 1 (DFF) = 7.
+## The learned minutes model
+
+One shared module is used by training (supervised-learning), serving (this Lambda) and the backtests (`scripts/`),
+so production computes what was tested. On 2025-26 it reproduced the backtest table and features exactly, and this
+Lambda picked the same 8 players as the backtest on every night tested.
+
+- **Rows:** every player on the roster of a team playing tonight, including players who don't play. A player is on
+  a team's roster while his latest appearance this season was for that team.
+- **Inputs:**
+  - the player's season, last-7 and previous-game minutes, games played, team games missed;
+  - season minutes of teammates listed Out or Doubtful on tonight's injury report, split into "played the team's
+    last game" and "already out";
+  - his with/without history: how his minutes changed in earlier games this season when each of tonight's out
+    teammates sat, shrunk by n / (n + 3).
+- **Out set:** teammates listed Out or Doubtful, with a season average of 10+ minutes, who missed no more than 10
+  team games. Questionable / Probable / Available are deliberately not inputs.
+- **Training:** the current season and the three before it, every roster row not listed out on a day with an
+  injury report (`data/injuries/history.parquet`, archived 2022-26 pre-tip reports plus each night's report).
+- **Absence adjustment:** for each player, the projection minus the same model with no absences
+  (`ABSENCE_ADJ_MIN`). The AI adjustments judge reads it.
+
+If the injury report isn't from today, nobody is treated as out (logged). Players with no game yet this season
+have no projection.
 
 ## Early-season pause
 
-`serving_features.projection_gate` pauses in-house projections until all 30 teams have played
-`PROJECTION_START_MIN_TEAM_GAMES` (4) games of the current season (about 10 days; Oct 30 in 2025-26).
-While paused the default action updates actuals, builds and emails only the DFF lineup, and
-`llm_lineups` is skipped. See `findings.md`, "Reference: early-season pause".
+`serving_features.projection_gate` pauses in-house projections until all 30 teams have played 4 games of the
+current season (about 10 days; Oct 30 in 2025-26). While paused, the default action updates actuals, then builds
+and emails only the DFF lineup. See `findings.md`, "Reference: early-season pause".
+
+## Actions
+
+- `project` (default): update actuals, then build and email the three lineups.
+- `update_actuals`: fill ACTUAL_MIN / ACTUAL_FP from the box scores (names matched per date with
+  `lambda/shared/player_names.py`; a projected player with no box-score row on a graded date gets 0).
+- `check_model`: load the published model and predict the last graded game day. No writes, no email. Use it after
+  publishing a model (AGENTS.md release checklist).
 
 ## Inputs (S3)
 
-- Daily predictions (salary/position/opponent context):
-  - data/daily_predictions/current.parquet
-- Injury data:
-  - data/injuries/current.parquet
-- Box scores (current season):
-  - data/box_scores/current.parquet
-- Box scores (previous season, for season-long returns; season is relative to the one in current.parquet):
-  - data/box_scores/{previous season}.parquet
-- Season schedule (home/away for the IS_HOME feature):
-  - data/schedule/current.parquet
-- Supervised-learning FP models (pickled sklearn models):
-  - models/current.pkl
-  - models/fp_per_min.pkl
-  - models/barebones.pkl
-
-## Minutes Modeling
-
-### complex_position_overlap
-- Injury-aware redistribution model.
-- Eligible replacements include adjacent positions (PG/SG, SG/SF, SF/PF, PF/C).
-- Exact-position replacements get extra weight.
-- For longer injury windows, it pivots to post-injury observed rotation behavior.
-
-### formula_c_baseline
-- Non-redistribution baseline.
-- Per-player projection only: `0.5*season_avg + 0.3*last7_avg + 0.2*prev_game`.
-- Useful as a control against injury-aware approaches.
-
-## Injury-aware logic (high level)
-
-- Injured players with return_date < today are removed from the injury set.
-- Players returning today remain in the pool but receive a 25% minutes reduction.
-- Injured players marked OUT redistribute minutes to eligible teammates based on position overlap and baseline weights.
-- Beneficiaries use a frozen baseline to avoid compounding inflation.
-- Ex-beneficiaries exclude inflated periods from baseline calculation.
-- Players returning from season-long absences get a conservative baseline for 4 games.
-
-## Lineup generation
-
-For each minutes model, the system:
-1. Updates projected minutes in daily_predictions for the current slate date.
-2. Predicts FP with each FP model.
-3. Optimizes a DraftKings lineup for each FP model.
-
-DFF lineups are built from scraped DFF projections (no minutes model).
+- `data/box_scores/current.parquet`: current season
+- `data/schedule/current.parquet`: which teams play tonight
+- `data/injuries/current.parquet`: tonight's Out/Doubtful list (`REPORT_DATE` must be today)
+- `data/daily_predictions/current.parquet`: DFF slate, salaries, positions, projections
+- `models/learned_minutes.pkl`, with `models/learned_minutes_feature_names.json` and
+  `models/learned_minutes_summary.json`
 
 ## Outputs (S3)
 
-### Minutes projections
-- model_comparison/{model_name}/minutes_projections.parquet
+- `model_comparison/learned_minutes/minutes_projections.parquet`: every roster player tonight: `DATE`, `PLAYER`
+  (box-score spelling), `DFF_NAME`, `TEAM`, `PROJECTED_MIN`, `PROJECTED_FP`, `S_RATE`, `S_MIN`, `L7_MIN`, `GP`,
+  `TEAM_GAMES_MISSED`, `OUT_TONIGHT`, `LEARNED_MIN_NO_ABSENCES`, `ABSENCE_ADJ_MIN`, absence features, `ACTUAL_MIN`,
+  `ACTUAL_FP`
+- `model_comparison/learned_minutes/daily_lineups.parquet`
+- `model_comparison/formula_c_baseline/minutes_projections.parquet` and `daily_lineups.parquet`. The lineup file
+  also holds pre-January-2026 lineups from before the FP-model split.
+- `model_comparison/daily_fantasy_fuel_baseline/daily_lineups.parquet`
+- `data/daily_predictions/current.parquet`: today's rows get the learned `PROJECTED_MIN` and `TEAM_ABBREVIATION`
 
-model_name is one of:
-- complex_position_overlap
-- formula_c_baseline
-- llm_head_to_head (minutes written by llm-analyst L3; this Lambda's `llm_lineups` action adds FP + lineups)
+Lineup columns: `DATE`, `SLOT`, `PLAYER` (DFF spelling), `TEAM`, `POSITION`, `SALARY`, `PROJECTED_MIN`,
+`PROJECTED_FP`, `ACTUAL_FP`.
 
-direct_position_only files remain from before 2026-09-20 and are still scored by the evaluation scripts.
-
-### Lineups
-- model_comparison/{model_name}/fp_{fp_model}/daily_lineups.parquet
-
-Where:
-- model_name is one of the minutes models above
-- fp_model is one of: current, fp_per_min, barebones
-
-DFF lineups:
-- model_comparison/daily_fantasy_fuel_baseline/daily_lineups.parquet
-
-### Injury context
-- injury_context/{model_name}.parquet
-
-Saved for complex_position_overlap.
-
-## Columns (key outputs)
-
-Minutes projections (minutes_projections.parquet):
-- DATE
-- PLAYER
-- TEAM
-- POSITION
-- PROJECTED_MIN
-- ACTUAL_MIN
-- PROJECTED_FP
-- ACTUAL_FP
-- CONFIDENCE
-
-Daily lineups (daily_lineups.parquet):
-- DATE
-- SLOT
-- PLAYER
-- TEAM
-- POSITION
-- SALARY
-- PROJECTED_MIN
-- PROJECTED_FP
-- ACTUAL_FP
+Files from retired models (`complex_position_overlap/`, `direct_position_only/`, `*/fp_*/`, `llm_head_to_head/`,
+`injury_context/`) are complete 2025-26 history and no longer written.
 
 ## Dependency constraints (Lambda)
 
-Lambda must use NumPy 1.24.x-compatible wheels; higher NumPy can break sklearn pickles.
-Recommended pins for Lambda:
-- numpy==1.24.3
-- scipy==1.11.4
-- pandas==2.1.3
-- scikit-learn==1.5.2
-
-If FP models are re-trained locally, re-pickle them in a Lambda-compatible environment
-before deploying to avoid unpickle errors.
+Pinned: numpy==1.24.3, scipy==1.11.4, pandas==2.1.3, scikit-learn==1.5.2 (Python 3.11), plus unidecode for the
+shared name matcher. Models are trained only in the supervised-learning Lambda, never published from a local run.
