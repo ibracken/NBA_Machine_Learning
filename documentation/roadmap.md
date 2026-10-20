@@ -132,6 +132,14 @@ stops all calls.
 
 **Research (nightly, before the judge and the AI lineup).**
 - **Goal:** collect tonight's availability and playing-time news per game, with the exact source snippets.
+- **Opening night (2026-10-20):**
+  - **0 citations on all 3 games.** The tool's default "dynamic filtering" runs searches inside code execution.
+    Switched to direct search (`allowed_callers: ["direct"]`), capped at 5 searches. Retested on OKC@SAS: 25
+    citations, $0.40 against $0.56 before.
+  - **Cost:** about $0.45 per game ($0.40 tokens plus 5 searches at $10 per 1,000), so about $4.50 on a 10-game
+    night for research alone.
+  - **Option to cut it (Ian's call):** research only games with open news. Last season 44% of games had a rotation
+    player Questionable or Doubtful, and 68% counting rotation players returning from 3+ missed games.
 - **Status:** built. Prompt fixes done 2026-10-18:
   - state the current time, so the AI can tell a report from this morning from one 20 minutes old;
   - ask about off-slate rotation players too, since the learned model uses every absent teammate.

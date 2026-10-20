@@ -89,7 +89,11 @@ def research_game(today, game):
               f"It is now {now_et():%I:%M %p} ET.\n"
               f"Players on tonight's DFS slate (names are lowercase and accent-free):\n{_roster_lines(game)}\n\n"
               "Write tonight's availability and playing-time briefing for both teams.")
-    tools = [{'type': 'web_search_20260209', 'name': 'web_search', 'max_uses': RESEARCH_MAX_SEARCHES}]
+    # Direct search, not dynamic filtering: with filtering (the default) the searches ran inside code execution
+    # and the briefing came back with 0 citations, so the judge had no snippets to quote. Direct also cost less
+    # (OKC@SAS 2026-10-20: 25 citations, $0.40 vs 0 citations, $0.56).
+    tools = [{'type': 'web_search_20260209', 'name': 'web_search', 'max_uses': RESEARCH_MAX_SEARCHES,
+              'allowed_callers': ['direct']}]
     text, citations = research(label, RESEARCH_MODEL, RESEARCH_EFFORT, RESEARCH_SYSTEM, prompt, tools)
     logger.info(f"{label}: {len(text)} chars, {len(citations)} cited snippets")
     return {'game_id': game['game_id'], 'away': game['away'], 'home': game['home'],

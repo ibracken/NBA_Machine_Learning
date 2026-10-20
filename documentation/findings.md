@@ -725,6 +725,14 @@ See M7.
 
 ## Done log
 
+### 2026-10-20 (opening night)
+- `scripts/opening_night_check.py`: 13 of 13 checks passed. The season opened at 3 PM ET, so the pipeline ran around
+  2:30. The injury scraper found the 2026-27 report from the season page.
+- Research saved 0 citations with the default dynamic-filtering web search. Fixed with direct search, which is
+  also cheaper. The AI lineup was valid on its first attempt ($49,600).
+- Offseason movers: until their first 2026-27 game, llm-analyst places players on last season's team (9 slate
+  players had no team tonight). This resolves as games are played.
+
 ### 2026-10-18
 - Learned minutes model built into production (see "Production build"). The complex model and the `current` /
   `fp_per_min` FP models were removed. Barebones and clustering are switched off but kept.
