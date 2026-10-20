@@ -4,7 +4,8 @@ NBA Minutes Projection Lambda. Nightly lineups from three projections:
 2. Formula C (control)
 3. DailyFantasyFuel: DFF's own projections
 plus, after the AI adjustments judge (action adjusted_lineup, its own email about T-11): the learned model re-run
-with the judge's verified status changes and its minutes adjustments applied, to test whether the judge helps.
+with the judge's verified status changes and its minutes adjustments applied, to test whether the judge helps. That
+email also carries the AI's own lineup (llm-analyst research), and still goes out during the pause with just that.
 For 1 and 2, FP = projected minutes x the player's season FP per minute. Lineups use the production optimizer with
 DFF's salaries and positions.
 
@@ -46,6 +47,7 @@ FORMULA_C_PATH = 'model_comparison/formula_c_baseline'
 DFF_PATH = 'model_comparison/daily_fantasy_fuel_baseline'
 LEARNED_MODEL_KEY = 'models/learned_minutes.pkl'
 ADJUSTED_PATH = 'model_comparison/learned_ai_adjusted'
+AI_LINEUP_PATH = 'model_comparison/ai_lineup'   # written by llm-analyst research
 ADJUSTMENTS_LOG = 'llm/adjustments/log.parquet'
 JUDGE_WAIT_SECONDS, JUDGE_POLL_SECONDS = 300, 20
 ABSENCE_FEATURES = ['OUT_MIN_FRESH', 'OUT_MIN_ONGOING', 'WOWY_MIN', 'WOWY_N']
@@ -306,10 +308,38 @@ def send_adjusted_email(today, lineup, status_changes, adjustments):
                 mark = '*' if r.PLAYER not in base_players else ' '
                 lines.append(f"{mark}{r.SLOT:4} | {r.PLAYER:<20} | ${r.SALARY:<5,.0f} | {r.PROJECTED_FP:5.1f} FP | "
                              f"{r.PROJECTED_MIN:4.1f} Min")
+    lines += ai_lineup_section(today)
     try:
         sns_client.publish(TopicArn=SNS_TOPIC_ARN, Subject=subject[:100], Message='\n'.join(lines))
     except Exception as e:
         logger.error(f"AI-adjusted lineup email failed: {e}")
+
+
+def ai_lineup_section(today):
+    """The AI's own lineup (llm-analyst research), as email lines: picked from news and its own knowledge."""
+    lines = ["", "=" * 20 + " The AI's own lineup " + "=" * 20,
+             "Picked by the AI from tonight's research and its own knowledge. It never sees our projections or DFF's.",
+             "No FP projection: the AI picks players, it doesn't project points."]
+    ai = load_from_s3(f'{AI_LINEUP_PATH}/daily_lineups.parquet')
+    ai = ai[pd.to_datetime(ai['DATE']).dt.date == today] if not ai.empty else ai
+    if ai.empty:
+        return lines + ["No AI lineup for tonight (research failed or hasn't finished; check llm-analyst logs)."]
+    order = {'PG': 0, 'SG': 1, 'SF': 2, 'PF': 3, 'C': 4, 'G': 5, 'F': 6, 'UTIL': 7}
+    lines += [f"Salary ${ai['SALARY'].sum():,.0f}", "-" * 50]
+    for r in ai.assign(o=ai['SLOT'].map(order)).sort_values('o').itertuples():
+        lines.append(f"{r.SLOT:4} | {r.PLAYER:<20} | {r.TEAM:<3} | ${r.SALARY:<5,.0f} | {r.REASON}")
+    return lines
+
+
+def send_paused_ai_email(today, reason):
+    """During the early-season pause there is no judge or adjusted lineup; the AI's own lineup still goes out."""
+    lines = [f"In-house projections are paused ({reason}), so there is no AI-adjusted lineup tonight."]
+    lines += ai_lineup_section(today)
+    try:
+        sns_client.publish(TopicArn=SNS_TOPIC_ARN, Subject=f"NBA AI lineup ({today}): projections paused",
+                           Message='\n'.join(lines))
+    except Exception as e:
+        logger.error(f"AI lineup email failed: {e}")
 
 
 def check_model(box_scores):
@@ -397,7 +427,8 @@ def lambda_handler(event, context):
     paused, reason = projection_gate(box_scores, today)
     if action == 'adjusted_lineup':
         if paused:
-            return {'statusCode': 200, 'body': f'Projections paused ({reason})'}
+            send_paused_ai_email(today, reason)
+            return {'statusCode': 200, 'body': f'Projections paused ({reason}); AI lineup emailed'}
         return build_adjusted_lineup(box_scores, today)
     update_actual_minutes(box_scores.copy())
     if paused:

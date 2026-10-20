@@ -181,7 +181,9 @@ them through mid-December, then keep or drop each by its rule.
   - Its minutes tweaks are applied on top. Those minutes are not redistributed to teammates.
   - The lineup is saved to `model_comparison/learned_ai_adjusted/` and emailed at about T−11, with each change, its
     quote and source, and the players who differ from the learned lineup. A quiet night gets a one-line "no changes"
-    email.
+    note.
+  - The same email carries the AI's own lineup with its reason per player (Ian, 2026-10-20). During the pause it
+    still goes out, with just the AI's lineup.
   - It runs after the main email, so it can't be the lineup Ian enters yet. If it wins, move research and the
     judge earlier.
 - **Kill rule:** after 30+ slates:
@@ -191,7 +193,7 @@ them through mid-December, then keep or drop each by its rule.
 
   Drop the judge if neither holds.
 
-**AI lineup (shadow; replaces the per-player AI projections, Ian 2026-10-11; built 2026-10-18).**
+**AI lineup (replaces the per-player AI projections, Ian 2026-10-11; built 2026-10-18; in the T−11 email from 2026-10-20).**
 - **Goal:** can an AI pick a better lineup from tonight's news and its own knowledge than our pipeline does?
 - **Design:**
   - One call per slate: the slate (name, team, opponent, position, salary) plus the research briefings.
