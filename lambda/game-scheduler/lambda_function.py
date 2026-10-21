@@ -252,11 +252,11 @@ def lambda_handler(event, context):
         ('minutes-projection', 13, {}),     # learned minutes + lineups + email
         ('llm-analyst', 16, {'action': 'adjustments'}),   # adjustments judge, shadow (needs research + projections)
         ('llm-analyst', 18, {'action': 'preflight'}),     # preflight email, ~12 minutes before lock
-        ('minutes-projection', 19, {'action': 'adjusted_lineup'}),  # learned + AI adjustments, never emailed
+        ('minutes-projection', 19, {'action': 'adjusted_lineup'}),  # learned + AI adjustments, emailed (~T-11)
     ]
-    # Weekly post-mortem on Mondays, covering the previous 7 days (re-enabled with the learned model, 2026-10-18)
-    if main_slate_time.astimezone(pytz.timezone('America/New_York')).weekday() == 0:
-        lambda_pipeline.append(('llm-analyst', 0, {'action': 'postmortem'}))
+    # Weekly post-mortem switched off 2026-10-20 (Ian): reviews are done in Claude Code sessions instead.
+    # if main_slate_time.astimezone(pytz.timezone('America/New_York')).weekday() == 0:
+    #     lambda_pipeline.append(('llm-analyst', 0, {'action': 'postmortem'}))
 
     # === CREATE RULES FOR MAIN SLATE ===
     try:

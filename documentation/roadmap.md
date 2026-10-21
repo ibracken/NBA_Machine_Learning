@@ -28,7 +28,8 @@ Evidence for every number here is in [`findings.md`](findings.md).
   Formula C stays as the cheap control. The removals happen in one change during the pause (step 4), so the
   pipeline changes once. **Barebones and the cluster pipeline are commented out, not deleted** (Ian), so they can
   come back.
-- **Weekly post-mortem:** paused 2026-10-11 (Ian), re-enabled 2026-10-18 on learned-model data.
+- **Weekly post-mortem: switched off 2026-10-20 (Ian).** Reviews of the stored data are done in Claude Code
+  sessions instead (no API cost, real code). The code stays in llm-analyst.
 - **FP = learned minutes × the player's season FP per minute.** That beat every FP-model combination in the
   backtests.
 - **Injury designations:** Out and Doubtful count as out. Questionable, Probable and Available are **not**
@@ -213,9 +214,9 @@ them through mid-December, then keep or drop each by its rule.
 - **Kill rule for the AI review:** it must catch at least one real problem a month that no rule caught.
   Otherwise keep only the rules.
 
-**Weekly post-mortem (Mondays).**
-- **Goal:** find systematic misses in the logged projections.
-- **Status:** re-enabled 2026-10-18 on learned-model data. Until about Oct 30 it has nothing to grade.
+**Weekly post-mortem: switched off 2026-10-20 (Ian).** Its job (systematic misses in the logged projections) is
+done in Claude Code sessions, e.g. at the 30-slate and mid-December checkpoints. The `postmortem` action still
+exists and can be run by hand.
 
 
 ---
@@ -239,4 +240,4 @@ them through mid-December, then keep or drop each by its rule.
   - +13 minutes-projection (the lineup email, about T−17);
   - research also builds the AI lineup;
   - +16 adjustments judge, +18 preflight email (about T−12), +19 AI-adjusted lineup and its email (about T−11);
-  - Mondays: post-mortem.
+  - the Monday post-mortem is switched off.
