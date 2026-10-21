@@ -566,6 +566,27 @@ We pick more 33+ minute stars (28% vs 17%) and cold players (40% vs 29%).
 - DFF's starter designation (`STARTER_STATUS`) is OK to use as an input (Ian, 2026-10-20). It must be the flag as
   scraped before tip, errors included, and it exists only for 2025-26.
 
+### What we're doing wrong: missing information, not bad modeling (2026-10-20)
+- **DFF's starter flag** (as scraped before tip; captured only from 2026-01-01):
+  - Players flagged as starting tonight after mostly coming off the bench (DFF's last 5 flags) are **26% of
+    DFF-only picks vs 7% of ours**. We were 2.0 min and 3.3 FP low on them; DFF's FP bias was 0.0.
+  - The flag is reliable: those players played 97% of the time, and 62% played 25+ min.
+- **Correction from the flag, fit only on earlier months** (Feb 1 – Apr 12, 53 slates): about
+  +6.5 − 0.22 × season minutes for a new starter.
+  - New starters' minutes bias −1.91 → +0.02.
+  - Player FP MAE −0.021 (−0.038..−0.005).
+  - **Lineups +2.8 (−4.2..+9.8)**, 20 slates better, 12 worse, 21 the same. A boosted-tree version did worse (−4.8).
+- **Our remaining error is not predictable from data we already have.** Walk-forward by month, Dec–Apr, a
+  correction model trained on our inputs:
+  - our own inputs: MAE +0.047 (worse);
+  - plus last-3 / last-7 scoring rate: +0.030;
+  - plus rest days and home: +0.035;
+  - plus DK salary and its change: −0.014.
+- **Those same data explain only 19–20% of DFF's disagreement with us** (36% with DK salary). DFF minus ours has
+  an SD of 4.0 FP and correlates 0.26 with our error.
+- **Conclusion:** DFF's edge is mostly pre-game information that box scores don't contain: lineups and news (and
+  likely betting markets). Better modeling of our existing data won't close it.
+
 ### Older backlog notes
 
 ### M3. Model DNP risk explicitly
