@@ -23,7 +23,7 @@ ADJUSTMENT_JUDGES = {OPUS: 'high'}
 # season's while he has < 4 games) listed Questionable/Doubtful, or listed but not Out after missing >= RETURN_MIN_MISSED
 # team games. Without today's injury report every game is researched.
 OPEN_NEWS_ROTATION_MIN = 15
-RETURN_MIN_MISSED = 3
+RETURN_MIN_MISSED = 1   # 3 until 2026-10-20 (Ian): 53% -> 64% of 2025-26 games researched
 
 # Web searches allowed per game in the nightly research call
 RESEARCH_MAX_SEARCHES = 5
@@ -38,10 +38,11 @@ MAX_ADJUSTMENT_PCT = 0.25   # an LLM may never move a projection more than 25% e
 MIN_QUOTE_CHARS = 20        # a quote shorter than this cannot carry a minutes claim
 
 # Preflight thresholds, measured on the learned minutes model's 2025-26 backtest (Oct 30 - Jan 13, slate players
-# only): team projected totals p1/p5/p95/p99 = 132/162/243/254. The old "above role" rule was dropped: learned
+# only): team projected totals p1/p5/p95/p99 = 133/162/247/259 for the two-part model (2026-10-20; 132/162/243/254
+# before). The old "above role" rule was dropped: learned
 # projections 10+ min above the season average realized within 1.3 min (complex ones ran 6.7 min high).
-TEAM_TOTAL_CRITICAL = (132, 254)
-TEAM_TOTAL_WARNING = (162, 243)
+TEAM_TOTAL_CRITICAL = (133, 259)
+TEAM_TOTAL_WARNING = (162, 247)
 ZEROED_REGULAR_LAST3_MIN = 20
 MIN_SLATE_COVERAGE = 0.90
 MAX_INPUT_AGE_HOURS = 24

@@ -1,6 +1,8 @@
 """
 NBA Minutes Projection Lambda. Nightly lineups from three projections:
-1. Learned minutes (our #1): lambda/shared/learned_minutes.py, trained nightly by supervised-learning
+1. Learned minutes (our #1): lambda/shared/learned_minutes.py, trained nightly by supervised-learning. Projected
+   minutes = chance he plays x minutes if he plays, with his own report status (Questionable / Probable /
+   Available) as an input
 2. Formula C (control)
 3. DailyFantasyFuel: DFF's own projections
 plus, after the AI adjustments judge (action adjusted_lineup, its own email about T-11): the learned model re-run
@@ -77,8 +79,9 @@ def load_daily_preds():
 
 
 def tonights_injury_report(today):
-    """Tonight's Out/Doubtful list (injury-scraper writes both as OUT). Empty if missing or not from today."""
-    injuries = load_from_s3('data/injuries/current.parquet')
+    """Tonight's report, every status (injury-scraper's report_statuses.parquet). Out and Doubtful make the out
+    set; Questionable / Probable / Available are model inputs. Empty if missing or not from today."""
+    injuries = load_from_s3('data/injuries/report_statuses.parquet')
     empty = pd.DataFrame(columns=['D', 'PLAYER', 'STATUS'])
     if injuries.empty:
         logger.warning("No injury report: no teammates treated as out tonight")
@@ -127,13 +130,20 @@ def tonight_rows(box_scores, today, status_overrides=None):
 
 
 def add_learned_minutes(rows, model):
-    """LEARNED_MIN for everyone not listed out, plus how much tonight's absences moved it (for the AI judge)."""
+    """
+    LEARNED_MIN (= P_PLAY x MIN_IF_PLAY) for everyone not listed out, plus how much tonight's absences moved it
+    (for the AI judge).
+    """
     rows = rows.copy()
     projectable = rows['S_MIN'].notna() & ~rows['LISTED_OUT']
     rows['LEARNED_MIN'] = 0.0
     rows['LEARNED_MIN_NO_ABSENCES'] = 0.0
+    rows['P_PLAY'] = rows['MIN_IF_PLAY'] = float('nan')
     if projectable.any():
         rows.loc[projectable, 'LEARNED_MIN'] = lm.predict(model, rows[projectable])
+        if isinstance(model, dict):
+            p, m = lm.predict_parts(model, rows[projectable])
+            rows.loc[projectable, 'P_PLAY'], rows.loc[projectable, 'MIN_IF_PLAY'] = p, m
         no_absences = rows[projectable].assign(**{c: 0.0 for c in ABSENCE_FEATURES})
         rows.loc[projectable, 'LEARNED_MIN_NO_ABSENCES'] = lm.predict(model, no_absences)
     rows['ABSENCE_ADJ_MIN'] = rows['LEARNED_MIN'] - rows['LEARNED_MIN_NO_ABSENCES']
@@ -297,8 +307,8 @@ def build_adjusted_lineup(box_scores, today):
 
     daily_preds = load_daily_preds()
     pool = slate_pool(rows, daily_preds, today, 'LEARNED_MIN', known, rate_col='FP_RATE')
-    save_projections(rows, ADJUSTED_PATH, 'LEARNED_MIN', today, extra_cols=['AI_PCT', 'AI_STATUS_CHANGE', *PACE_COLS],
-                     rate_col='FP_RATE')
+    save_projections(rows, ADJUSTED_PATH, 'LEARNED_MIN', today, rate_col='FP_RATE',
+                     extra_cols=['AI_PCT', 'AI_STATUS_CHANGE', 'STATUS', 'P_PLAY', 'MIN_IF_PLAY', *PACE_COLS])
     lineup = build_lineup("Learned + AI adjustments", ADJUSTED_PATH, pool, daily_preds, today)
     send_adjusted_email(today, lineup, verified, log)
     body = (f"Adjusted lineup for {today}: {len(pct)} minutes adjustments, {len(overrides)} status changes, "
@@ -388,12 +398,18 @@ def check_model(box_scores):
     last = rows[(rows['D'] == rows['D'].max()) & rows['S_MIN'].notna() & ~rows['LISTED_OUT']]
     pred = lm.predict(model, last)
     mae = float(abs(pred - last['ACT_MIN']).mean())
+    parts = ''
+    if isinstance(model, dict):
+        p, m = lm.predict_parts(model, last)
+        parts = (f" Two-part model: chance he plays {p.mean():.2f} on average (actual {last['PLAYED'].mean():.2f}); "
+                 f"minutes if he plays MAE {abs(m - last['ACT_MIN'])[last['PLAYED'].values].mean():.2f} on those who played;"
+                 f" statuses {last['STATUS'].value_counts().to_dict()}.")
     coefs = load_pace_weights()
     last = add_fp_rate(last, coefs)
     fp_plain = float(abs(pred * last['S_RATE'] - last['ACT_FP']).mean())
     fp_pace = float(abs(pred * last['FP_RATE'] - last['ACT_FP']).mean())
     body = (f"{LEARNED_MODEL_KEY} loaded and predicted {len(last)} players not listed out for "
-            f"{last['D'].max().date()}: MAE {mae:.2f} min (injury report {'found' if last['HAS_REPORT'].any() else 'MISSING'}). "
+            f"{last['D'].max().date()}: MAE {mae:.2f} min (injury report {'found' if last['HAS_REPORT'].any() else 'MISSING'}).{parts} "
             f"Pace/defense weights {coefs if coefs else 'MISSING'}: FP MAE {fp_pace:.3f} vs {fp_plain:.3f} on the "
             f"plain season rate; multiplier {last['RATE_MULT'].min():.3f} to {last['RATE_MULT'].max():.3f}")
     logger.info(body)
@@ -421,8 +437,8 @@ def run_projections(box_scores, today):
         # DFF's spelling, for llm-analyst, which works from the DFF slate
         rows['DFF_NAME'] = rows['PLAYER'].map(dict(zip(pool['BOX_NAME'], pool['PLAYER']))) if not pool.empty else None
         save_projections(rows, LEARNED_PATH, 'LEARNED_MIN', today, rate_col='FP_RATE',
-                         extra_cols=['DFF_NAME', 'LEARNED_MIN_NO_ABSENCES', 'ABSENCE_ADJ_MIN', *ABSENCE_FEATURES,
-                                     *PACE_COLS])
+                         extra_cols=['DFF_NAME', 'STATUS', 'P_PLAY', 'MIN_IF_PLAY', 'LEARNED_MIN_NO_ABSENCES',
+                                     'ABSENCE_ADJ_MIN', *ABSENCE_FEATURES, *PACE_COLS])
         logger.info(f"Learned minutes: {len(pool)} slate players projected")
         lineups["1. Learned minutes (#1)"] = build_lineup("Learned minutes", LEARNED_PATH, pool, daily_preds, today)
         update_daily_predictions_minutes(daily_preds, pool, today)

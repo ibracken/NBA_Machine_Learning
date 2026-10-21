@@ -14,7 +14,7 @@ This repo is an AWS Lambda-based pipeline that scrapes NBA data, trains a learne
 ## Lambda pipeline (current code)
 The `lambda/game-scheduler` Lambda scrapes the DailyFantasyFuel main slate start time and schedules these functions at fixed offsets from 30 minutes before the slate (minutes in brackets):
 1. [+4] `box-score-scraper` -> `data/box_scores/{season}.parquet` for the current and three prior seasons; the current season is mirrored to `data/box_scores/current.parquet`; also writes the current season's schedule to `data/schedule/current.parquet` and its game dates to `data/schedule/game_dates.json`
-2. [+6] `supervised-learning` -> `models/learned_minutes.pkl`, `models/learned_minutes_feature_names.json`, `models/learned_minutes_summary.json`
+2. [+6] `supervised-learning` -> `models/learned_minutes.pkl` (two parts: chance he plays, minutes if he plays), `models/learned_minutes_feature_names.json`, `models/learned_minutes_summary.json`, `models/pace_defense.json`
 3. [+9] `daily-predictions` -> `data/daily_predictions/current.parquet` (DFF projections only; no model FP here)
 4. [+11] `injury-scraper` -> `data/injuries/current.parquet` (Out + Doubtful from the NBA PDF), `report_statuses.parquet` (every status), and appends the night to `history.parquet`
 5. [+12] `llm-analyst` `research` -> `llm/research/{date}.json` (games with open injury news only) and the AI lineup in `model_comparison/ai_lineup/`

@@ -509,6 +509,63 @@ opponents he faced)). Code: `lambda/shared/pace_defense.py`.
 - **Early-season gap (same backtest):** the first 10 slates after the pause ran −29.6 vs DFF, the other 125 −10.6.
   That's a small sample (about ±26), but it fits a season rate built on only 4–8 games.
 
+### Report status and the two-part model (2026-10-20): shipped
+
+**How often each status plays.** Rotation players (15+ min average), 2022-26 regular seasons, archived pre-tip
+reports:
+
+| status | rows | played | minutes when played vs season average |
+|---|---|---|---|
+| Out | 16,646 | 0.0% | |
+| Doubtful | 525 | 1.1% | |
+| Questionable | 3,707 | 56.8% | 96% |
+| Probable | 1,482 | 95.4% | 99% |
+| Available | 3,374 | 96.4% | 99% |
+| not listed | 75,871 | 92.8% | 102% |
+
+- Stable by season: Questionable 53–61%, Probable 94–97%, Available 95–97%.
+- Back from 3+ missed games:
+  - listed Probable / Available: played 91–94%, at about 87% of normal minutes;
+  - **not listed: played only 23%** (out of the rotation, waived, suspended). That's not a name-matching gap:
+    none of those 2,290 names appear on that day's report under any spelling.
+
+**Models** (walk-forward; chosen on 2024-25, run once on 2025-26). FP error change vs the status-blind model:
+
+| | 2024-25 | 2025-26 |
+|---|---|---|
+| status as an input | −0.073 (−0.095..−0.051) | −0.064 (−0.085..−0.043) |
+| **two-part: chance he plays × minutes if he plays** | **−0.094** (−0.117..−0.071) | **−0.106** (−0.128..−0.085) |
+
+- Minutes bias, 2025-26:
+  - Questionable +6.7 → −0.6;
+  - returning and listed Probable/Available −4.4 → −0.8.
+- DFF slate players: MAE 8.00 → 7.96. On Questionable players it ties DFF (12.67 vs 12.67; was 13.03).
+- **Lineups: +0.3 (−3.9..+4.6) for the two-part model**, 260.2 vs 259.9 (status as an input: +1.4).
+  - Both stop picking Questionable players. Production picked 25: 36% sat, 21.5 FP on average.
+- **Why lineups barely move:**
+  - **The gain sits on players the optimizer doesn't pick.** In the 271 cases where DFF projected a returning
+    player 8+ FP above us, those players scored 3.8–5.5 FP per $1k against 5.51 for DFF's average pick, and DFF
+    itself picked only 24 of them.
+  - **A third were listed Available/Probable.** The two-part model lifts those from 17 to 23 FP (actual 30).
+  - **The rest were unlisted (115) or Questionable (66):** only news separates those. That's the reason for the
+    judge's player calls.
+- The October Questionable test, which found no lineup change, agrees with this.
+- **Shipped (Ian)** for the accuracy and as the base for the AI player calls.
+  - Preflight team-total thresholds were re-measured on the two-part projections: 133/162/247/259.
+
+### Who DFF picks that we don't (2026-10-20)
+703 DFF-only picks (5.2 per slate): we projected 29.3, DFF 33.8, actual 32.4; we gave them 26.9 min and they played
+29.1. They ranked a median 26th in our value order. Over-represented among them:
+- **new starters** (DFF starter flag, season average under 24 min): 18% vs 8% of the slate; our bias −3.0 FP, DFF +0.2;
+- **low-minutes role players** (under 15 min average): our bias −3.8;
+- **a teammate newly out** (15+ min): 51% vs 33% of the slate;
+- **hot last 7** (FP per minute +0.1 over season): 21% vs 8% of our picks.
+
+We pick more 33+ minute stars (28% vs 17%) and cold players (40% vs 29%).
+- Both lineups over-promise about equally: DFF +7.6 FP per slate, ours +8.2.
+- DFF's starter designation (`STARTER_STATUS`) is OK to use as an input (Ian, 2026-10-20). It must be the flag as
+  scraped before tip, errors included, and it exists only for 2025-26.
+
 ### Older backlog notes
 
 ### M3. Model DNP risk explicitly
@@ -763,6 +820,13 @@ See M7.
 ---
 
 ## Done log
+
+### 2026-10-20 (night)
+- **Two-part minutes model with report status, in production (Ian).** The chance he plays × his minutes if he
+  plays, with own Questionable / Probable / Available status as an input. The shared code reproduces the backtest
+  exactly, and the Lambda code picked the backtest's 8 on 3 test nights. See "Report status and the two-part model".
+- **Judge player calls (logging only)** and the research trigger for returning players from 3+ to 1+ missed games.
+- **Weekly AI post-mortem switched off** (Ian): reviews are done in Claude Code sessions.
 
 ### 2026-10-20 (evening)
 - **Pace and opponent defense in production (Ian).** Learned FP per minute = season rate × the pace/defense

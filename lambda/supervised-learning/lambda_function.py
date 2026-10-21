@@ -1,6 +1,7 @@
 """
 Nightly training. Trains the learned minutes model (lambda/shared/learned_minutes.py), the #1 projection since
-2026-10-18, and publishes models/learned_minutes.pkl with its feature names and a training summary. On the same
+2026-10-18, and publishes models/learned_minutes.pkl with its feature names and a training summary. Since
+2026-10-20 the pickle is a dict of two models: the chance he plays and his minutes if he plays. On the same
 rows it fits the pace / opponent-defense weights on FP per minute (lambda/shared/pace_defense.py) and publishes
 models/pace_defense.json.
 
@@ -142,7 +143,9 @@ def train_learned_minutes(publish=True):
     summary = {'trained_at': datetime.utcnow().isoformat(timespec='seconds') + 'Z', 'rows': int(len(train)),
                'seasons': sorted(train['SEASON'].unique().tolist()), 'last_game': str(train['D'].max().date()),
                'in_sample_mae': round(mae, 3),
-               'importances': dict(zip(lm.FEATURES, np.round(model.feature_importances_, 4).tolist()))}
+               'played_rows': int(train['PLAYED'].sum()),
+               'importances': {part: dict(zip(lm.FEATURES, np.round(model[part].feature_importances_, 4).tolist()))
+                               for part in ('play', 'minutes')}}
     # In-sample MAE only confirms training worked; out-of-sample results are in documentation/findings.md
     logger.info(f"Learned minutes: in-sample MAE {mae:.3f}; importances {summary['importances']}")
 

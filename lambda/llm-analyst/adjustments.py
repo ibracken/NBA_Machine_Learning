@@ -7,6 +7,11 @@ for those absences (Ian, 2026-10-11: an uninformed judge stacks a second overrea
 old failure). Each proposed adjustment must name one snippet and copy a quote from it verbatim; the quote is
 checked against the snippet, the size is clamped to +-25%, and the pre- and post-adjustment projections are
 logged. Nothing here changes a projection or a lineup.
+
+Player calls (2026-10-20, logging only): for every Questionable or returning rotation player on the slate, the
+judge also calls tonight as plays_normal / plays_limited / sits / unclear, with a quote checked the same way.
+Logged to llm/player_calls/log.parquet with the model's chance he plays, to be scored against what happened
+(mid-December) before any call is allowed to change a projection.
 """
 
 import logging
@@ -17,13 +22,15 @@ from concurrent.futures import ThreadPoolExecutor
 import pandas as pd
 
 from claude_client import LLMError, extract
-from config import ADJUSTMENT_JUDGES, MAX_ADJUSTMENT_PCT, MIN_QUOTE_CHARS
+from config import ADJUSTMENT_JUDGES, MAX_ADJUSTMENT_PCT, MIN_QUOTE_CHARS, OPEN_NEWS_ROTATION_MIN
 from s3_io import load_json, replace_date_rows, save_json
 from slate import LEARNED_PROJECTIONS, load_box_scores, projection_gate, slate_projections, wait_for_todays_rows
 
 logger = logging.getLogger()
 
 ADJUSTMENTS_LOG = 'llm/adjustments/log.parquet'
+PLAYER_CALLS_LOG = 'llm/player_calls/log.parquet'
+CALLS = ['plays_normal', 'plays_limited', 'sits', 'unclear']
 
 JUDGE_SYSTEM = f"""You review tonight's NBA news for a minutes-projection model and decide whether any \
 player's projected minutes should move because of something a source reported that the model cannot know.
@@ -32,7 +39,10 @@ What the model already does: it is trained on four seasons of box scores and use
 last-7 and last-game minutes, games played and games missed. It reads tonight's official NBA injury report: \
 every teammate listed Out or Doubtful is treated as out, and his minutes are redistributed according to how \
 this player's minutes actually changed in earlier games this season when that teammate sat. A player's \
-"absence adjustment" is how much that moved his projection tonight. The model has no other news.
+"absence adjustment" is how much that moved his projection tonight. His own Questionable / Probable / \
+Available status is an input too: his projection is the chance he plays (learned from that status, his missed \
+games and his history) times his minutes if he plays, so a Questionable or returning player's listed projection \
+is already discounted for the chance he sits. The model has no other news.
 
 So do not adjust for anything the model already counts: a teammate who is in the out list below, a player's \
 general role or recent form, or anything else on the injury report. Adjust only for news the model cannot see: \
@@ -52,7 +62,14 @@ It is checked against the source mechanically; a paraphrase is rejected.
 
 Separately, list status_conflicts: players whose listed projection contradicts a reported status for \
 tonight (projected to play but reported out, or in the out list but reported available). Those are not \
-adjustments; they are flagged for a human."""
+adjustments; they are flagged for a human.
+
+Finally, make one player_call for every player under "Players to call": what tonight's news says about him. \
+plays_normal = expected to play his usual role; plays_limited = expected to play under a stated restriction \
+or a reduced role; sits = reported out or not expected to play; unclear = no decisive news (then use \
+evidence_index 0 and an empty quote). Every other call needs one evidence item and a quote copied from it, \
+checked like the others. These calls are recorded and scored against what happens; they change nothing tonight, \
+so call it as the evidence reads, not as the projection reads."""
 
 JUDGE_SCHEMA = {
     'type': 'object',
@@ -73,6 +90,20 @@ JUDGE_SCHEMA = {
                 'additionalProperties': False,
             },
         },
+        'player_calls': {
+            'type': 'array',
+            'items': {
+                'type': 'object',
+                'properties': {
+                    'player': {'type': 'string'},
+                    'call': {'type': 'string', 'enum': CALLS},
+                    'evidence_index': {'type': 'integer'},
+                    'quote': {'type': 'string'},
+                },
+                'required': ['player', 'call', 'evidence_index', 'quote'],
+                'additionalProperties': False,
+            },
+        },
         'status_conflicts': {
             'type': 'array',
             'items': {
@@ -88,7 +119,7 @@ JUDGE_SCHEMA = {
             },
         },
     },
-    'required': ['adjustments', 'status_conflicts'],
+    'required': ['adjustments', 'status_conflicts', 'player_calls'],
     'additionalProperties': False,
 }
 
@@ -151,7 +182,7 @@ def judge_game(today, briefing, projections, judge_model, effort):
     teams = {briefing['away'], briefing['home']}
     game_proj = projections[projections['TEAM'].isin(teams)]
     if game_proj.empty:
-        return [], []
+        return [], [], []
     evidence = briefing['citations']
     out = game_proj[game_proj['OUT_TONIGHT'].fillna(False).astype(bool)]
     # Slate players only (DFF_NAME set); everyone else on the roster is context through the out list
@@ -165,10 +196,15 @@ def judge_game(today, briefing, projections, judge_model, effort):
         for r in slate_rows.itertuples())
     outs = '\n'.join(f"- {r.PLAYER} ({r.TEAM}, season avg {float(r.S_MIN):.1f} min)"
                      for r in out.sort_values('S_MIN', ascending=False).itertuples()) or '(none)'
+    to_call = call_candidates(slate_rows)
+    calls_list = '\n'.join(
+        f"- {r.PLAYER} ({r.TEAM}): {str(r.STATUS).lower()} on the report, {int(r.TEAM_GAMES_MISSED)} team games missed "
+        f"since his last game" for r in to_call.itertuples()) or '(none)'
     prompt = (f"Date: {today:%A %B %d, %Y}. Game: {briefing['away']} at {briefing['home']}.\n\n"
               f"Teammates the model already treats as out tonight (official injury report, Out or Doubtful):\n"
               f"{outs}\n\n"
               f"Current minutes projections:\n{players}\n\n"
+              f"Players to call (Questionable, or back from missed games):\n{calls_list}\n\n"
               f"Evidence items (quote only from these):\n{evidence_block(evidence) or '(none)'}\n\n"
               f"Research briefing (context; quotes must come from the evidence items above):\n"
               f"{briefing['briefing'] or '(none)'}")
@@ -193,7 +229,42 @@ def judge_game(today, briefing, projections, judge_model, effort):
             'source_url': source['url'] if source else None,
             'quote_verified': bool(source) and quote_in_source(c['quote'], source['cited_text']),
         })
-    return rows, conflicts
+    return rows, conflicts, player_call_rows(base, to_call, result['player_calls'], evidence)
+
+
+def call_candidates(slate_rows):
+    """Rotation slate players listed Questionable, or back from 1+ missed team games and not out."""
+    if 'STATUS' not in slate_rows.columns:
+        return slate_rows.iloc[0:0]
+    rotation = slate_rows['S_MIN'].astype(float) >= OPEN_NEWS_ROTATION_MIN
+    flagged = (slate_rows['STATUS'] == 'QUESTIONABLE') | (slate_rows['TEAM_GAMES_MISSED'].fillna(0) >= 1)
+    return slate_rows[rotation & flagged]
+
+
+def player_call_rows(base, to_call, calls, evidence):
+    """One row per candidate (CALL 'no call' if the judge skipped him), plus any extra calls it made."""
+    made = {c['player'].strip().lower(): c for c in calls}
+    info = to_call.drop_duplicates('PLAYER').set_index('PLAYER')
+    names = list(info.index) + [n for n in made if n not in info.index]
+
+    def num(r, col):
+        return float(r[col]) if r is not None and col in r.index and pd.notna(r[col]) else None
+    rows = []
+    for name in names:
+        c = made.get(name)
+        idx = c['evidence_index'] if c else None
+        source = evidence[idx - 1] if isinstance(idx, int) and 1 <= idx <= len(evidence) else None
+        r = info.loc[name] if name in info.index else None
+        rows.append({**base, 'PLAYER': name, 'CANDIDATE': r is not None,
+                     'TEAM': r['TEAM'] if r is not None else None,
+                     'STATUS': r['STATUS'] if r is not None else None,
+                     'TEAM_GAMES_MISSED': num(r, 'TEAM_GAMES_MISSED'), 'S_MIN': num(r, 'S_MIN'),
+                     'P_PLAY': num(r, 'P_PLAY'), 'MIN_IF_PLAY': num(r, 'MIN_IF_PLAY'),
+                     'PROJECTED_MIN': num(r, 'PROJECTED_MIN'),
+                     'CALL': c['call'] if c else 'no call', 'EVIDENCE_INDEX': idx,
+                     'QUOTE': c['quote'] if c else None, 'SOURCE_URL': source['url'] if source else None,
+                     'QUOTE_VERIFIED': bool(c) and bool(source) and quote_in_source(c['quote'], source['cited_text'])})
+    return rows
 
 
 def run(today):
@@ -218,13 +289,18 @@ def run(today):
             return judge_game(today, briefing, projections, model, effort) + (None,)
         except Exception as e:
             logger.error(f"judge[{model}] {briefing['away']}@{briefing['home']} failed: {e}")
-            return [], [], f"{model} {briefing['away']}@{briefing['home']}: {e}"
+            return [], [], [], f"{model} {briefing['away']}@{briefing['home']}: {e}"
 
     with ThreadPoolExecutor(max_workers=8) as pool:
         results = list(pool.map(one, tasks))
 
-    rows = [r for game_rows, _, _ in results for r in game_rows]
-    conflicts = [c for _, game_conflicts, _ in results for c in game_conflicts]
+    rows = [r for game_rows, _, _, _ in results for r in game_rows]
+    conflicts = [c for _, game_conflicts, _, _ in results for c in game_conflicts]
+    calls = pd.DataFrame([c for _, _, game_calls, _ in results for c in game_calls])
+    if not calls.empty:
+        replace_date_rows(calls, PLAYER_CALLS_LOG, today)
+        logger.info(f"Player calls for {today}: {calls['CALL'].value_counts().to_dict()}, "
+                    f"quotes verified {int(calls['QUOTE_VERIFIED'].sum())}")
     columns = ['DATE', 'GAME_ID', 'JUDGE_MODEL', 'TEAM', 'PLAYER', 'PRE_MIN', 'POST_MIN', 'PCT_RAW',
                'PCT_APPLIED', 'CLAMPED', 'VALID', 'REJECT_REASON', 'CONFIDENCE', 'REASON', 'QUOTE',
                'EVIDENCE_INDEX', 'SOURCE_URL', 'SOURCE_TITLE', 'SOURCE_TEXT']
@@ -241,7 +317,8 @@ def run(today):
                           'clamped': int(m['CLAMPED'].sum())}
     logger.info(f"L2 shadow adjustments for {today}: {summary}; status conflicts {len(conflicts)}")
 
-    errors = [err for _, _, err in results if err]
+    errors = [err for _, _, _, err in results if err]
     if errors:
         raise LLMError(f"{len(errors)} of {len(tasks)} judge calls failed (others saved): {errors}")
-    return {'judges': summary, 'status_conflicts': len(conflicts)}
+    return {'judges': summary, 'status_conflicts': len(conflicts),
+            'player_calls': calls['CALL'].value_counts().to_dict() if not calls.empty else {}}

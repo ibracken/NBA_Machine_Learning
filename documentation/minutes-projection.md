@@ -46,9 +46,13 @@ Lambda picked the same 8 players as the backtest on every night tested.
   - season minutes of teammates listed Out or Doubtful on tonight's injury report, split into "played the team's
     last game" and "already out";
   - his with/without history: how his minutes changed in earlier games this season when each of tonight's out
-    teammates sat, shrunk by n / (n + 3).
+    teammates sat, shrunk by n / (n + 3);
+  - his own status on tonight's report: Questionable, Probable, Available, or not listed (since 2026-10-20).
+- **Two parts (2026-10-20):** `P_PLAY`, the chance he plays, and `MIN_IF_PLAY`, his minutes if he plays (trained
+  on players who played). Projected minutes = `P_PLAY` × `MIN_IF_PLAY`. The pickle is a dict
+  `{'play', 'minutes', 'features'}`; `lm.predict` still accepts an older single model.
 - **Out set:** teammates listed Out or Doubtful, with a season average of 10+ minutes, who missed no more than 10
-  team games. Questionable / Probable / Available are deliberately not inputs.
+  team games.
 - **Training:** the current season and the three before it, every roster row not listed out on a day with an
   injury report (`data/injuries/history.parquet`, archived 2022-26 pre-tip reports plus each night's report).
 - **Absence adjustment:** for each player, the projection minus the same model with no absences
@@ -79,7 +83,8 @@ and emails only the DFF lineup. See `findings.md`, "Reference: early-season paus
 
 - `data/box_scores/current.parquet`: current season
 - `data/schedule/current.parquet`: which teams play tonight
-- `data/injuries/current.parquet`: tonight's Out/Doubtful list (`REPORT_DATE` must be today)
+- `data/injuries/report_statuses.parquet`: tonight's report, every status (`REPORT_DATE` must be today). Out and
+  Doubtful make the out set; Questionable / Probable / Available are model inputs
 - `data/daily_predictions/current.parquet`: DFF slate, salaries, positions, projections
 - `models/learned_minutes.pkl`, with `models/learned_minutes_feature_names.json` and
   `models/learned_minutes_summary.json`
@@ -88,7 +93,8 @@ and emails only the DFF lineup. See `findings.md`, "Reference: early-season paus
 
 - `model_comparison/learned_minutes/minutes_projections.parquet`: every roster player tonight: `DATE`, `PLAYER`
   (box-score spelling), `DFF_NAME`, `TEAM`, `PROJECTED_MIN`, `PROJECTED_FP`, `S_RATE`, `S_MIN`, `L7_MIN`, `GP`,
-  `TEAM_GAMES_MISSED`, `OUT_TONIGHT`, `LEARNED_MIN_NO_ABSENCES`, `ABSENCE_ADJ_MIN`, absence features, `OPP`,
+  `TEAM_GAMES_MISSED`, `OUT_TONIGHT`, `STATUS`, `P_PLAY`, `MIN_IF_PLAY`, `LEARNED_MIN_NO_ABSENCES`,
+  `ABSENCE_ADJ_MIN`, absence features, `OPP`,
   `EXP_PACE`, `DEF_IDX`, `PACE_RATIO`, `DEF_RATIO`, `RATE_MULT`, `FP_RATE` (= `S_RATE` × `RATE_MULT`),
   `ACTUAL_MIN`, `ACTUAL_FP`
 - `model_comparison/learned_minutes/daily_lineups.parquet` (with `RATE_MULT`; the AI-adjusted files carry the

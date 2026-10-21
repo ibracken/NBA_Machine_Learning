@@ -155,8 +155,10 @@ them through mid-December, then keep or drop each by its rule.
   - **Cost:** about $0.45 per game ($0.40 tokens plus 5 searches at $10 per 1,000), so about $4.50 on a 10-game
     night for research alone.
   - **Research only games with open news (Ian, 2026-10-20).** A game is researched if either team has a rotation
-    player (15+ min a game) listed Questionable or Doubtful, or one listed but not Out after missing 3+ team games.
-    - On 2025-26 nights that researched 56% of games (150 of 267 sampled).
+    player (15+ min a game) listed Questionable or Doubtful, or one listed but not Out after missing 1+ team games
+    (3+ until 2026-10-20).
+    - On 2025-26 nights that researches 64% of games (53% with 3+). Counting unlisted returning players too would
+      be 90% (about +$1.40 a night); not done, Ian's call.
     - Without today's report, every game is researched.
     - Skipped games are listed in `llm/research/{date}.json` and in the AI lineup's prompt.
 - **Status:** built. Prompt fixes done 2026-10-18:
@@ -176,6 +178,14 @@ them through mid-December, then keep or drop each by its rule.
   - the instruction: don't adjust for anything already in that list.
 
   The verbatim-quote check stays. ±25% is a cap: the judge picks any size up to it.
+- **Player calls (built 2026-10-20, logging only).** For every Questionable or returning (1+ missed games)
+  rotation player on the slate in a researched game, the judge calls tonight: plays normal / plays limited / sits /
+  unclear, with a quote checked against its source. Logged to `llm/player_calls/log.parquet` with the model's
+  chance he plays. A skipped player is logged as "no call".
+  - **Mid-December test:** when it says "plays normal", how often did he play normal minutes, and how much better
+    is that than the model's chance he plays? Only if that's reliable does a call change a projection (a confirmed
+    player would get his full minutes-if-he-plays).
+  - Why: the model now discounts Questionable players to about 57% and can't tell which ones will play; news can.
 - **AI-adjusted lineup** (minutes-projection `adjusted_lineup`, +19, after the judge):
   - The judge's quote-verified status calls ("reported out" / "reported available") change the out list, and the
     learned model is re-run, so teammates' minutes move the way the model learned. In the test, Amen Thompson

@@ -16,14 +16,20 @@ Features:
   WOWY_MIN, WOWY_N                                 his minutes change in earlier games this season when tonight's
                                                    out teammates sat vs played, summed over them, each shrunk by
                                                    n / (n + 3); n = games behind it
+  IS_QUES, IS_PROB, IS_AVAI                        his own status on tonight's report (not listed = all 0)
 Position-based inputs were dropped (2026-10-18): minutes MAE 4.888 with them vs 4.900 without.
 
-FP = projected minutes x season FP per minute (S_RATE).
+Two parts (2026-10-20): P_PLAY, the chance he plays (classifier), and MIN_IF_PLAY, his minutes if he plays
+(regressor trained on players who played). Projection = P_PLAY x MIN_IF_PLAY. Walk-forward FP error vs the single
+status-blind model: -0.094 (2024-25), -0.106 (2025-26); Questionable minutes bias +6.7 -> -0.6 (findings.md,
+"Report status and the two-part model").
+
+FP = projected minutes x season FP per minute (S_RATE) x the pace/defense multiplier (pace_defense.py).
 """
 
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import GradientBoostingRegressor
+from sklearn.ensemble import GradientBoostingClassifier, GradientBoostingRegressor
 
 from player_names import match_names
 
@@ -31,8 +37,9 @@ OUT_STATUSES = {"OUT", "DOUBTFUL"}
 OUT_MIN_SEASON_AVG, OUT_MAX_MISSED, SHRINK_N = 10, 10, 3
 MAX_MINUTES = 48
 FORMULA_C_CAP = 37
+OWN_STATUS_FEATURES = {"QUESTIONABLE": "IS_QUES", "PROBABLE": "IS_PROB", "AVAILABLE": "IS_AVAI"}
 FEATURES = ["S_MIN", "L7_MIN", "PREV_MIN", "GP", "TEAM_GAMES_MISSED",
-            "OUT_MIN_FRESH", "OUT_MIN_ONGOING", "WOWY_MIN", "WOWY_N"]
+            "OUT_MIN_FRESH", "OUT_MIN_ONGOING", "WOWY_MIN", "WOWY_N", *OWN_STATUS_FEATURES.values()]
 GBR_PARAMS = dict(n_estimators=300, max_depth=4, learning_rate=0.05, subsample=0.8, random_state=0)
 
 
@@ -96,8 +103,9 @@ def player_games(box, tonight=None):
 
 def attach_listed_out(rows, reports, known_names):
     """
-    LISTED_OUT / HAS_REPORT from injury reports (D, PLAYER, STATUS; any capitalization). Report names are matched
-    to box-score names against each day's rosters (player_names). Returns (rows, unmatched names per day).
+    LISTED_OUT / HAS_REPORT from injury reports (D, PLAYER, STATUS; any capitalization), plus his own STATUS
+    ('NOT LISTED' on a report day, None without a report) and the IS_* status flags. Report names are matched to
+    box-score names against each day's rosters (player_names). Returns (rows, unmatched Out names per day).
     """
     rows = rows.copy()
     rep = reports.assign(D=pd.to_datetime(reports["D"]).dt.normalize().astype("datetime64[ns]"),
@@ -112,6 +120,15 @@ def attach_listed_out(rows, reports, known_names):
         if missing:
             unmatched[day] = missing
     rows["LISTED_OUT"] = [(d, p) in listed for d, p in zip(rows["D"], rows["PLAYER"])]
+    # Own status: every listed name, matched separately so the out set above is unchanged
+    status = {}
+    for day, g in rep.groupby("D"):
+        mapping, _ = match_names(g["PLAYER"], rosters.get(day, []), known_names)
+        status.update({(day, mapping[n]): st for n, st in zip(g["PLAYER"], g["STATUS"]) if mapping.get(n)})
+    rows["STATUS"] = [status.get((d, p), "NOT LISTED") if has else None
+                      for d, p, has in zip(rows["D"], rows["PLAYER"], rows["HAS_REPORT"])]
+    for st, col in OWN_STATUS_FEATURES.items():
+        rows[col] = (rows["STATUS"] == st).astype(float)
     return rows, unmatched
 
 
@@ -173,13 +190,25 @@ def training_rows(rows):
 
 
 def train(rows):
-    model = GradientBoostingRegressor(**GBR_PARAMS)
-    model.fit(rows[FEATURES].fillna(0), rows["ACT_MIN"])
-    return model
+    """{'play': chance he plays, 'minutes': minutes if he plays, 'features': FEATURES}."""
+    play = GradientBoostingClassifier(**GBR_PARAMS).fit(rows[FEATURES].fillna(0), rows["PLAYED"])
+    played = rows[rows["PLAYED"]]
+    minutes = GradientBoostingRegressor(**GBR_PARAMS).fit(played[FEATURES].fillna(0), played["ACT_MIN"])
+    return {"play": play, "minutes": minutes, "features": list(FEATURES)}
+
+
+def predict_parts(model, rows):
+    """(P_PLAY, MIN_IF_PLAY) arrays."""
+    X = rows[model["features"]].fillna(0)
+    return model["play"].predict_proba(X)[:, 1], np.clip(model["minutes"].predict(X), 0, MAX_MINUTES)
 
 
 def predict(model, rows):
-    return np.clip(model.predict(rows[FEATURES].fillna(0)), 0, MAX_MINUTES)
+    """Projected minutes = P_PLAY x MIN_IF_PLAY. A single regressor (models before 2026-10-20) still works."""
+    if not isinstance(model, dict):
+        return np.clip(model.predict(rows[list(model.feature_names_in_)].fillna(0)), 0, MAX_MINUTES)
+    p, m = predict_parts(model, rows)
+    return p * m
 
 
 def build(box, reports, tonight=None, known_names=None):
