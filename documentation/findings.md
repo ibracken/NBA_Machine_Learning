@@ -587,6 +587,26 @@ We pick more 33+ minute stars (28% vs 17%) and cold players (40% vs 29%).
 - **Conclusion:** DFF's edge is mostly pre-game information that box scores don't contain: lineups and news (and
   likely betting markets). Better modeling of our existing data won't close it.
 
+### Starters: real history, and DFF's flag tested and declined (2026-10-21)
+- **Data:** who started every game 2022-26 (`scripts/fetch_starters.py` -> `data/replay/starters.parquet`; NBA
+  Stats box scores, 4,920 games, 5 starters per team-game, 99.8% of played rows matched). Local only.
+- **DFF's flag vs who actually started** (Jan 1 – Apr 12 2026, 9,714 slate rows):
+  - 92% of flagged players started ("Confirmed" 100%, "Expected" 92%);
+  - **surprise starters (usually bench) were flagged only 60% of the time**;
+  - usual starters who didn't start were still flagged 41% of the time.
+- **Models** (two-part plus starter inputs; walk-forward; the flag test was trained on real starters with
+  DFF-sized errors injected, rates from January, and scored Feb–Apr with DFF's real flag):
+  - **minutes error:** starter history 4.772 -> 4.755 (2025-26); history + flag on flagged rows 5.529 -> 5.451;
+  - **FP error, Feb–Apr:** 8.201 -> 8.143 (DFF 7.855);
+  - **lineups** vs the same model retrained: history −1.9 (−5.0..+1.3) over 135 slates; history + flag +1.7
+    (−5.0..+7.9) over Feb–Apr. No lineup gain.
+- **Noise floor:** retraining the identical model with rows in a different order moves lineups +0.9 (−1.5..+3.2)
+  per slate. Boosting subsamples rows, so row order acts as a random seed. Lineup gains under about 2 FP can't be
+  told apart from that, and one season's slates add ±4–8 on top.
+- **Decision (Ian, 2026-10-21): don't use DFF's flag.** Copying it caps us at DFF's knowledge, and it misses 40% of
+  surprise starters. Look for a better starter signal of our own; the real-starter history above is the yardstick
+  to score any candidate against.
+
 ### Older backlog notes
 
 ### M3. Model DNP risk explicitly

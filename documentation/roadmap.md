@@ -114,7 +114,12 @@ Evidence for every number here is in [`findings.md`](findings.md).
     every week). Replace it with a blend of this season and last season, weighted by games played. This might
     also let the pause lift earlier. The same blend applies to the season FP-per-minute rate: in the DFF backtest,
     the first 10 slates after the pause ran −29.6 vs DFF, against −10.6 for the rest (a small sample).
-12. **Faster backtests:** switch the backtest models to `HistGradientBoostingRegressor` (multi-core, same Lambda
+12. **Starters, our own signal (Ian, 2026-10-21).** Real starters 2022-26 are in `data/replay/starters.parquet`.
+    DFF's flag was tested and declined: it helps accuracy (FP error 8.20 -> 8.14) but caps us at DFF and misses 40%
+    of surprise starters. Find a better source, e.g.:
+    - an AI call on tonight's starting lineup from the research news, scored against real starters;
+    - official lineups if they're published before our run.
+13. **Faster backtests:** switch the backtest models to `HistGradientBoostingRegressor` (multi-core, same Lambda
     version) after confirming equal accuracy. Runs drop from about 45 minutes to about 5.
 
 ### Housekeeping (whenever convenient)
