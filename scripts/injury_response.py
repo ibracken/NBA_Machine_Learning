@@ -30,7 +30,8 @@ Rate model: actual FP per minute, players who played 8+ minutes, weighted by min
 Usage: python scripts/injury_response.py [--predict-only]
   --predict-only  skip the evaluation; write learned_2025_26.parquet from the production model code
                   (lambda/shared/learned_minutes.py: no position inputs, no per-minute model), plus the
-                  pace/defense multiplier RATE_MULT (lambda/shared/pace_defense.py, weights fit on 2022-25)
+                  pace/defense multiplier RATE_MULT (lambda/shared/pace_defense.py, weights fit on 2022-25) and
+                  the early-season blended rate RATE_BLEND (last-season inputs; k fit on 2022-25)
 """
 
 import sys
@@ -182,17 +183,24 @@ def predict_last_season(r=None):
     sys.path.insert(0, str(ROOT / "scripts"))
     import backtest_shrinkage as bs
     box = pd.concat([bs.load(f"data/box_scores/{s}.parquet").assign(SEASON=s) for s in SEASONS], ignore_index=True)
+    # 2021-22 (local only, fetched with lambda/box-score-scraper's own code) gives 2022-23 its last-season inputs
+    prior = ROOT / "data" / "replay" / "box_2021-22.parquet"
+    with_prior = pd.concat([pd.read_parquet(prior)[box.columns.intersection(pd.read_parquet(prior).columns)], box],
+                           ignore_index=True) if prior.exists() else box
     reports = pd.read_parquet(REPORTS)
-    rows, _ = lm.build(box, reports[~reports.GLEAGUE])
+    rows, _ = lm.build(box, reports[~reports.GLEAGUE], known_names=lm.first_seen(with_prior))
     rows = pdm.add_inputs(rows, box)
+    rows = lm.add_last_season(rows, with_prior)
     elig = lm.training_rows(rows)
     train = elig[elig.SEASON != SEASONS[-1]]
     model = lm.train(train)
     coefs, _ = pdm.fit(train)
+    k, _ = lm.fit_rate_k(train)
     test = elig[elig.SEASON == SEASONS[-1]].copy()
     test["LEARNED_MIN"] = lm.predict(model, test)
     test["RATE_MULT"] = pdm.multiplier(test, coefs)
-    return test[["D", "PLAYER", "TEAM", "LEARNED_MIN", "S_RATE", "RATE_MULT"]]
+    test["RATE_BLEND"] = lm.blend_rate(test, k)
+    return test[["D", "PLAYER", "TEAM", "LEARNED_MIN", "S_RATE", "RATE_MULT", "RATE_BLEND"]]
 
 
 def main():

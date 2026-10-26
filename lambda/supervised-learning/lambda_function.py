@@ -2,8 +2,8 @@
 Nightly training. Trains the learned minutes model (lambda/shared/learned_minutes.py), the #1 projection since
 2026-10-18, and publishes models/learned_minutes.pkl with its feature names and a training summary. Since
 2026-10-20 the pickle is a dict of two models: the chance he plays and his minutes if he plays. On the same
-rows it fits the pace / opponent-defense weights on FP per minute (lambda/shared/pace_defense.py) and publishes
-models/pace_defense.json.
+rows it fits the pace / opponent-defense weights on FP per minute (lambda/shared/pace_defense.py) and the rate
+blend weight k (this season's FP per minute pulled toward last season's), both published in models/pace_defense.json.
 
 The barebones FP model (train_fp_models) is switched off but kept (Ian, 2026-10-18): FP is now projected
 minutes x season FP per minute x the pace/defense multiplier. The current and fp_per_min FP models were removed.
@@ -131,9 +131,15 @@ def train_learned_minutes(publish=True):
         else:
             logger.info(f"{key} not found (season has not started yet)")
     box = pd.concat(frames, ignore_index=True)
+    # The season before the earliest one, only for last-season inputs
+    prior = lm.previous_season(f'{start_year - 3}-{str(start_year - 2)[2:]}')
+    prior_key = f'data/box_scores/{prior}.parquet'
+    prior_box = load_dataframe_from_s3(prior_key).assign(SEASON=prior) if s3_key_exists(prior_key) else pd.DataFrame()
     reports = load_dataframe_from_s3(INJURY_HISTORY_KEY)
-    rows, _ = lm.build(box, reports)
+    with_prior = pd.concat([prior_box, box], ignore_index=True)
+    rows, _ = lm.build(box, reports, known_names=lm.first_seen(with_prior))
     rows = pdm.add_inputs(rows, box)
+    rows = lm.add_last_season(rows, with_prior)
     train = lm.training_rows(rows)
     logger.info(f"Learned minutes: {len(rows)} roster rows, {len(train)} training rows, "
                 f"seasons {sorted(train['SEASON'].unique())}, report days {rows.loc[rows['HAS_REPORT'], 'D'].nunique()}")
@@ -150,7 +156,10 @@ def train_learned_minutes(publish=True):
     logger.info(f"Learned minutes: in-sample MAE {mae:.3f}; importances {summary['importances']}")
 
     coefs, n_rate = pdm.fit(train)
-    pace = {'trained_at': summary['trained_at'], 'coefficients': coefs, 'rows': n_rate,
+    rate_k, rate_err = lm.fit_rate_k(train)
+    logger.info(f"Rate blend k = {rate_k} (2022-25 backtest fit: 200); errors {rate_err}")
+    summary['rate_blend_k'] = rate_k
+    pace = {'trained_at': summary['trained_at'], 'coefficients': coefs, 'rows': n_rate, 'rate_blend_k': rate_k,
             'seasons': summary['seasons'], 'last_game': summary['last_game'], 'shrink_k': pdm.SHRINK_K}
     logger.info(f"Pace/defense weights {coefs} from {n_rate} played rows (2022-25 backtest fit: 0.97 / 1.17)")
     summary['pace_defense'] = coefs

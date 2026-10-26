@@ -50,7 +50,7 @@ MAX_INPUT_AGE_HOURS = 24
 
 # Early-season pause, mirrored from minutes-projection/config.py - keep in sync. While paused there are
 # no in-house projections: research and L3 still run; L2 skips; L1 checks inputs only.
-PROJECTION_START_MIN_TEAM_GAMES = 4
+PROJECTION_START_MIN_TEAM_GAMES = 1   # must match minutes-projection (4 until 2026-10-25)
 NBA_TEAM_COUNT = 30
 
 # Upstream outputs may still be landing when an action starts; poll this long before giving up

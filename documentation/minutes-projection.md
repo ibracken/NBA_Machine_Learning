@@ -10,8 +10,9 @@ The minutes-projection Lambda builds three DraftKings lineups each night and ema
    4 games; ×0.75 after missing 10+ team games.
 3. **DailyFantasyFuel:** DFF's own projections.
 
-**FP = projected minutes × FP per minute.** For the learned lineups, FP per minute is the season rate × tonight's
-pace / opponent-defense multiplier (below). Formula C keeps the plain season rate, so the control is unchanged.
+**FP = projected minutes × FP per minute.** For the learned lineups, FP per minute is the blended rate × tonight's
+pace / opponent-defense multiplier (below). The blended rate is this season's rate pulled toward last season's:
+w = minutes this season / (minutes this season + k), with k fit nightly by supervised-learning (200 so far). Formula C keeps the plain season rate, so the control is unchanged.
 Lineups use the production optimizer (`lineup_optimizer.optimize_lineup`) with DFF's salaries and positions.
 
 ## Pace and opponent defense
@@ -47,7 +48,9 @@ Lambda picked the same 8 players as the backtest on every night tested.
     last game" and "already out";
   - his with/without history: how his minutes changed in earlier games this season when each of tonight's out
     teammates sat, shrunk by n / (n + 3);
-  - his own status on tonight's report: Questionable, Probable, Available, or not listed (since 2026-10-20).
+  - his own status on tonight's report: Questionable, Probable, Available, or not listed (since 2026-10-20);
+  - last season (since 2026-10-25): average and last-10 minutes, games, whether he had one, whether he changed
+    teams. They come from `data/box_scores/{last season}.parquet`.
 - **Two parts (2026-10-20):** `P_PLAY`, the chance he plays, and `MIN_IF_PLAY`, his minutes if he plays (trained
   on players who played). Projected minutes = `P_PLAY` × `MIN_IF_PLAY`. The pickle is a dict
   `{'play', 'minutes', 'features'}`; `lm.predict` still accepts an older single model.
@@ -63,8 +66,8 @@ have no projection.
 
 ## Early-season pause
 
-`serving_features.projection_gate` pauses in-house projections until all 30 teams have played 4 games of the
-current season (about 10 days; Oct 30 in 2025-26). While paused, the default action updates actuals, then builds
+`serving_features.projection_gate` pauses in-house projections until all 30 teams have played 1 game of the
+current season (4 until 2026-10-25, when the early-season blend shipped). While paused, the default action updates actuals, then builds
 and emails only the DFF lineup. See `findings.md`, "Reference: early-season pause".
 
 ## Actions
@@ -96,7 +99,7 @@ and emails only the DFF lineup. See `findings.md`, "Reference: early-season paus
   `TEAM_GAMES_MISSED`, `OUT_TONIGHT`, `STATUS`, `P_PLAY`, `MIN_IF_PLAY`, `LEARNED_MIN_NO_ABSENCES`,
   `ABSENCE_ADJ_MIN`, absence features, `OPP`,
   `EXP_PACE`, `DEF_IDX`, `PACE_RATIO`, `DEF_RATIO`, `RATE_MULT`, `FP_RATE` (= `S_RATE` × `RATE_MULT`),
-  `ACTUAL_MIN`, `ACTUAL_FP`
+  `RATE_BLEND`, `PS_MIN`, `PS_L10_MIN`, `PS_GP`, `PS_RATE`, `CHANGED_TEAM`, `ACTUAL_MIN`, `ACTUAL_FP`
 - `model_comparison/learned_minutes/daily_lineups.parquet` (with `RATE_MULT`; the AI-adjusted files carry the
   same pace columns)
 - `model_comparison/formula_c_baseline/minutes_projections.parquet` and `daily_lineups.parquet`. The lineup file

@@ -13,7 +13,7 @@ outage doesn't affect this test. DFF's numbers are as of our scrape (about 20 mi
 
 Our pool: slate players matched to a replay row that day, not listed Out/Doubtful, with a season FP-per-minute
 rate (at least one game this season). Variants:
-  learned min x season rate x pace/def   production since 2026-10-20 (lambda/shared/pace_defense.py)
+  learned min x blended rate x pace/def  production since 2026-10-25 (blend) / 2026-10-20 (pace/def)
   learned min x season rate              production 2026-10-18 to 2026-10-20
   Formula C min x season rate            control: how much comes from the learned minutes rather than the setup
 DFF names are matched to box-score names per day with lambda/shared/player_names.py. Actual FP comes from box
@@ -72,7 +72,7 @@ def build_slates():
     s["MATCHED"] = s.TEAM.notna()
     s["OURS_OK"] = s.LEARNED_MIN.notna() & s.S_RATE.notna() & (s.S_RATE > 0)
     s["LxS"] = np.where(s.OURS_OK, s.LEARNED_MIN * s.S_RATE, np.nan)
-    s["LxPD"] = np.where(s.OURS_OK, s.LEARNED_MIN * s.S_RATE * s.RATE_MULT, np.nan)
+    s["LxPD"] = np.where(s.OURS_OK, s.LEARNED_MIN * s.RATE_BLEND * s.RATE_MULT, np.nan)
     s["FCxS"] = np.where(s.OURS_OK, s.FC_MIN * s.S_RATE, np.nan)
     return daily, s
 

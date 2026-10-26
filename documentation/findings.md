@@ -607,6 +607,44 @@ We pick more 33+ minute stars (28% vs 17%) and cold players (40% vs 29%).
   surprise starters. Look for a better starter signal of our own; the real-starter history above is the yardstick
   to score any candidate against.
 
+### Early-season blend (2026-10-25): shipped, and the pause lowered to 1 game
+- **Inputs:** last season's box scores only. 2021-22 was fetched locally with box-score-scraper's own code
+  (`data/replay/box_2021-22.parquet`), so 2022-23 has a last season too.
+  - The minutes model gets last season's average and last-10 minutes, his games, whether he had a last season,
+    and whether he changed teams.
+  - FP per minute is blended: w = minutes this season / (minutes this season + k), the rest from last season's
+    rate (with 100+ minutes behind it).
+- **Leak check:** 300 of 300 last-season profiles match a recomputation from the previous season alone.
+- **k is learned from the data:** it's fit on the training seasons and gave 200 in both setups (and 200 in
+  production on 2023-27). Given a separate k for each stage (games 1–5 / 6–10 / 11–20 / 21+), the data picked
+  200 / 200 / 150 / 200, so one fade is right.
+- **FP error change vs an identically trained baseline:**
+
+  | | 2024-25 (selection) | 2025-26 (test) |
+  |---|---|---|
+  | first 10 team games | −0.344 (−0.595..−0.137) | −0.302 (−0.481..−0.146) |
+  | team games 10–19 | −0.070 | −0.017 (n.s.) |
+  | rest of season | −0.035 | −0.011 |
+  | whole season | −0.069 | −0.040 |
+
+  - Players with 1–3 games: −0.34 / −0.30.
+  - Most of the gain is the rate blend; the minutes inputs add about −0.02 all season.
+- **DFF slate players:**
+  - Oct 24–29 (the pause window): error 9.28 -> 8.18, against DFF's 7.71.
+  - First 10 slates after the pause: 7.88 -> 7.61, against DFF's 7.41.
+- **Lineups** (not significant):
+  - first 10 slates +7.3 (−11..+25);
+  - first 25 slates +7.1 (−4.4..+18.7);
+  - full season +1.5 (−3.2..+6.4). `backtest_vs_dff.py` now gives 261.7, −6.3 vs DFF (was −7.8).
+- **Pause lowered from 4 games per team to 1 (Ian).** The pause-window error improved most, and starting earlier
+  means more live data.
+- **Serving bug found and fixed:**
+  - **The miss:** production's name matcher knew only this season's names. On 2025-11-05, "Jalen Williams" (out,
+    no game yet that season) was loosely matched to OKC's Jaylin Williams, shifting every OKC projection.
+  - **The fix:** a name counts as known if it appears in any box score before that day, last season included.
+    That's the same rule in serving and training.
+  - **The backtest:** its rows are unchanged (0 of 163,879), since prior seasons already covered those names.
+
 ### Older backlog notes
 
 ### M3. Model DNP risk explicitly
@@ -861,6 +899,14 @@ See M7.
 ---
 
 ## Done log
+
+### 2026-10-25
+- **Grading fix:** a date is graded only once it's past, and a 0 is regraded if the box scores show the player.
+  On nights with games before the main slate, the AI lineup had been graded 0 (Oct 23–24, repaired).
+- **The AI lineup is now an agent:** 12 web searches, and the prompt is fixed for stale knowledge and salary
+  filler. Live test: 5 searches, $0.74.
+- **Early-season blend shipped and the pause lowered to 1 game per team** (see "Early-season blend").
+- **Name-matching fix** for players who haven't played yet this season (Jalen/Jaylin Williams).
 
 ### 2026-10-20 (night)
 - **Two-part minutes model with report status, in production (Ian).** The chance he plays × his minutes if he

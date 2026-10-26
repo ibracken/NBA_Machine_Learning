@@ -110,7 +110,8 @@ Evidence for every number here is in [`findings.md`](findings.md).
     both test seasons. Watch it in the live comparison (step 7). Details in `findings.md`.
 10. **Historical betting lines (game total, spread).** Find a source with past seasons; likely the biggest
     per-minute input DFF has and we don't.
-11. **Early-season blend:** players with 0–3 games currently get a flat 10 minutes (2–3% of rotation players
+11. **Early-season blend: shipped 2026-10-25** (last-season inputs plus a learned rate blend; the pause now
+    lifts after 1 game per team). Details in `findings.md`. Original note: players with 0–3 games currently get a flat 10 minutes (2–3% of rotation players
     every week). Replace it with a blend of this season and last season, weighted by games played. This might
     also let the pause lift earlier. The same blend applies to the season FP-per-minute rate: in the DFF backtest,
     the first 10 slates after the pause ran −29.6 vs DFF, against −10.6 for the rest (a small sample).

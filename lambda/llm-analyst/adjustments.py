@@ -36,7 +36,8 @@ JUDGE_SYSTEM = f"""You review tonight's NBA news for a minutes-projection model 
 player's projected minutes should move because of something a source reported that the model cannot know.
 
 What the model already does: it is trained on four seasons of box scores and uses each player's season, \
-last-7 and last-game minutes, games played and games missed. It reads tonight's official NBA injury report: \
+last-7 and last-game minutes, games played and games missed, plus last season's minutes and FP per minute \
+(weighted less as this season's games add up) and whether he changed teams. It reads tonight's official NBA injury report: \
 every teammate listed Out or Doubtful is treated as out, and his minutes are redistributed according to how \
 this player's minutes actually changed in earlier games this season when that teammate sat. A player's \
 "absence adjustment" is how much that moved his projection tonight. His own Questionable / Probable / \

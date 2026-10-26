@@ -25,5 +25,5 @@ CAREER_RATE_MAX_PRIOR_GAMES = 1
 # so they are dropped or fall to the 10 MPG fallback, and offseason movers sit on their old team.
 # 4 matches Formula C's "reliable baseline" cutoff. The DFF lineup still runs.
 # Mirrored in llm-analyst/config.py - keep in sync.
-PROJECTION_START_MIN_TEAM_GAMES = 4
+PROJECTION_START_MIN_TEAM_GAMES = 1   # 4 until 2026-10-25 (Ian): the early-season blend
 NBA_TEAM_COUNT = 30
