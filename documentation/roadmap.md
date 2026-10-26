@@ -211,12 +211,26 @@ them through mid-December, then keep or drop each by its rule.
   Drop the judge if neither holds.
 
 **AI lineup (replaces the per-player AI projections, Ian 2026-10-11; built 2026-10-18; in the T−11 email from 2026-10-20).**
-- **Goal:** can an AI pick a better lineup from tonight's news and its own knowledge than our pipeline does?
-- **Design:**
-  - One call per slate: the slate (name, team, opponent, position, salary) plus the research briefings.
-  - It returns 8 players. Code checks the salary cap, positions and that every player is on the slate, with one
-    retry on an invalid lineup. Saved to `model_comparison/ai_lineup/daily_lineups.parquet`; runs during the pause.
-  - It never sees our projections or DFF's.
+- **Goal:** can an AI agent pick a better lineup from its own research than our pipeline does?
+- **Design (an agent since 2026-10-25, Ian):**
+  - One web-search call per slate, up to 12 searches. Input: the slate (name, team, opponent, position, salary)
+    and the research briefings.
+  - The prompt says its knowledge stops mid-2026, so the slate's teams and tonight's sources beat memory. It may
+    read any site, other projections included, but must think for itself and not copy. It builds for points per
+    dollar, with no minimum-salary filler and no stacking one team unless each pick stands alone.
+  - A cheap no-search call turns the write-up into JSON. Code checks the cap, the slots and that every player is
+    on the slate; the JSON call retries once with the error. Saved to `model_comparison/ai_lineup/daily_lineups.parquet`;
+    the write-up, sources, search count and cost go to `llm/ai_lineup/{date}.json`. It runs during the pause.
+  - It never sees our projections or DFF's from our data.
+  - **Why it changed:** the first six lineups (Oct 20–25) were a single call with no search.
+    - It reasoned from stale memory: Paul George "starts for Boston" (PHI), Mitchell Robinson "Boston's center"
+      (NYK), Jaxson Hayes "Utah" (LAL).
+    - It went stars-and-minimum: 12 of 48 picks at $8k+ and 15 at ≤$4.5k, against DFF's 4 and 7, filling salary
+      ("lands the lineup at exactly $50,000").
+    - It was 5.17 FP per $1k by DFF's projections, vs 5.76 for DFF's picks.
+    - Realized over 5 graded nights: 249.5 vs DFF 252.4.
+  - **Live test on 2026-10-25:** 5 searches, 40 s, $0.74. It found the Kawhi Leonard scratch an hour before tip,
+    confirmed starters and a 15.5-point spread, and every pick had a news-based reason.
 - **Kill rule:** after 30+ slates, scored on realized FP against our lineup and DFF's. Drop it if it doesn't beat
   ours.
 

@@ -27,6 +27,7 @@ RETURN_MIN_MISSED = 1   # 3 until 2026-10-20 (Ian): 53% -> 64% of 2025-26 games 
 
 # Web searches allowed per game in the nightly research call
 RESEARCH_MAX_SEARCHES = 5
+AI_LINEUP_MAX_SEARCHES = 12   # the AI lineup agent's own research (Ian, 2026-10-25)
 RESEARCH_PARALLEL_GAMES = 6
 PAUSE_TURN_LIMIT = 5
 

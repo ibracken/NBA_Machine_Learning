@@ -5,10 +5,12 @@ Research: one web-search call per game with open injury news (slate.open_news_te
 availability and minutes news, keeping the exact snippets each statement rests on. Games with no open news on the
 official report are skipped (Ian, 2026-10-20: cost). The adjustments judge and the AI lineup both read it.
 
-AI lineup (replaced the per-player head-to-head minutes, Ian 2026-10-11): one call per slate picks a DraftKings
-lineup from the research briefings, the slate (names, teams, positions, salaries) and the model's own knowledge.
-It never sees our projections or DFF's. Code checks the picks (slate players, slots, salary cap) and allows one
-retry with the error. Scored on realized FP against our lineup and DFF's.
+AI lineup (an agent since 2026-10-25, Ian): one web-search call per slate (up to AI_LINEUP_MAX_SEARCHES) researches
+the slate itself and writes its lineup, with the research briefings and the slate (names, teams, positions, salaries)
+as input. It never sees our projections or DFF's from our data; it may read any site but is told to think for itself.
+A cheap no-search call turns the write-up into JSON; code checks the picks (slate players, slots, salary cap) and
+the JSON call retries once with the error. The write-up and its sources go to llm/ai_lineup/{date}.json. Scored on
+realized FP against our lineup and DFF's. Before 2026-10-25 it was a single call with no search.
 """
 
 import logging
@@ -18,9 +20,10 @@ from datetime import datetime
 import pandas as pd
 import pytz
 
+import claude_client
 from claude_client import LLMError, extract, research
-from config import (AI_LINEUP_EFFORT, AI_LINEUP_MODEL, RESEARCH_EFFORT, RESEARCH_MAX_SEARCHES, RESEARCH_MODEL,
-                    RESEARCH_PARALLEL_GAMES, SALARY_CAP)
+from config import (AI_LINEUP_EFFORT, AI_LINEUP_MAX_SEARCHES, AI_LINEUP_MODEL, RESEARCH_EFFORT,
+                    RESEARCH_MAX_SEARCHES, RESEARCH_MODEL, RESEARCH_PARALLEL_GAMES, SALARY_CAP)
 from s3_io import replace_date_rows, save_json
 from slate import AI_LINEUP, load_box_scores, open_news_teams, tonight
 
@@ -41,14 +44,35 @@ wording (a restriction, a coach's comment on workload). If no news was found for
 about him rather than guessing. Distinguish confirmed facts from speculation, and say when a report is older \
 than today."""
 
-AI_LINEUP_SYSTEM = f"""You pick one DraftKings NBA classic lineup for tonight, the way a sharp human player would: from \
-the research briefings provided and your own knowledge of the players, teams and matchups.
+AI_LINEUP_SYSTEM = f"""You are a sharp daily fantasy player building one DraftKings NBA classic lineup for tonight. \
+You have web search: do your own research before you pick, the way a serious player would.
+
+Research tonight's injury news and late scratches, confirmed or expected starting lineups, minutes restrictions, \
+players returning or changing roles, recent minutes and production, and matchups and pace. The briefings provided \
+cover only games with open injury news; research the other games yourself.
+
+Your own knowledge ends around mid-2026. Trades, signings, rookies and roles have changed since, so don't trust \
+memory for who plays where or how much. The slate's team for each player is correct, and tonight's sources beat \
+memory: when they conflict, go with the slate and the sources.
+
+You may read any site, including other projections and lineup advice, as information. Think independently: don't \
+copy another site's projections or lineup; form your own view of each player's minutes and production tonight.
+
+Build for the most points per dollar across all eight slots: a player belongs only if his expected points beat \
+what the same salary buys elsewhere. Don't add a minimum-salary player just to fit the cap, and take several \
+players from one team only if each one stands on his own.
 
 Rules: exactly 8 different players, one per slot - PG, SG, SF, PF, C, G (a PG or SG), F (an SF or PF), UTIL (any \
 position). A player fits a slot only through a position listed for him on the slate. Total salary at most \
 ${SALARY_CAP:,}. Only players on tonight's slate are eligible. Never pick a player reported out.
 
-Aim for the most fantasy points: a cheap player in a bigger role tonight is worth as much as a star."""
+Finish with your lineup, one line per slot, names spelled exactly as on the slate:
+SLOT | player | salary | one-sentence reason"""
+
+AI_LINEUP_PARSE_SYSTEM = """You copy a DraftKings lineup from an analyst's write-up into JSON: the eight slots, the \
+players (spelled as on the slate) and the analyst's reasons. Don't change any pick. If you are told the lineup is \
+invalid, fix it with as few changes as possible, choosing replacements the analyst's research supports, and say in \
+that player's reason what was replaced and why."""
 
 AI_LINEUP_SCHEMA = {
     'type': 'object',
@@ -132,6 +156,7 @@ def check_lineup(picks, slate):
 
 
 def ai_lineup(today, slate, briefings, skipped=()):
+    """The agent researches and writes a lineup; a no-search call turns it into checked JSON (one retry)."""
     rows = '\n'.join(f"- {s.PLAYER} | {s.TEAM} vs {s.OPPONENT if pd.notna(s.OPPONENT) else '?'} | {s.POSITION} | "
                      f"${int(s.SALARY)}" for s in slate.dropna(subset=['SALARY', 'POSITION'])
                      .sort_values('SALARY', ascending=False).itertuples())
@@ -142,16 +167,27 @@ def ai_lineup(today, slate, briefings, skipped=()):
     prompt = (f"Date: {today:%A %B %d, %Y}. It is now {now_et():%I:%M %p} ET.\n\n"
               f"Tonight's slate (name | team vs opponent | position | salary):\n{rows}\n\n"
               f"Research briefings:\n{news or '(none)'}")
+    tools = [{'type': 'web_search_20260209', 'name': 'web_search', 'max_uses': AI_LINEUP_MAX_SEARCHES,
+              'allowed_callers': ['direct']}]
+    before = len(claude_client.USAGE)
+    writeup, citations = research("ai_lineup research", AI_LINEUP_MODEL, AI_LINEUP_EFFORT, AI_LINEUP_SYSTEM, prompt,
+                                  tools)
+    calls = claude_client.USAGE[before:]
+    save_json({'date': today, 'writeup': writeup, 'citations': citations,
+               'searches': sum(c['web_search_requests'] for c in calls),
+               'cost_usd': round(sum(c['cost_usd'] or 0 for c in calls), 4)}, f'llm/ai_lineup/{today}.json')
+    names = ', '.join(sorted(slate['PLAYER'].dropna().unique()))
+    ask = f"Slate player names: {names}\n\nAnalyst's write-up:\n{writeup}"
     error = None
     for attempt in (1, 2):
-        ask = prompt if error is None else f"{prompt}\n\nYour previous lineup was invalid: {error}. Pick again."
-        picks = extract(f"ai_lineup attempt {attempt}", AI_LINEUP_MODEL, AI_LINEUP_EFFORT, AI_LINEUP_SYSTEM, ask,
+        text = ask if error is None else f"{ask}\n\nThat lineup was invalid: {error}. Fix it."
+        picks = extract(f"ai_lineup parse {attempt}", AI_LINEUP_MODEL, 'low', AI_LINEUP_PARSE_SYSTEM, text,
                         AI_LINEUP_SCHEMA)['lineup']
         lineup, error = check_lineup(picks, slate)
         if lineup:
             return pd.DataFrame(lineup).assign(DATE=today, PROJECTED_MIN=None, PROJECTED_FP=None, ACTUAL_FP=None,
                                                LLM_MODEL=AI_LINEUP_MODEL)
-        logger.warning(f"AI lineup attempt {attempt} invalid: {error}")
+        logger.warning(f"AI lineup parse {attempt} invalid: {error}")
     raise LLMError(f"AI lineup invalid after 2 attempts: {error}")
 
 
