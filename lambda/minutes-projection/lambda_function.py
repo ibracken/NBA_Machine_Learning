@@ -479,7 +479,7 @@ def lambda_handler(event, context):
     if action == 'check_model':
         return check_model(box_scores)
     if action == 'update_actuals':
-        return {'statusCode': 200, 'body': f'Updated {update_actual_minutes(box_scores)} actual records'}
+        return {'statusCode': 200, 'body': f'Updated {update_actual_minutes(box_scores, today=today)} actual records'}
 
     if box_scores.empty:
         raise RuntimeError("No box scores in data/box_scores/current.parquet")
@@ -489,7 +489,7 @@ def lambda_handler(event, context):
             send_paused_ai_email(today, reason)
             return {'statusCode': 200, 'body': f'Projections paused ({reason}); AI lineup emailed'}
         return build_adjusted_lineup(box_scores, today)
-    update_actual_minutes(box_scores.copy())
+    update_actual_minutes(box_scores.copy(), today=today)
     if paused:
         return run_paused(box_scores, today, reason)
     return run_projections(box_scores, today)
