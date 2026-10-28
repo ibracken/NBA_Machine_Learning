@@ -24,10 +24,12 @@ from datetime import datetime
 from pathlib import Path
 
 try:
+    import game_lines as gl
     import learned_minutes as lm
     import pace_defense as pdm
 except ImportError:   # local run: the shared modules live in lambda/shared
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'shared'))
+    import game_lines as gl
     import learned_minutes as lm
     import pace_defense as pdm
 
@@ -36,6 +38,7 @@ TRAIN_BAREBONES = False
 INJURY_HISTORY_KEY = 'data/injuries/history.parquet'   # D, PLAYER, STATUS; injury-scraper appends nightly
 LEARNED_MODEL_KEY = 'models/learned_minutes.pkl'
 PACE_DEFENSE_KEY = 'models/pace_defense.json'
+LINES_KEY = 'data/lines/history.parquet'   # betting spreads per team-game (game_lines.py; minutes-projection appends)
 
 # Configure logging
 logger = logging.getLogger()
@@ -140,6 +143,12 @@ def train_learned_minutes(publish=True):
     rows, _ = lm.build(box, reports, known_names=lm.first_seen(with_prior))
     rows = pdm.add_inputs(rows, box)
     rows = lm.add_last_season(rows, with_prior)
+    if s3_key_exists(LINES_KEY):
+        rows = gl.add_lines(rows, load_dataframe_from_s3(LINES_KEY))
+    else:
+        logger.error(f"{LINES_KEY} missing: training without the spread")
+        rows = rows.assign(TEAM_MARGIN=float('nan'), TOTAL=float('nan'))
+    logger.info(f"Rows with a betting spread: {rows['TEAM_MARGIN'].notna().mean():.1%}")
     train = lm.training_rows(rows)
     logger.info(f"Learned minutes: {len(rows)} roster rows, {len(train)} training rows, "
                 f"seasons {sorted(train['SEASON'].unique())}, report days {rows.loc[rows['HAS_REPORT'], 'D'].nunique()}")

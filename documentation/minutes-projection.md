@@ -50,7 +50,11 @@ Lambda picked the same 8 players as the backtest on every night tested.
     teammates sat, shrunk by n / (n + 3);
   - his own status on tonight's report: Questionable, Probable, Available, or not listed (since 2026-10-20);
   - last season (since 2026-10-25): average and last-10 minutes, games, whether he had one, whether he changed
-    teams. They come from `data/box_scores/{last season}.parquet`.
+    teams. They come from `data/box_scores/{last season}.parquet`;
+  - his team's expected margin from tonight's betting spread (since 2026-10-27, `lambda/shared/game_lines.py`).
+    It's fetched from ESPN at run time (median over pre-game books) and appended to `data/lines/history.parquet`
+    for training. The AI-adjusted re-run reuses the saved lines. If the fetch fails, the run raises after
+    emailing.
 - **Two parts (2026-10-20):** `P_PLAY`, the chance he plays, and `MIN_IF_PLAY`, his minutes if he plays (trained
   on players who played). Projected minutes = `P_PLAY` × `MIN_IF_PLAY`. The pickle is a dict
   `{'play', 'minutes', 'features'}`; `lm.predict` still accepts an older single model.
@@ -79,6 +83,8 @@ and emails only the DFF lineup. See `findings.md`, "Reference: early-season paus
   (`model_comparison/ai_lineup/`, from llm-analyst research). While paused, the email carries only the AI's lineup.
 - `update_actuals`: fill ACTUAL_MIN / ACTUAL_FP from the box scores (names matched per date with
   `lambda/shared/player_names.py`; a projected player with no box-score row on a graded date gets 0).
+- `check_lines`: fetch tonight's lines from ESPN and report them; writes nothing (release check that the Lambda
+  reaches ESPN).
 - `check_model`: load the published model and predict the last graded game day. No writes, no email. Use it after
   publishing a model (AGENTS.md release checklist).
 

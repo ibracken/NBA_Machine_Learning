@@ -5,7 +5,7 @@ FROM public.ecr.aws/lambda/python:3.11
 COPY requirements.txt ${LAMBDA_TASK_ROOT}
 COPY lambda_function.py ${LAMBDA_TASK_ROOT}
 # Shared modules from lambda/shared (deploy.py passes it as the 'shared' build context)
-COPY --from=shared player_names.py learned_minutes.py pace_defense.py ${LAMBDA_TASK_ROOT}/
+COPY --from=shared player_names.py learned_minutes.py pace_defense.py game_lines.py ${LAMBDA_TASK_ROOT}/
 
 # Install Python dependencies
 RUN pip install -r requirements.txt

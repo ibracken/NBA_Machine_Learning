@@ -645,6 +645,32 @@ We pick more 33+ minute stars (28% vs 17%) and cold players (40% vs 29%).
     That's the same rule in serving and training.
   - **The backtest:** its rows are unchanged (0 of 163,879), since prior seasons already covered those names.
 
+### Betting lines: the spread in minutes (2026-10-27): shipped
+- **Data:** ESPN's free odds API (`scripts/fetch_game_lines.py`, `lambda/shared/game_lines.py`). 4,932 games
+  2022-26, every pre-game book (15 a game in 2022-23, 1 in 2024-26); "Live Odds" in-game books skipped.
+  - 99.9% of team-games matched.
+  - **Line used** (Ian): 2022-23 ESPN's only line; 2023-26 closing lines.
+  - S3: `data/lines/history.parquet`, one row per team-game; minutes-projection appends each night's
+    run-time line.
+- **Leak check:** spread vs final margin r = 0.41 / 0.50 / 0.52 / 0.53 by season, normal for pre-game lines.
+  - Opening lines: 0.48–0.50. Open to close moves a median of 1.0 point (90th percentile 3.5).
+  - Closing lines for later games are set after our run (once 3.5 h after the first tip, 2026-10-27), so the
+    backtest is slightly optimistic.
+- **Player props are on ESPN too; Ian rejected them as inputs** (our own predictions only).
+- **Results** (walk-forward vs production trained with identical code):
+
+  | | 2024-25 | 2025-26 |
+  |---|---|---|
+  | starters (28+ min) on 10+ point favorites: minutes bias | +1.30 -> +0.05 | +1.53 -> +0.40 |
+  | same group: minutes MAE | 4.756 -> 4.800 | 4.519 -> 4.358 |
+  | FP MAE, spread in minutes | −0.008 (−0.016..+0.001) | −0.007 (−0.014..+0.001) |
+  | total added to the FP multiplier | +0.003 | +0.003 |
+  | total replacing pace/defense | +0.018 | +0.018 |
+
+  - The total adds nothing over our own pace and defense ratings.
+- **Lineups 2025-26** (135 slates): 262.6 vs 261.7, so +0.9 (−2.3..+4.0); vs DFF −5.4 (was −6.3).
+  - Picks of starters on 10+ point favorites fell from 215 to 119, and those picked scored 40.3 vs 39.0.
+
 ### Older backlog notes
 
 ### M3. Model DNP risk explicitly
@@ -899,6 +925,11 @@ See M7.
 ---
 
 ## Done log
+
+### 2026-10-27
+- **The betting spread is a minutes input** (see "Betting lines"). Release checks pass in the Lambda: it reaches
+  ESPN (`check_lines`), and the model has a spread for all 228 players on 2026-10-26. The history was backfilled
+  for 2026-27 (Oct 20–27). The first night with spreads is 2026-10-28.
 
 ### 2026-10-25
 - **Grading fix:** a date is graded only once it's past, and a 0 is regraded if the box scores show the player.

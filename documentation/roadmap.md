@@ -108,7 +108,9 @@ Evidence for every number here is in [`findings.md`](findings.md).
 9. **Opponent pace and defense: shipped 2026-10-20.** FP per minute is scaled by tonight's expected pace and
     the opponent's FP allowed. Backtest: +3.9 per slate (−0.9..+9.0, not significant), and player error better in
     both test seasons. Watch it in the live comparison (step 7). Details in `findings.md`.
-10. **Historical betting lines (game total, spread).** Find a source with past seasons; likely the biggest
+10. **Betting lines: the spread shipped 2026-10-27** as a minutes input (starters on big favorites were
+    over-projected by 1.5 min). The total added nothing; props were rejected (Ian). Details in `findings.md`.
+    Original note: **Historical betting lines (game total, spread).** Find a source with past seasons; likely the biggest
     per-minute input DFF has and we don't.
 11. **Early-season blend: shipped 2026-10-25** (last-season inputs plus a learned rate blend; the pause now
     lifts after 1 game per team). Details in `findings.md`. Original note: players with 0–3 games currently get a flat 10 minutes (2–3% of rotation players

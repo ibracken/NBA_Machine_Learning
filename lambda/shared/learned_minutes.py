@@ -19,6 +19,8 @@ Features:
   IS_QUES, IS_PROB, IS_AVAI                        his own status on tonight's report (not listed = all 0)
   PS_MIN, PS_L10_MIN, PS_GP, HAS_PS, CHANGED_TEAM  last season (previous season's box scores only): average and
                                                    last-10 minutes, games, whether he had one, new team now
+  TEAM_MARGIN                                      his team's expected margin from the betting spread (game_lines.py);
+                                                   starters on 10+ point favorites: minutes bias +1.53 -> +0.40 (2025-26)
 Position-based inputs were dropped (2026-10-18): minutes MAE 4.888 with them vs 4.900 without.
 
 Two parts (2026-10-20): P_PLAY, the chance he plays (classifier), and MIN_IF_PLAY, his minutes if he plays
@@ -46,7 +48,7 @@ OWN_STATUS_FEATURES = {"QUESTIONABLE": "IS_QUES", "PROBABLE": "IS_PROB", "AVAILA
 LAST_SEASON_FEATURES = ["PS_MIN", "PS_L10_MIN", "PS_GP", "HAS_PS", "CHANGED_TEAM"]
 FEATURES = ["S_MIN", "L7_MIN", "PREV_MIN", "GP", "TEAM_GAMES_MISSED",
             "OUT_MIN_FRESH", "OUT_MIN_ONGOING", "WOWY_MIN", "WOWY_N", *OWN_STATUS_FEATURES.values(),
-            *LAST_SEASON_FEATURES]
+            *LAST_SEASON_FEATURES, "TEAM_MARGIN"]
 FILL = -1                      # missing inputs (no last season) for the two-part model
 RATE_K_GRID = [0, 25, 50, 100, 150, 200, 300, 400, 600, 800, 1200]
 RATE_PRIOR_MIN_MINUTES = 100   # last season's rate counts only with 100+ minutes behind it

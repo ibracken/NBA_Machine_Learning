@@ -10,7 +10,9 @@ with the judge's verified status changes and its minutes adjustments applied, to
 email also carries the AI's own lineup (llm-analyst research), and still goes out during the pause with just that.
 FP = projected minutes x FP per minute. For the learned lineups, FP per minute is this season's rate blended with
 last season's (weight k fit nightly by supervised-learning) x tonight's pace / opponent-defense multiplier
-(lambda/shared/pace_defense.py). The minutes model also reads last season (lambda/shared/learned_minutes.py). Formula C
+(lambda/shared/pace_defense.py). The minutes model also reads last season (lambda/shared/learned_minutes.py) and
+tonight's betting spread (lambda/shared/game_lines.py, fetched from ESPN at run time and appended to
+data/lines/history.parquet for training). Formula C
 keeps the plain season rate, so the control is unchanged. Lineups use the production optimizer with DFF's salaries
 and positions.
 
@@ -29,10 +31,12 @@ import pandas as pd
 import pytz
 
 try:
+    import game_lines as gl
     import learned_minutes as lm
     import pace_defense as pdm
 except ImportError:   # local run: the shared modules live in lambda/shared
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'shared'))
+    import game_lines as gl
     import learned_minutes as lm
     import pace_defense as pdm
 from actuals_updater import update_actual_minutes
@@ -54,8 +58,9 @@ FORMULA_C_PATH = 'model_comparison/formula_c_baseline'
 DFF_PATH = 'model_comparison/daily_fantasy_fuel_baseline'
 LEARNED_MODEL_KEY = 'models/learned_minutes.pkl'
 PACE_DEFENSE_KEY = 'models/pace_defense.json'
+LINES_KEY = 'data/lines/history.parquet'
 PACE_COLS = ['OPP', 'EXP_PACE', 'DEF_IDX', 'PACE_RATIO', 'DEF_RATIO', 'RATE_MULT', 'RATE_BLEND', 'FP_RATE',
-             'PS_MIN', 'PS_L10_MIN', 'PS_GP', 'PS_RATE', 'CHANGED_TEAM']
+             'PS_MIN', 'PS_L10_MIN', 'PS_GP', 'PS_RATE', 'CHANGED_TEAM', 'TEAM_MARGIN', 'TOTAL']
 ADJUSTED_PATH = 'model_comparison/learned_ai_adjusted'
 AI_LINEUP_PATH = 'model_comparison/ai_lineup'   # written by llm-analyst research
 ADJUSTMENTS_LOG = 'llm/adjustments/log.parquet'
@@ -96,7 +101,33 @@ def tonights_injury_report(today):
     return pd.DataFrame({'D': pd.Timestamp(today), 'PLAYER': injuries['PLAYER'], 'STATUS': injuries['STATUS']})
 
 
-def tonight_rows(box_scores, today, status_overrides=None):
+def tonights_lines(today, fetch=True):
+    """
+    Tonight's spreads. fetch=True (the main run): ESPN at run time, saved into the history; otherwise (the
+    AI-adjusted re-run) the lines the main run saved. Empty if neither works (logged; rows get no TEAM_MARGIN).
+    """
+    history = load_from_s3(LINES_KEY)
+    if not history.empty:
+        history['D'] = pd.to_datetime(history['D']).dt.normalize()
+    if fetch:
+        try:
+            lines = gl.tonight(today)
+        except Exception as e:
+            logger.error(f"ESPN lines fetch failed for {today}: {e}")
+            lines = pd.DataFrame()
+        if not lines.empty:
+            lines = lines.assign(SEASON=None, SOURCE='espn at run time')
+            keep = history[history['D'] != pd.Timestamp(today)] if not history.empty else history
+            save_to_s3(pd.concat([keep, lines], ignore_index=True), LINES_KEY)
+            logger.info(f"Lines for {today}: {len(lines) // 2} games, median {lines['BOOKS'].median():.0f} books")
+            return lines
+    saved = history[history['D'] == pd.Timestamp(today)] if not history.empty else history
+    if saved.empty:
+        logger.error(f"No betting lines for {today}: TEAM_MARGIN missing tonight")
+    return saved
+
+
+def tonight_rows(box_scores, today, status_overrides=None, fetch_lines=True):
     """
     Roster rows for tonight's games with the learned model's features (lambda/shared/learned_minutes.py).
     status_overrides: {player name: True (out) / False (playing)} applied over the injury report before the
@@ -125,6 +156,8 @@ def tonight_rows(box_scores, today, status_overrides=None):
             logger.warning(f"Status overrides with no roster row tonight: {missing}")
     rows = lm.absence_features(rows)
     rows = pdm.add_inputs(rows, box_scores, tonight)
+    lines = tonights_lines(today, fetch_lines)
+    rows = gl.add_lines(rows, lines) if not lines.empty else rows.assign(TEAM_MARGIN=float('nan'), TOTAL=float('nan'))
     rows = rows[rows['D'] == pd.Timestamp(today)].copy()
     if unmatched:
         logger.info(f"Injury report names not on tonight's rosters (long-term or two-way): "
@@ -313,7 +346,7 @@ def build_adjusted_lineup(box_scores, today):
     if model is None:
         raise RuntimeError(f"could not load {LEARNED_MODEL_KEY}")
     known = set(with_last_season(box_scores)['PLAYER'])
-    rows = add_learned_minutes(tonight_rows(box_scores, today, overrides), model)
+    rows = add_learned_minutes(tonight_rows(box_scores, today, overrides, fetch_lines=False), model)
     rows = add_fp_rate(rows, load_pace_weights())
     mapping, _ = match_names(list(pct), rows['PLAYER'], known)
     rows['AI_PCT'] = rows['PLAYER'].map({mapping[n]: v for n, v in pct.items() if mapping.get(n)}).fillna(0.0)
@@ -413,6 +446,8 @@ def check_model(box_scores):
     rows, _ = lm.build(box_scores, load_from_s3('data/injuries/history.parquet'))
     rows = pdm.add_inputs(rows, box_scores)
     rows = lm.add_last_season(rows, with_last_season(box_scores))
+    lines = load_from_s3(LINES_KEY)
+    rows = gl.add_lines(rows, lines) if not lines.empty else rows.assign(TEAM_MARGIN=float('nan'), TOTAL=float('nan'))
     last = rows[(rows['D'] == rows['D'].max()) & rows['S_MIN'].notna() & ~rows['LISTED_OUT']]
     pred = lm.predict(model, last)
     mae = float(abs(pred - last['ACT_MIN']).mean())
@@ -432,7 +467,8 @@ def check_model(box_scores):
             f"Pace/defense weights {coefs if coefs else 'MISSING'}, rate blend k "
             f"{weights.get('rate_blend_k') if weights else 'MISSING'}: FP MAE {fp_pace:.3f} vs {fp_plain:.3f} on the "
             f"plain season rate; multiplier {last['RATE_MULT'].min():.3f} to {last['RATE_MULT'].max():.3f}; "
-            f"{int(last['HAS_PS'].sum())} of {len(last)} players have last-season inputs")
+            f"{int(last['HAS_PS'].sum())} of {len(last)} players have last-season inputs, "
+            f"{int(last['TEAM_MARGIN'].notna().sum())} a betting spread")
     logger.info(body)
     return {'statusCode': 200, 'body': body}
 
@@ -450,6 +486,8 @@ def run_projections(box_scores, today):
         lineups["1. Learned minutes (#1) - MODEL FAILED TO LOAD"] = pd.DataFrame()
     elif not rows.empty:
         rows = add_learned_minutes(rows, model)
+        if rows['TEAM_MARGIN'].isna().all():
+            failures.append("no betting lines tonight (ESPN fetch failed): projections ran without the spread")
         weights = load_pace_weights()
         if weights is None or weights.get('rate_blend_k') is None:
             failures.append(f"{PACE_DEFENSE_KEY} missing or without rate_blend_k (learned FP used the plain season rate)")
@@ -487,8 +525,8 @@ def run_projections(box_scores, today):
 def lambda_handler(event, context):
     """
     Event parameters:
-        action: 'project' (default), 'update_actuals', 'adjusted_lineup' (after the AI judge) or
-                'check_model' (load + predict, no side effects)
+        action: 'project' (default), 'update_actuals', 'adjusted_lineup' (after the AI judge),
+                'check_model' (load + predict, no side effects) or 'check_lines' (fetch tonight's lines, no writes)
         date: optional date override (YYYY-MM-DD)
     """
     event = event or {}
@@ -499,6 +537,11 @@ def lambda_handler(event, context):
 
     if action == 'check_model':
         return check_model(box_scores)
+    if action == 'check_lines':
+        # Release check: can this Lambda reach ESPN? Fetches tonight's lines; writes nothing
+        lines = gl.tonight(today)
+        return {'statusCode': 200, 'body': f"{len(lines) // 2} games with lines for {today}: "
+                f"{lines.loc[lines['TEAM_MARGIN'] < 0, ['TEAM', 'OPP', 'TEAM_MARGIN', 'TOTAL']].to_dict('records')}"}
     if action == 'update_actuals':
         return {'statusCode': 200, 'body': f'Updated {update_actual_minutes(box_scores, today=today)} actual records'}
 
