@@ -35,7 +35,9 @@ PAUSE_TURN_LIMIT = 5
 SALARY_CAP = 50000
 
 # L2 guardrails
-MAX_ADJUSTMENT_PCT = 0.25   # an LLM may never move a projection more than 25% either way
+# No size cap on adjustments (Ian, 2026-10-29: a capped judge can't act on news that changes a role, e.g. a bench
+# big confirmed starting). The result is only kept within a game's minutes.
+MAX_PLAYER_MINUTES = 48
 MIN_QUOTE_CHARS = 20        # a quote shorter than this cannot carry a minutes claim
 
 # Preflight thresholds, measured on the learned minutes model's 2025-26 backtest (Oct 30 - Jan 13, slate players

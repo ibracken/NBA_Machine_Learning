@@ -185,7 +185,7 @@ them through mid-December, then keep or drop each by its rule.
     tonight's absences** (projection minus the same model with no absences);
   - the instruction: don't adjust for anything already in that list.
 
-  The verbatim-quote check stays. ±25% is a cap: the judge picks any size up to it.
+  The verbatim-quote check stays. The ±25% cap was removed 2026-10-29 (Ian): the judge sizes changes to the evidence, kept within 0–48 minutes.
 - **Player calls (built 2026-10-20, logging only).** For every Questionable or returning (1+ missed games)
   rotation player on the slate in a researched game, the judge calls tonight: plays normal / plays limited / sits /
   unclear, with a quote checked against its source. Logged to `llm/player_calls/log.parquet` with the model's

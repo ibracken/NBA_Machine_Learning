@@ -833,7 +833,7 @@ One judge: Opus 5.5 at effort high. Skipped while the early-season pause is on. 
 - Each adjustment cites one snippet, with a verbatim quote of at least 20 characters. The quote is checked
   mechanically against the snippet; paraphrases are rejected.
 - The source URL is required.
-- The size is clamped to **±25%**.
+- The size was clamped to **±25%** (removed 2026-10-29: in its first 3 live nights the judge proposed one +15% change; the prompt's range and "never create a starter" rule, not the clamp, held it back).
 - A player projected at 0 can't be adjusted, and unknown players are rejected.
 - Pre- and post-adjustment minutes are logged to `llm/adjustments/log.parquet`. **Nothing is applied.**
 - Reported status conflicts ("we project him, the report says out") go to L1, not into adjustments.

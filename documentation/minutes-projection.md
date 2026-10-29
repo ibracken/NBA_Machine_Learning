@@ -78,7 +78,7 @@ and emails only the DFF lineup. See `findings.md`, "Reference: early-season paus
 
 - `project` (default): update actuals, then build and email the three lineups.
 - `adjusted_lineup` (+19, after the AI judge): waits for the judge. Its quote-verified status calls change the out
-  list and the model is re-run; its minutes tweaks (at most ±25%) are applied on top. Builds the AI-adjusted
+  list and the model is re-run; its minutes tweaks (no size cap since 2026-10-29; kept within 0–48 minutes) are applied on top. Builds the AI-adjusted
   lineup (`model_comparison/learned_ai_adjusted/`) and emails it with what changed and why, plus the AI's own lineup
   (`model_comparison/ai_lineup/`, from llm-analyst research). While paused, the email carries only the AI's lineup.
 - `update_actuals`: fill ACTUAL_MIN / ACTUAL_FP from the box scores (names matched per date with

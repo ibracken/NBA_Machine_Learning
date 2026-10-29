@@ -5,8 +5,8 @@ The judge (Opus 5.5; config.ADJUSTMENT_JUDGES) reads tonight's research briefing
 plus what the model already did: which teammates it treats as out and how much each player's projection moved
 for those absences (Ian, 2026-10-11: an uninformed judge stacks a second overreaction on top, the complex model's
 old failure). Each proposed adjustment must name one snippet and copy a quote from it verbatim; the quote is
-checked against the snippet, the size is clamped to +-25%, and the pre- and post-adjustment projections are
-logged. Nothing here changes a projection or a lineup.
+checked against the snippet, the result is kept within 0-48 minutes (no other size limit since 2026-10-29), and
+the pre- and post-adjustment projections are logged. Nothing here changes a projection or a lineup.
 
 Player calls (2026-10-20, logging only): for every Questionable or returning rotation player on the slate, the
 judge also calls tonight as plays_normal / plays_limited / sits / unclear, with a quote checked the same way.
@@ -22,7 +22,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pandas as pd
 
 from claude_client import LLMError, extract
-from config import ADJUSTMENT_JUDGES, MAX_ADJUSTMENT_PCT, MIN_QUOTE_CHARS, OPEN_NEWS_ROTATION_MIN
+from config import ADJUSTMENT_JUDGES, MAX_PLAYER_MINUTES, MIN_QUOTE_CHARS, OPEN_NEWS_ROTATION_MIN
 from s3_io import load_json, replace_date_rows, save_json
 from slate import LEARNED_PROJECTIONS, load_box_scores, projection_gate, slate_projections, wait_for_todays_rows
 
@@ -58,8 +58,11 @@ For each adjustment:
 - evidence_index is the number of the single item it rests on.
 - quote is copied character for character from that item's text, at least {MIN_QUOTE_CHARS} characters long. \
 It is checked against the source mechanically; a paraphrase is rejected.
-- adjustment_pct is the fractional change to the listed projection, between -{MAX_ADJUSTMENT_PCT} and \
-{MAX_ADJUSTMENT_PCT} (-0.2 means 20% fewer minutes). Never try to zero a player or create a starter.
+- adjustment_pct is the fractional change to the listed projection (-0.2 means 20% fewer minutes, 2.0 means three \
+times as many). There is no size limit: size it to what the evidence says. A bench player confirmed as tonight's \
+starter in place of an absent starter can play several times his listed minutes; a stated restriction ("about 20 \
+minutes") sets the number directly. The result is kept between 0 and {MAX_PLAYER_MINUTES} minutes. A player who \
+will not play is a status conflict (below), not an adjustment, so the model can hand his minutes to teammates.
 
 Separately, list status_conflicts: players whose listed projection contradicts a reported status for \
 tonight (projected to play but reported out, or in the out list but reported available). Those are not \
@@ -148,8 +151,10 @@ def validate(item, evidence, pre_minutes):
     idx = item['evidence_index']
     source = evidence[idx - 1] if isinstance(idx, int) and 1 <= idx <= len(evidence) else None
     pct_raw = float(item['adjustment_pct'])
-    pct = min(max(pct_raw, -MAX_ADJUSTMENT_PCT), MAX_ADJUSTMENT_PCT)
     pre = pre_minutes.get(player)
+    pct = pct_raw
+    if pre:   # only a game's worth of minutes is possible: 0..MAX_PLAYER_MINUTES
+        pct = min(max(pre * (1 + pct_raw), 0.0), MAX_PLAYER_MINUTES) / pre - 1
 
     fields = {
         'PLAYER': player, 'PCT_RAW': pct_raw, 'PCT_APPLIED': pct, 'CLAMPED': pct != pct_raw,

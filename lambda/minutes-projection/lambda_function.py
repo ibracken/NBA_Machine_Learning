@@ -319,7 +319,7 @@ def build_adjusted_lineup(box_scores, today):
     Learned model + the AI adjustments judge, for comparison with the learned lineup (never emailed):
     1. statuses the judge verified with a quote ("reported out" / "reported available") change the out list, and
        the model is re-run so it redistributes the minutes itself;
-    2. the judge's valid +-25% minutes adjustments are applied on top.
+    2. the judge's valid minutes adjustments (no size cap since 2026-10-29) are applied on top.
     """
     marker, waited = f'llm/adjustments/conflicts/{today}.json', 0
     conflicts = load_json(marker)
