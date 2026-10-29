@@ -671,6 +671,52 @@ We pick more 33+ minute stars (28% vs 17%) and cold players (40% vs 29%).
 - **Lineups 2025-26** (135 slates): 262.6 vs 261.7, so +0.9 (−2.3..+4.0); vs DFF −5.4 (was −6.3).
   - Picks of starters on 10+ point favorites fell from 215 to 119, and those picked scored 40.3 vs 39.0.
 
+### Box scores from ESPN when NBA is down (2026-10-28): shipped 2026-10-29
+- **What happened:** from 2026-10-28, stats.nba.com stopped answering scripts. It times out from AWS through the
+  proxy and from Ian's home connection directly, with the scraper's full Chrome headers. www.nba.com and cdn.nba.com
+  return 403 to curl while a browser loads them. The proxy itself works.
+  - The 10-28 run failed after 12.5 min of retries. Training and projections ran on box scores ending 10-26.
+  - A Chrome-handshake test (curl_cffi) was blocked by Claude Code's auto-mode check as bot-check circumvention.
+- **Fallback** (`lambda/shared/espn_box.py`, box-score-scraper): NBA is tried first.
+  - The current season is probed briefly (2 x 30 s). If it fails, NBA is down for the run: other seasons keep their
+    saved rows, and the current season's missing games (before today, ET) come from ESPN's free API, converted to
+    NBA's schema.
+    - GAME_ID and home/away come from NBA's saved schedule.
+    - NBA ids and names come from the ESPN-to-NBA player map (`data/box_scores/espn_player_map.parquet`, built by
+      pairing identical stat lines in 1,282 games both have).
+    - Otherwise an exact name in NBA's box scores; else a placeholder id -ESPN_ID with ESPN's name.
+  - ESPN-filled games are listed in `data/box_scores/espn_fill.json`. When NBA answers again, its full-season fetch
+    replaces them.
+- **Validation** (`scripts/validate_espn_box.py`). The player map was built from games before 2026-01-01 and tested on
+  786 later games (16,992 NBA rows, 2025-26 after Jan 1 plus 2026-27 to 10-26):
+
+  | check | result |
+  |---|---|
+  | NBA games with an ESPN game | 1,282 of 1,282 (4 ESPN games postponed, skipped) |
+  | ESPN rows with no NBA row (wrong or invented player) | 0 |
+  | NBA rows with no ESPN row | 19: 17 Lachlan Olbrich (ESPN lost his record, flagged); 2 zero-minute cameos |
+  | wrong real NBA id | 0 (399 placeholders: debuts with no NBA box score before the cut) |
+  | DraftKings FP identical | 99.982% (3 rows differ: stat corrections) |
+  | minutes | 40 rows differ by 1 (0.24%), ESPN +1 in 39 |
+  | other stats | FGA 1, BLK 1, TOV 2 rows |
+
+  - **ESPN's data gaps** stop being silent. A player shown as playing with no ESPN record (Olbrich in 22 games of
+    2025-26; fixed by ESPN on 2026-03-12), or player points not adding up to the team score, flags the game.
+    ESPN's rows are kept, and the scraper fails so the alarm fires.
+  - **Downstream:** 2026-27 was rebuilt entirely from ESPN, and minutes-projection's features plus the published
+    model were run on 10-25/26/27, on NBA's data and on ESPN's. Same 523 player-nights.
+    - Minutes-model inputs differ only for players whose minutes ESPN rounds differently (1–2 a night).
+    - Projected FP moves at most 0.35 (one player); otherwise at most 0.13. Two PHI garbage-time players at 0 vs 1
+      minute moved Philly's pace multiplier 0.939 -> 0.946.
+  - **End to end:** the real Lambda code was run locally with writes redirected.
+    - NBA down: past seasons came out identical to S3 on every row and column; 2026-27 kept its 1,181 rows and gained
+      94 for 10-27's 4 games, all with real NBA ids. 82 s.
+    - NBA up (fed NBA's saved rows): all 4 seasons identical to S3.
+- **Known limits:**
+  - NBA Cup knockout games are added to NBA's schedule only once seeded; while NBA is down they can't be mapped and
+    are reported.
+  - A player's first game during an outage gets a placeholder id (his name is still right).
+
 ### Older backlog notes
 
 ### M3. Model DNP risk explicitly
@@ -925,6 +971,12 @@ See M7.
 ---
 
 ## Done log
+
+### 2026-10-29
+- **ESPN box-score fallback deployed** (see "Box scores from ESPN when NBA is down").
+  - Player map published: 636 ESPN ids.
+  - Run once in AWS at 01:53 UTC with NBA still down: 10-27's 4 games were added (94 rows, all real NBA ids, no
+    gaps). The other 1,181 2026-27 rows and the three past seasons are unchanged row for row. 67 s.
 
 ### 2026-10-27
 - **The betting spread is a minutes input** (see "Betting lines"). Release checks pass in the Lambda: it reaches

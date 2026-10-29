@@ -7,8 +7,16 @@ from datetime import datetime
 from io import BytesIO
 from unidecode import unidecode
 import os
+import sys
 import time
+from pathlib import Path
 from dotenv import load_dotenv
+
+try:
+    import espn_box
+except ImportError:   # local run: the shared modules live in lambda/shared
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'shared'))
+    import espn_box
 
 # Load .env file for local testing (Lambda uses environment variables)
 load_dotenv()
@@ -93,23 +101,32 @@ GAME_DATES_KEY = 'data/schedule/game_dates.json'
 # The proxy drops roughly 1 request in 6 (timeouts, TLS EOFs; measured 2026-10-05); NBA responses are fine
 NBA_API_ATTEMPTS = 3
 NBA_API_BACKOFF_SECONDS = (5, 15)
+# The current season is asked first and briefly: when stats.nba.com hangs (every request from 2026-10-28), the
+# full retries cost 12.5 minutes and the files landed after training (+2 min) and projections (+9 min) had read them
+NBA_PROBE_ATTEMPTS = 2
+NBA_PROBE_TIMEOUT = 30
+
+# Built by scripts/validate_espn_box.py from games both NBA and ESPN have; without it, players are matched by name
+ESPN_PLAYER_MAP_KEY = 'data/box_scores/espn_player_map.parquet'
+# GAME_IDs whose rows came from ESPN, with any data ESPN lacked
+ESPN_FILL_KEY = 'data/box_scores/espn_fill.json'
 
 
-def nba_api_get(url, params):
+def nba_api_get(url, params, attempts=NBA_API_ATTEMPTS, timeout=60):
     """GET a stats.nba.com endpoint through the proxy, retrying dropped connections and non-200s."""
     proxy_url = os.environ.get('PROXY_URL')
     if not proxy_url:
         raise ValueError("PROXY_URL environment variable must be set")
-    for attempt in range(1, NBA_API_ATTEMPTS + 1):
+    for attempt in range(1, attempts + 1):
         try:
             response = requests.get(url, headers=NBA_API_HEADERS, params=params,
-                                    proxies={'http': proxy_url, 'https': proxy_url}, timeout=60, verify=False)
+                                    proxies={'http': proxy_url, 'https': proxy_url}, timeout=timeout, verify=False)
             if response.status_code == 200:
                 return response
             problem = f"HTTP {response.status_code}"
         except requests.RequestException as e:
             problem = f"{type(e).__name__}: {e}"
-        if attempt == NBA_API_ATTEMPTS:
+        if attempt == attempts:
             raise RuntimeError(f"{url} failed after {attempt} attempts: {problem}")
         wait = NBA_API_BACKOFF_SECONDS[attempt - 1]
         logger.warning(f"{url} attempt {attempt} failed ({problem}); retrying in {wait}s")
@@ -153,8 +170,8 @@ def fetch_season_schedule(season):
     return schedule
 
 
-def fetch_box_scores_from_api(season=None):
-    """Fetch box scores from NBA API for a specific season"""
+def fetch_box_scores_from_api(season=None, probe=False):
+    """Fetch box scores from NBA API for a specific season (probe: few, short attempts)"""
     if season is None:
         season = get_current_nba_season()
 
@@ -177,7 +194,7 @@ def fetch_box_scores_from_api(season=None):
 
     try:
         logger.info(f"Making request to NBA API for season {season}...")
-        data = nba_api_get(url, params).json()
+        data = (nba_api_get(url, params, NBA_PROBE_ATTEMPTS, NBA_PROBE_TIMEOUT) if probe else nba_api_get(url, params)).json()
 
         if 'resultSets' in data and len(data['resultSets']) > 0:
             result_set = data['resultSets'][0]
@@ -401,6 +418,50 @@ def calculate_rolling_averages(df):
         return df
 
 
+def load_saved_season(season):
+    """The season's saved box scores (empty if none)."""
+    key = f'data/box_scores/{season}.parquet'
+    try:
+        df = load_dataframe_from_s3(key)
+    except Exception:
+        logger.warning(f"No saved {key}")
+        return pd.DataFrame()
+    df['GAME_DATE'] = pd.to_datetime(df['GAME_DATE'])
+    df['GAME_ID'] = df['GAME_ID'].astype(str)
+    return df
+
+
+def add_espn_games(saved, loaded, season):
+    """Append this season's games missing from `saved` (before today, ET) from ESPN; record them in ESPN_FILL_KEY."""
+    schedule = load_dataframe_from_s3('data/schedule/current.parquet')
+    history = pd.concat([saved] + list(loaded.values()), ignore_index=True)
+    try:
+        player_map = load_dataframe_from_s3(ESPN_PLAYER_MAP_KEY)
+    except Exception:
+        logger.warning(f"{ESPN_PLAYER_MAP_KEY} missing: ESPN players matched by name only")
+        player_map = pd.DataFrame(columns=['ESPN_ID', 'PLAYER_ID', 'PLAYER'])
+    today = pd.Timestamp.now(tz='America/New_York').date()
+    rows, report = espn_box.fill(saved, schedule, history, season, today, player_map)
+    report['rows'] = len(rows)
+    for name, team, how in report['players']:
+        logger.info(f"ESPN player not on the map: {name} ({team}): {how}")
+    if len(rows):
+        rows['FP'] = rows.apply(calculate_draftkings_fp, axis=1)
+        rows['SEASON'] = season
+        saved = pd.concat([saved, rows], ignore_index=True) if len(saved) else rows
+        try:
+            record = json.loads(s3.get_object(Bucket=BUCKET_NAME, Key=ESPN_FILL_KEY)['Body'].read())
+        except Exception:
+            record = {}
+        stamp = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+        for gid in sorted(rows['GAME_ID'].unique()):
+            record[gid] = {'season': season, 'added': stamp, 'gaps': report['gaps'].get(gid, [])}
+        s3.put_object(Bucket=BUCKET_NAME, Key=ESPN_FILL_KEY, ContentType='application/json', Body=json.dumps(record))
+    logger.warning(f"ESPN fill for {season}: {report['espn_games']} games, {len(rows)} rows; gaps {report['gaps']}; "
+                   f"no ESPN game {report['not_found']}; postponed on ESPN {report['not_final']}")
+    return saved, report
+
+
 def run_box_score_scraper():
     """Main function to run the box score scraping process"""
     logger.info("Starting NBA box score API scraper")
@@ -415,14 +476,20 @@ def run_box_score_scraper():
 
         season_dataframes = {}
         failed_seasons = []
+        nba_down = False
+        espn_report = None
 
-        # Fetch data for each season
-        for season in seasons:
-            logger.info(f"Fetching data for season {season}")
-            df = fetch_box_scores_from_api(season)
-            if df is None:
-                logger.warning(f"Failed to fetch data for season {season}, skipping")
+        # Current season first, briefly: if NBA does not answer it, NBA is treated as down for this run
+        for season in [current_season] + seasons[:-1]:
+            if nba_down:
                 failed_seasons.append(season)
+                continue
+            logger.info(f"Fetching data for season {season}")
+            df = fetch_box_scores_from_api(season, probe=(season == current_season))
+            if df is None:
+                logger.warning(f"Failed to fetch data for season {season}")
+                failed_seasons.append(season)
+                nba_down = season == current_season
                 continue
             if df.empty:
                 logger.info(f"Season {season} has no games yet, skipping")
@@ -438,6 +505,17 @@ def run_box_score_scraper():
             df['SEASON'] = season
             season_dataframes[season] = df
             logger.info(f"Successfully fetched {len(df)} records for season {season}")
+
+        # Seasons NBA did not return keep their saved rows (a missing past season would skew career averages);
+        # the current season's missing games come from ESPN
+        for season in failed_seasons:
+            saved = load_saved_season(season)
+            if season == current_season:
+                saved, espn_report = add_espn_games(saved, season_dataframes, season)
+            if len(saved):
+                season_dataframes[season] = saved
+                added = espn_report['rows'] if season == current_season else 0
+                logger.warning(f"{season}: NBA unavailable, using {len(saved) - added} saved rows + {added} from ESPN")
 
         # Check if we have any data
         if not season_dataframes:
@@ -499,15 +577,23 @@ def run_box_score_scraper():
         # Tonight's home/away for minutes-projection. Box scores are already saved, so a schedule
         # failure is reported without discarding them.
         errors = []
-        if failed_seasons:
-            errors.append(f"Failed to fetch seasons {failed_seasons}; saved {list(season_dataframes)}")
-        try:
-            schedule = fetch_season_schedule(current_season)
-            save_dataframe_to_s3(schedule, 'data/schedule/current.parquet')
-            save_game_dates(schedule, current_season)
-        except Exception as e:
-            logger.error(f"Failed to fetch/save {current_season} schedule: {e}")
-            errors.append(f"Schedule fetch failed: {e}")
+        if failed_seasons and not nba_down:
+            errors.append(f"Failed to fetch seasons {failed_seasons}; kept their saved rows")
+        if espn_report:
+            if espn_report['gaps']:
+                errors.append(f"ESPN lacked data (rows it has were saved): {espn_report['gaps']}")
+            if espn_report['not_found']:
+                errors.append(f"No final ESPN game for NBA games {espn_report['not_found']}")
+        if nba_down:
+            logger.warning("NBA did not answer: schedule not refreshed (the saved one is used)")
+        else:
+            try:
+                schedule = fetch_season_schedule(current_season)
+                save_dataframe_to_s3(schedule, 'data/schedule/current.parquet')
+                save_game_dates(schedule, current_season)
+            except Exception as e:
+                logger.error(f"Failed to fetch/save {current_season} schedule: {e}")
+                errors.append(f"Schedule fetch failed: {e}")
 
         if errors:
             return {
@@ -517,6 +603,8 @@ def run_box_score_scraper():
 
         return {
             'success': True,
+            'source': 'espn fallback' if nba_down else 'nba',
+            'espn_games': espn_report['espn_games'] if espn_report else 0,
             'total_records': total_records,
             'unique_players': unique_players,
             'date_range': date_range,
